@@ -86,6 +86,61 @@ class FixedQPSPacer:
         return t - now
 
 
+class LengthSampler:
+    def __init__(self, distribution: str, mean: int, cap: Optional[int], alpha: float):
+        self.distribution = distribution
+        self.mean = mean
+        self.cap = cap
+        self.alpha = alpha
+
+        if self.distribution == "exponential":
+            self.sample_func = lambda: int(random.expovariate(1 / self.mean))
+        elif self.distribution == "uniform":
+            mx = self.mean + int(self.alpha * self.mean)
+            if self.cap is not None:
+                mx = min(mx, self.cap)
+            self.sample_func = lambda: random.randint(
+                max(1, self.mean - int(self.alpha * self.mean)), mx
+            )
+        elif self.distribution == "constant":
+            self.sample_func = lambda: self.mean
+        elif self.distribution == "normal":
+            self.sample_func = lambda: int(
+                random.gauss(self.mean, self.mean * self.alpha)
+            )
+        else:
+            raise ValueError(f"Unknown distribution {self.distribution}")
+
+    def sample(self) -> int:
+        for _ in range(1000):
+            sample = self.sample_func()
+            if sample <= 0:
+                continue
+            if self.cap is not None and sample > self.cap:
+                continue
+            return sample
+        else:
+            raise ValueError(
+                "Can't sample a value after 1000 attempts, check distribution parameters"
+            )
+
+    def __str__(self):
+        r = int(self.mean * self.alpha)
+        if self.distribution == "constant":
+            s = str(self.mean)
+        elif self.distribution == "uniform":
+            s = f"uniform({self.mean} +/- {r})"
+        elif self.distribution == "normal":
+            s = f"normal({self.mean}, {r})"
+        elif self.distribution == "exponential":
+            s = f"exponential({self.mean})"
+        else:
+            assert False
+        if self.cap is not None:
+            s += f" capped at {self.cap}"
+        return s
+
+
 class InitTracker:
     lock = threading.Lock()
     users = None
@@ -203,7 +258,7 @@ class OpenAIProvider(BaseProvider):
         else:
             data["prompt"] = prompt
         if self.parsed_options.logprobs is not None:
-            data["logprobs"] = self.environment.parsed_options.logprobs
+            data["logprobs"] = self.parsed_options.logprobs
         return data
 
     def parse_output_json(self, data, prompt):
@@ -514,7 +569,12 @@ class LLMUser(HttpUser):
                 * (self.environment.parsed_options.prompt_tokens - prompt_tokens)
                 + prompt
             )
-        self.max_tokens = self.environment.parsed_options.max_tokens
+        self.max_tokens_sampler = LengthSampler(
+            distribution=self.environment.parsed_options.max_tokens_distribution,
+            mean=self.environment.parsed_options.max_tokens,
+            cap=self.environment.parsed_options.max_tokens_cap,
+            alpha=self.environment.parsed_options.max_tokens_range,
+        )
         self.temperature = self.environment.parsed_options.temperature
 
         logging_params = {
@@ -522,7 +582,7 @@ class LLMUser(HttpUser):
             "provider": self.provider,
             "model": self.model,
             "prompt_tokens": self.environment.parsed_options.prompt_tokens,  # might be overwritten based on metric
-            "generation_tokens": self.max_tokens,
+            "generation_tokens": str(self.max_tokens_sampler),
             "stream": self.stream,
             "temperature": self.temperature,
             "logprobs": self.environment.parsed_options.logprobs,
@@ -549,8 +609,7 @@ class LLMUser(HttpUser):
 
     @task
     def generate_text(self):
-        tokens_jitter = self.environment.parsed_options.max_tokens_jitter
-        max_tokens = self.max_tokens + random.randint(-1 * tokens_jitter, tokens_jitter)
+        max_tokens = self.max_tokens_sampler.sample()
         data = self.provider_formatter.format_payload(self.prompt, max_tokens)
         t_start = time.perf_counter()
 
@@ -716,7 +775,28 @@ def init_parser(parser):
         env_var="MAX_TOKENS",
         type=int,
         default=64,
-        help="Max number of tokens to generate. Defaults to 64",
+        help="Max number of tokens to generate. If --max-tokens-distribution is non-constant this is going to be the mean. Defaults to 64",
+    )
+    parser.add_argument(
+        "--max-tokens-cap",
+        env_var="MAX_TOKENS_CAP",
+        type=int,
+        help="If --max-tokens-distribution is non-constant, this truncates the distribition at the specified limit",
+    )
+    parser.add_argument(
+        "--max-tokens-distribution",
+        env_var="MAX_TOKENS_DISTRIBUTION",
+        type=str,
+        choices=["constant", "uniform", "exponential", "normal"],
+        default="constant",
+        help="How to sample `max-tokens` on each request",
+    )
+    parser.add_argument(
+        "--max-tokens-range",
+        env_var="MAX_TOKENS_RANGE",
+        type=float,
+        default=0.3,
+        help="Specifies the width of the distribution. Specified value `alpha` is relative to `max-tokens`. For uniform distribution we'd sample from [max_tokens - max_tokens * alpha, max_tokens + max_tokens * alpha]. For normal distribution we'd sample from `N(max_tokens, max_tokens * alpha)`. Defaults to 0.3",
     )
     parser.add_argument(
         "--stream",
@@ -743,13 +823,6 @@ def init_parser(parser):
         type=int,
         default=None,
         help="Whether to ask for logprobs, it makes things slower for some providers but is necessary for token count in streaming (unless it's Fireworks API that returns usage in streaming mode)",
-    )
-    parser.add_argument(
-        "--max-tokens-jitter",
-        env_var="MAX_TOKENS_JITTER",
-        type=int,
-        default=0,
-        help="Sample max tokens uniformly from [max_tokens - jitter, max_tokens + jitter]",
     )
     parser.add_argument(
         "--summary-file",
