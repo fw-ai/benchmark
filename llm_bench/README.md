@@ -36,14 +36,33 @@ There are two primary modes the script can be used:
 
 ### Workload
 
+The tool currently supports only a fixed prompt specified as one of:
 - `-p`: prompt length in tokens.
-- (alternative) `--prompt-text`: use the specified text as a prompt instead of generating one
-- `-o`: maximum number of tokens to generate. For most providers, the script passes options triggering the generation of exactly this number of tokens.
+- `--prompt-text`: use the specified text as a prompt instead of generating one.
+
+The number of tokens to generate is sampled on every request from a given distribution:
+- `-o`/`--max-tokens`: maximum number of tokens to generate. If --max-tokens-distribution is non-constant this is going to be the mean of the distribution.
+- `--max-tokens-distribution`: specifies probability distribution to use.
+- `--max-tokens-range` Specifies "the width" of the distribution (e.g. stddev for "normal" distribution). Specified value `alpha` is relative to `max-tokens`. Default is 0.3 so most of the range falls in "3 sigma" region.
+- `--max-tokens-cap`: specify upper bound to "truncate" the probability distribution. The lower bound is always 1 token. This allows to sample from "truncated normal" or "truncated exponential" distributions.
+
+Based on the above settings the following distributions are supported:
+- `constant`: use `--max_tokens` value on every request
+- `uniform`: sample from the range `[max_tokens - max_tokens * alpha, max_tokens + max_tokens * alpha]`
+- `normal`: sample from gaussian distribution `N(max_tokens, max_tokens * alpha)`
+- `exponential`: sample from exponential distribution with the mean `max_tokens`. `alpha` is ignored
+
+The benchmark makes the best effort to ensure the desired `max_tokens` number is respected:
+- for providers that support it, it passes `ignore_eos` or `min_tokens` parameter to avoid early stopping
+- the default prompt is a lengthy code generation request that usually doesn't stop early
+- it verifies the number of tokens actually generated and prints warnings on mismatch. Different providers use varying mechanisms of returning generated number of tokens. For some of them `--logprobs` might be needed in the streaming mode.
+- optionally, `--tokenizer` can be passed specifying Huggingface tokenizer to be used to count the output tokens on client side.
+
+Generation options:
 - `--chat`: specify to call chat API instead of raw completions
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
 - `--max-tokens-jitter`: how much to adjust randomly the setting of `-o` at each request. When using "fixed concurrency" mode it's useful to avoid all workers implicitly synchronizing and causing periodic traffic bursts.
-- (optional) `--tokenizer`: for most providers the benchmark can deduce number of tokens from server side (`--logprobs` might need to be passed for some of them). But in case it couldn't, the specified HF tokenizer can be used to count the output tokens.
 
 ### Writing results
 
