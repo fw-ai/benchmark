@@ -23,22 +23,23 @@ The load test script exercises LLM generation endpoint under varying load. See b
 
 ### Rate of requests
 
-There are two primary modes the script can be used:
+There are several primary modes the script can be used:
 
 1. **Fixed concurrency**. N workers are created. Each sends a request, waits for the response and then sends the next request. Thus as concurrency increases, the server will get more loaded and latency will grow. Usually increasing concurrency beyond some point doesn't increase throughput and just leads to growing latency.
    - `-u`: the number of concurrent workers to spawn (standard Locust argument)
    - `-r`: the rate per second of spawning concurrent workers. If processing workload takes a while (more than several seconds), it makes sense to set this value to something lower than `-u` for a gradual ramp-up to avoid request bursts.
+   - (optionally) `--burst <period in seconds>`: synchronizes all N workers to issue requests in one go with the specified interval. The maximum latency should be less than the period, otherwise some workers may fall behind.
 
 2. **Fixed QPS**. The script ensures that input requests are issued at specific times to average out at the specified rate per second. If the target QPS is too high and the server is overloaded it will likely drop additional requests or stall.
    - `--qps`: the desired rate of requests per second. Can be a fractional number, e.g. `0.1`.
    - `-u <high number> -r <high number>`: needs to be set to a sufficiently high value to allow generating the target QPS. The script will complain if it's too low. Passing something like `-u 100 -r 100` is a good choice.
-   - (optional) `qps-distribution`: specify how to space out requests. Default is `constant` meaning evenly spaced out. `exponential` is an option simulating [Poisson distribution](https://en.wikipedia.org/wiki/Traffic_generation_model#Poisson_traffic_model).
+   - (optional) `--qps-distribution`: specify how to space out requests. Default is `constant` meaning evenly spaced out. `exponential` is an option simulating [Poisson distribution](https://en.wikipedia.org/wiki/Traffic_generation_model#Poisson_traffic_model).
 
 ### Workload
 
 The tool currently supports only a fixed prompt specified as one of:
-- `-p`: prompt length in tokens.
-- `--prompt-text`: use the specified text as a prompt instead of generating one.
+- `-p`: prompt length in tokens. The script will generate some prompt of this length.
+- `--prompt-text`: use the specified text as a prompt instead of generating one. It can be a file reference starting with an ampersand, e.g. `@prompt.txt`.
 
 The number of tokens to generate is sampled on every request from a given distribution:
 - `-o`/`--max-tokens`: maximum number of tokens to generate. If --max-tokens-distribution is non-constant this is going to be the mean of the distribution.

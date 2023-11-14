@@ -2,12 +2,13 @@ import abc
 import argparse
 import csv
 from dataclasses import dataclass
+from functools import partial
 import os
 import random
 import sys
 import traceback
 from typing import Optional
-from locust import HttpUser, task, events
+from locust import HttpUser, task, events, constant_pacing
 import copy
 import json
 import time
@@ -474,6 +475,20 @@ PROVIDER_CLASS_MAP = {
 }
 
 
+def _load_curl_like_data(text):
+    """
+    Either use the passed string or load from a file if the string is `@filename`
+    """
+    if text.startswith("@"):
+        try:
+            with open(text[1:], "r") as f:
+                return f.read()
+        except Exception as e:
+            raise ValueError(f"Failed to read file {text[1:]}") from e
+    else:
+        return text
+
+
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
 
@@ -555,7 +570,7 @@ class LLMUser(HttpUser):
         self.stream = self.environment.parsed_options.stream
         prompt_chars = self.environment.parsed_options.prompt_chars
         if self.environment.parsed_options.prompt_text:
-            self.prompt = self.environment.parsed_options.prompt_text
+            self.prompt = _load_curl_like_data(self.environment.parsed_options.prompt_text)
         elif prompt_chars:
             self.prompt = (
                 prompt_prefix * (prompt_chars // len(prompt_prefix) + 1) + prompt
@@ -592,8 +607,14 @@ class LLMUser(HttpUser):
         self.tokenizer = InitTracker.load_tokenizer(
             self.environment.parsed_options.tokenizer
         )
+        if self.tokenizer:
+            self.prompt_tokenizer_tokens = len(self.tokenizer.encode(self.prompt))
+        else:
+            self.prompt_tokenizer_tokens = None
 
         if self.environment.parsed_options.qps is not None:
+            if self.environment.parsed_options.burst:
+                raise ValueError("Burst and QPS modes are mutually exclusive")
             pacer = FixedQPSPacer.instance(
                 self.environment.parsed_options.qps,
                 self.environment.parsed_options.qps_distribution,
@@ -601,6 +622,10 @@ class LLMUser(HttpUser):
             # it will be called by Locust after each task
             self.wait_time = pacer.wait_time_till_next
             self.wait()
+        elif self.environment.parsed_options.burst:
+            self.wait_time = partial(
+                constant_pacing(self.environment.parsed_options.burst), self
+            )
         else:
             # introduce initial delay to avoid all users hitting the service at the same time
             time.sleep(random.random())
@@ -622,7 +647,7 @@ class LLMUser(HttpUser):
             dur_chunks = []
             combined_text = ""
             done = False
-            prompt_usage_tokens = None
+            prompt_usage_tokens = self.prompt_tokenizer_tokens
             total_usage_tokens = None
             total_logprob_tokens = None
             try:
@@ -720,8 +745,11 @@ class LLMUser(HttpUser):
                     dur_total / num_tokens * 1000,
                     num_tokens,
                 )
-            if prompt_usage_tokens is not None:
-                add_custom_metric("prompt_tokens", prompt_usage_tokens)
+            if prompt_usage_tokens is not None and self.prompt_tokenizer_tokens is not None and prompt_usage_tokens != self.prompt_tokenizer_tokens:
+                print(f"WARNING: prompt usage tokens {prompt_usage_tokens} != {self.prompt_tokenizer_tokens} derived from local tokenizer")
+            prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
+            if prompt_tokens:
+                add_custom_metric("prompt_tokens", prompt_tokens)
 
             if not self.first_done:
                 self.first_done = True
@@ -767,7 +795,7 @@ def init_parser(parser):
         "--prompt-text",
         env_var="PROMPT_TEXT",
         type=str,
-        help="Prompt text to use instead of generating one",
+        help="Prompt text to use instead of generating one. It can be a file reference starting with an ampersand, e.g. `@prompt.txt`",
     )
     parser.add_argument(
         "-o",
@@ -841,6 +869,12 @@ def init_parser(parser):
         choices=["constant", "uniform", "exponential"],
         default="constant",
         help="Must be used with --qps. Specifies how to space out requests: equally ('constant') or by sampling wait times from a distribution ('uniform' or 'exponential'). Expected QPS is going to match --qps",
+    )
+    parser.add_argument(
+        "--burst",
+        type=float,
+        default=None,
+        help="Makes requests to arrive in bursts every specified number of seconds. Note that burst duration has to be longer than maximum time of the response. Size of the burst is controlled by --users. The spawn rate -r is best set to a high value",
     )
     parser.add_argument(
         "--tokenizer",
