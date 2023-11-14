@@ -890,31 +890,44 @@ def _(environment, **kw):
         print("Test failed due to failed requests")
         environment.process_exit_code = 1
         return
-    if environment.parsed_options.summary_file:
-        entries = copy.copy(InitTracker.logging_params)
-        if environment.parsed_options.qps is not None:
-            entries[
-                "concurrency"
-            ] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
-        else:
-            entries["concurrency"] = InitTracker.users
-        for metric_name in [
-            "time_to_first_token",
-            "latency_per_token",
-            "num_tokens",
-            "total_latency",
-            "prompt_tokens",  # might overwrite the static value based on server side tokenization
-        ]:
-            entries[metric_name] = environment.stats.entries[
-                (metric_name, "METRIC")
-            ].avg_response_time
-        if not environment.parsed_options.stream:
-            # if there's no streaming these metrics are meaningless
-            entries["time_to_first_token"] = ""
-            entries["latency_per_token"] = ""
-        entries["num_requests"] = total_latency.num_requests
-        entries["qps"] = total_latency.total_rps
 
+    entries = copy.copy(InitTracker.logging_params)
+    if environment.parsed_options.qps is not None:
+        entries[
+            "concurrency"
+        ] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
+    else:
+        entries["concurrency"] = InitTracker.users
+    for metric_name in [
+        "time_to_first_token",
+        "latency_per_token",
+        "num_tokens",
+        "total_latency",
+        "prompt_tokens",  # might overwrite the static value based on server side tokenization
+    ]:
+        entries[metric_name] = environment.stats.entries[
+            (metric_name, "METRIC")
+        ].avg_response_time
+    if not environment.parsed_options.stream:
+        # if there's no streaming these metrics are meaningless
+        entries["time_to_first_token"] = ""
+        entries["latency_per_token"] = ""
+    entries["num_requests"] = total_latency.num_requests
+    entries["qps"] = total_latency.total_rps
+
+    pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
+    entries = {pretty_name(k): v for k, v in entries.items()}
+
+    # print in the final event handler to make sure our output is the last one
+    @events.quit.add_listener
+    def exit_printer(**kw):
+        max_width = max(len(k) for k in entries.keys())
+        print(" Summary ".center(80, "="))
+        for k, v in entries.items():
+            print(f"{k:<{max_width}}: {v}")
+        print("=" * 80)
+
+    if environment.parsed_options.summary_file:
         with open(environment.parsed_options.summary_file, "a") as f:
             writer = csv.DictWriter(f, fieldnames=entries.keys())
             if f.tell() == 0:
