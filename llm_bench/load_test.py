@@ -306,10 +306,13 @@ class TogetherProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens):
         data = super().format_payload(prompt, max_tokens)
         data["ignore_eos"] = True
+        data["stream_tokens"] = data.pop("stream")
         return data
 
     def parse_output_json(self, data, prompt):
-        return super().parse_output_json(data["output"], prompt)
+        if not self.parsed_options.stream:
+            data = data["output"]
+        return super().parse_output_json(data, prompt)
 
 
 class TritonInferProvider(BaseProvider):
@@ -468,7 +471,7 @@ PROVIDER_CLASS_MAP = {
     "vllm": VllmProvider,
     "openai": OpenAIProvider,
     "anyscale": OpenAIProvider,
-    "together": OpenAIProvider,
+    "together": TogetherProvider,
     "triton-infer": TritonInferProvider,
     "triton-generate": TritonGenerateProvider,
     "tgi": TgiProvider,
@@ -570,7 +573,9 @@ class LLMUser(HttpUser):
         self.stream = self.environment.parsed_options.stream
         prompt_chars = self.environment.parsed_options.prompt_chars
         if self.environment.parsed_options.prompt_text:
-            self.prompt = _load_curl_like_data(self.environment.parsed_options.prompt_text)
+            self.prompt = _load_curl_like_data(
+                self.environment.parsed_options.prompt_text
+            )
         elif prompt_chars:
             self.prompt = (
                 prompt_prefix * (prompt_chars // len(prompt_prefix) + 1) + prompt
@@ -725,6 +730,10 @@ class LLMUser(HttpUser):
             print(
                 f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {num_tokens} tokens"
             )
+            if self.environment.parsed_options.show_response:
+                print("---")
+                print(combined_text)
+                print("---")
             if num_chars:
                 add_custom_metric(
                     "latency_per_char", dur_generation / num_chars * 1000, num_chars
@@ -745,8 +754,14 @@ class LLMUser(HttpUser):
                     dur_total / num_tokens * 1000,
                     num_tokens,
                 )
-            if prompt_usage_tokens is not None and self.prompt_tokenizer_tokens is not None and prompt_usage_tokens != self.prompt_tokenizer_tokens:
-                print(f"WARNING: prompt usage tokens {prompt_usage_tokens} != {self.prompt_tokenizer_tokens} derived from local tokenizer")
+            if (
+                prompt_usage_tokens is not None
+                and self.prompt_tokenizer_tokens is not None
+                and prompt_usage_tokens != self.prompt_tokenizer_tokens
+            ):
+                print(
+                    f"WARNING: prompt usage tokens {prompt_usage_tokens} != {self.prompt_tokenizer_tokens} derived from local tokenizer"
+                )
             prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
             if prompt_tokens:
                 add_custom_metric("prompt_tokens", prompt_tokens)
@@ -880,6 +895,12 @@ def init_parser(parser):
         "--tokenizer",
         type=str,
         help="Specify HF tokenizer to use for validating the output of the model. It's optional, we're going to rely on 'usage' or 'logprobs' field to get token count information",
+    )
+    parser.add_argument(
+        "--show-response",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Print the result of each generation",
     )
 
 
