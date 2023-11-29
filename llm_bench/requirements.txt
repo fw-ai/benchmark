@@ -1,2 +1,2 @@
-locust
-orjson
+locust==2.18.1
+orjson==3.9.10
