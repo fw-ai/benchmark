@@ -36,6 +36,7 @@ prompt_prefix = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
 prompt = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
 prompt_tokens = 35  # from Llama tokenizer tool (so we don't import it here)
+prompt_random_tokens = 10
 
 
 class FixedQPSPacer:
@@ -288,6 +289,7 @@ class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens):
         data = super().format_payload(prompt, max_tokens)
         data["min_tokens"] = max_tokens
+        data["prompt_cache_max_len"] = 0
         return data
 
 
@@ -581,12 +583,17 @@ class LLMUser(HttpUser):
                 prompt_prefix * (prompt_chars // len(prompt_prefix) + 1) + prompt
             )[:prompt_chars]
         else:
+            min_prompt_len = (
+                prompt_tokens
+                + prompt_random_tokens
+                * self.environment.parsed_options.prompt_randomize
+            )
             assert (
-                self.environment.parsed_options.prompt_tokens >= prompt_tokens
-            ), f"Minimal prompt length is {prompt_tokens}"
+                self.environment.parsed_options.prompt_tokens >= min_prompt_len
+            ), f"Minimal prompt length is {min_prompt_len}"
             self.prompt = (
                 prompt_prefix
-                * (self.environment.parsed_options.prompt_tokens - prompt_tokens)
+                * (self.environment.parsed_options.prompt_tokens - min_prompt_len)
                 + prompt
             )
         self.max_tokens_sampler = LengthSampler(
@@ -613,7 +620,9 @@ class LLMUser(HttpUser):
             self.environment.parsed_options.tokenizer
         )
         if self.tokenizer:
-            self.prompt_tokenizer_tokens = len(self.tokenizer.encode(self.prompt))
+            self.prompt_tokenizer_tokens = len(
+                self.tokenizer.encode(self._get_prompt())
+            )
         else:
             self.prompt_tokenizer_tokens = None
 
@@ -637,10 +646,24 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
+    def _get_prompt(self):
+        if not self.environment.parsed_options.prompt_randomize:
+            return self.prompt
+        # single letters are single tokens
+        return (
+            " ".join(
+                chr(ord("a") + random.randint(0, 25))
+                for _ in range(prompt_random_tokens)
+            )
+            + " "
+            + self.prompt
+        )
+
     @task
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        data = self.provider_formatter.format_payload(self.prompt, max_tokens)
+        prompt = self._get_prompt()
+        data = self.provider_formatter.format_payload(prompt, max_tokens)
         t_start = time.perf_counter()
 
         with self.client.post(
@@ -683,7 +706,7 @@ class LLMUser(HttpUser):
                             done = True
                             continue
                     data = orjson.loads(chunk)
-                    out = self.provider_formatter.parse_output_json(data, self.prompt)
+                    out = self.provider_formatter.parse_output_json(data, prompt)
                     if out.usage_tokens:
                         total_usage_tokens = (
                             total_usage_tokens or 0
@@ -811,6 +834,12 @@ def init_parser(parser):
         env_var="PROMPT_TEXT",
         type=str,
         help="Prompt text to use instead of generating one. It can be a file reference starting with an ampersand, e.g. `@prompt.txt`",
+    )
+    parser.add_argument(
+        "--prompt-randomize",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include a few random numbers in the generated prompt to avoid caching",
     )
     parser.add_argument(
         "-o",
