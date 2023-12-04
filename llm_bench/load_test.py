@@ -314,6 +314,26 @@ class TogetherProvider(OpenAIProvider):
             data = data["output"]
         return super().parse_output_json(data, prompt)
 
+class UpstageProvider(OpenAIProvider):
+    def get_url(self):
+        if self.parsed_options.chat:
+            return "/v1/solar/chat/completions"
+        else:
+            assert self.parsed_options.chat, "--chat option is mandatory for Upstage"
+            return "/"
+
+    def format_payload(self, prompt, max_tokens):
+        data = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "stream": self.parsed_options.stream,
+            "temperature": self.parsed_options.temperature,
+        }
+        if self.parsed_options.chat:
+            data["messages"] = [{"role": "system", "content": "You are a helpful assistant."},{"role": "user", "content": prompt}]
+        else:
+            assert self.parsed_options.chat, "--chat option is mandatory for Upstage"
+        return data
 
 class TritonInferProvider(BaseProvider):
     DEFAULT_MODEL_NAME = "ensemble"
@@ -475,6 +495,7 @@ PROVIDER_CLASS_MAP = {
     "triton-infer": TritonInferProvider,
     "triton-generate": TritonGenerateProvider,
     "tgi": TgiProvider,
+    "upstage": UpstageProvider,
 }
 
 
@@ -516,6 +537,8 @@ class LLMUser(HttpUser):
                 self.provider = "openai"
             elif "anyscale" in self.host:
                 self.provider = "anyscale"
+            elif "apistage" in self.host:
+                self.provider = "upstage"
 
         if (
             self.model is None
