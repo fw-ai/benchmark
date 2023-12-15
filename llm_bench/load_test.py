@@ -796,6 +796,9 @@ class LLMUser(HttpUser):
                     "latency_per_token", dur_generation / num_tokens * 1000, num_tokens
                 )
                 add_custom_metric(
+                    "token_per_second", num_tokens / dur_total, num_tokens
+                )
+                add_custom_metric(
                     "overall_latency_per_token",
                     dur_total / num_tokens * 1000,
                     num_tokens,
@@ -974,6 +977,7 @@ def _(environment, **kw):
     for metric_name in [
         "time_to_first_token",
         "latency_per_token",
+        "token_per_second",
         "num_tokens",
         "total_latency",
         "prompt_tokens",  # might overwrite the static value based on server side tokenization
@@ -985,6 +989,7 @@ def _(environment, **kw):
         # if there's no streaming these metrics are meaningless
         entries["time_to_first_token"] = ""
         entries["latency_per_token"] = ""
+        entries["token_per_second"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
 
