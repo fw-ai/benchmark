@@ -761,7 +761,8 @@ class LLMUser(HttpUser):
                 add_custom_metric(
                     "latency_per_char", dur_generation / num_chars * 1000, num_chars
                 )
-            add_custom_metric("time_to_first_token", dur_first_token * 1000)
+            if self.stream:
+                add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
                 if num_tokens != max_tokens:
@@ -874,7 +875,7 @@ def init_parser(parser):
         "--stream",
         dest="stream",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Use the streaming API",
     )
     parser.add_argument(
