@@ -229,16 +229,13 @@ class BaseProvider(abc.ABC):
         self.parsed_options = parsed_options
 
     @abc.abstractmethod
-    def get_url(self):
-        ...
+    def get_url(self): ...
 
     @abc.abstractmethod
-    def format_payload(self, prompt, max_tokens):
-        ...
+    def format_payload(self, prompt, max_tokens, images): ...
 
     @abc.abstractmethod
-    def parse_output_json(self, json, prompt):
-        ...
+    def parse_output_json(self, json, prompt): ...
 
 
 class OpenAIProvider(BaseProvider):
@@ -248,7 +245,7 @@ class OpenAIProvider(BaseProvider):
         else:
             return "/v1/completions"
 
-    def format_payload(self, prompt, max_tokens):
+    def format_payload(self, prompt, max_tokens, images):
         data = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -256,9 +253,24 @@ class OpenAIProvider(BaseProvider):
             "temperature": self.parsed_options.temperature,
         }
         if self.parsed_options.chat:
-            data["messages"] = [{"role": "user", "content": prompt}]
+            if images is None:
+                data["messages"] = [{"role": "user", "content": prompt}]
+            else:
+                image_urls = []
+                for image in images:
+                    image_urls.append(
+                        {"type": "image_url", "image_url": {"url": image}}
+                    )
+                data["messages"] = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}, *image_urls],
+                    }
+                ]
         else:
             data["prompt"] = prompt
+            if images is not None:
+                data["images"] = images
         if self.parsed_options.logprobs is not None:
             data["logprobs"] = self.parsed_options.logprobs
         return data
@@ -286,16 +298,16 @@ class OpenAIProvider(BaseProvider):
 
 
 class FireworksProvider(OpenAIProvider):
-    def format_payload(self, prompt, max_tokens):
-        data = super().format_payload(prompt, max_tokens)
+    def format_payload(self, prompt, max_tokens, images):
+        data = super().format_payload(prompt, max_tokens, images)
         data["min_tokens"] = max_tokens
         data["prompt_cache_max_len"] = 0
         return data
 
 
 class VllmProvider(OpenAIProvider):
-    def format_payload(self, prompt, max_tokens):
-        data = super().format_payload(prompt, max_tokens)
+    def format_payload(self, prompt, max_tokens, images):
+        data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
         return data
 
@@ -305,8 +317,8 @@ class TogetherProvider(OpenAIProvider):
         assert not self.parsed_options.chat, "Chat is not supported"
         return "/"
 
-    def format_payload(self, prompt, max_tokens):
-        data = super().format_payload(prompt, max_tokens)
+    def format_payload(self, prompt, max_tokens, images):
+        data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
         data["stream_tokens"] = data.pop("stream")
         return data
@@ -325,7 +337,8 @@ class TritonInferProvider(BaseProvider):
         assert not self.parsed_options.stream, "Stream is not supported"
         return f"/v2/models/{self.model}/infer"
 
-    def format_payload(self, prompt, max_tokens):
+    def format_payload(self, prompt, max_tokens, images):
+        assert images is None, "images are not supported"
         # matching latest TRT-LLM example, your model configuration might be different
         data = {
             "inputs": [
@@ -394,7 +407,8 @@ class TritonGenerateProvider(BaseProvider):
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/v2/models/{self.model}/generate{stream_suffix}"
 
-    def format_payload(self, prompt, max_tokens):
+    def format_payload(self, prompt, max_tokens, images):
+        assert images is None, "images are not supported"
         data = {
             "text_input": prompt,
             "max_tokens": max_tokens,
@@ -433,7 +447,8 @@ class TgiProvider(BaseProvider):
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/generate{stream_suffix}"
 
-    def format_payload(self, prompt, max_tokens):
+    def format_payload(self, prompt, max_tokens, images):
+        assert images is None, "images are not supported"
         data = {
             "inputs": prompt,
             "parameters": {
@@ -458,12 +473,12 @@ class TgiProvider(BaseProvider):
             # non-streaming response
             return ChunkMetadata(
                 text=data["generated_text"],
-                logprob_tokens=len(data["details"]["tokens"])
-                if "details" in data
-                else None,
-                usage_tokens=data["details"]["generated_tokens"]
-                if "details" in data
-                else None,
+                logprob_tokens=(
+                    len(data["details"]["tokens"]) if "details" in data else None
+                ),
+                usage_tokens=(
+                    data["details"]["generated_tokens"] if "details" in data else None
+                ),
                 prompt_usage_tokens=None,
             )
 
@@ -486,8 +501,12 @@ def _load_curl_like_data(text):
     """
     if text.startswith("@"):
         try:
-            with open(text[1:], "r") as f:
-                return f.read()
+            if text.endswith(".jsonl"):
+                with open(text[1:], "r") as f:
+                    return [json.loads(line) for line in f]
+            else:
+                with open(text[1:], "r") as f:
+                    return f.read()
         except Exception as e:
             raise ValueError(f"Failed to read file {text[1:]}") from e
     else:
@@ -575,11 +594,11 @@ class LLMUser(HttpUser):
         self.stream = self.environment.parsed_options.stream
         prompt_chars = self.environment.parsed_options.prompt_chars
         if self.environment.parsed_options.prompt_text:
-            self.prompt = _load_curl_like_data(
+            self.input = _load_curl_like_data(
                 self.environment.parsed_options.prompt_text
             )
         elif prompt_chars:
-            self.prompt = (
+            self.input = (
                 prompt_prefix * (prompt_chars // len(prompt_prefix) + 1) + prompt
             )[:prompt_chars]
         else:
@@ -591,7 +610,7 @@ class LLMUser(HttpUser):
             assert (
                 self.environment.parsed_options.prompt_tokens >= min_prompt_len
             ), f"Minimal prompt length is {min_prompt_len}"
-            self.prompt = (
+            self.input = (
                 prompt_prefix
                 * (self.environment.parsed_options.prompt_tokens - min_prompt_len)
                 + prompt
@@ -621,7 +640,7 @@ class LLMUser(HttpUser):
         )
         if self.tokenizer:
             self.prompt_tokenizer_tokens = len(
-                self.tokenizer.encode(self._get_prompt())
+                self.tokenizer.encode(self._get_input()[0])
             )
         else:
             self.prompt_tokenizer_tokens = None
@@ -646,24 +665,32 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
-    def _get_prompt(self):
-        if not self.environment.parsed_options.prompt_randomize:
-            return self.prompt
-        # single letters are single tokens
-        return (
-            " ".join(
-                chr(ord("a") + random.randint(0, 25))
-                for _ in range(prompt_random_tokens)
+    def _get_input(self):
+        def _maybe_randomize(prompt):
+            if not self.environment.parsed_options.prompt_randomize:
+                return prompt
+            # single letters are single tokens
+            return (
+                " ".join(
+                    chr(ord("a") + random.randint(0, 25))
+                    for _ in range(prompt_random_tokens)
+                )
+                + " "
+                + prompt
             )
-            + " "
-            + self.prompt
-        )
+
+        if isinstance(self.input, str):
+            return _maybe_randomize(self.input), None
+        else:
+            item = self.input[random.randint(0, len(self.input) - 1)]
+            assert "prompt" in item
+            return _maybe_randomize(item["prompt"]), item.get("images", None)
 
     @task
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        prompt = self._get_prompt()
-        data = self.provider_formatter.format_payload(prompt, max_tokens)
+        prompt, images = self._get_input()
+        data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
         with self.client.post(
@@ -944,9 +971,9 @@ def _(environment, **kw):
 
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
-        entries[
-            "concurrency"
-        ] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
+        entries["concurrency"] = (
+            f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
+        )
     else:
         entries["concurrency"] = InitTracker.users
     for metric_name in [

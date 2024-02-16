@@ -63,7 +63,6 @@ Generation options:
 - `--chat`: specify to call chat API instead of raw completions
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
-- `--max-tokens-jitter`: how much to adjust randomly the setting of `-o` at each request. When using "fixed concurrency" mode it's useful to avoid all workers implicitly synchronizing and causing periodic traffic bursts.
 
 ### Writing results
 
@@ -75,6 +74,16 @@ When comparing multiple configurations, it's useful to aggregate results togethe
 - `-t`: duration (e.g. `5min`) for which to run the test (standard Locust option). It's particularly useful when scripting multiple runs. By default, the test runs without a limit until Ctrl+C is pressed.
 
 The typical workflow would be to run benchmark several times appending to the same CSV file. The resulting file can be imported into a spreadsheet or pandas for further analysis.
+
+### Custom prompts
+
+Sometimes it's necessary to replay exact prompts, for example in the case of embedding images.
+`--prompt-text` option can be used in this case to specify a file with .jsonl extension (starting with an ampersand, e.g. `@prompt.jsonl`.).
+jsonl files will be read line-by-line and will be randomly chosen for each request. Each line has to have a valid JSON object with 'prompt' and optional 'images' keys. For example:
+```
+{"prompt": "<image>What color is the cat?", images: ["data:image/jpeg;base64,BASE_64_DATA]}
+{"prompt": "<image>What color is the dog?", images: ["data:image/jpeg;base64,BASE_64_DATA]}
+```
 
 ## Examples
 
