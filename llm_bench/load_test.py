@@ -254,7 +254,13 @@ class OpenAIProvider(BaseProvider):
         }
         if self.parsed_options.chat:
             if images is None:
-                data["messages"] = [{"role": "user", "content": prompt}]
+                if isinstance(prompt, str):
+                    data["messages"] = [{"role": "user", "content": prompt}]
+                elif isinstance(prompt, list):
+                    data["messages"] = prompt
+                else:
+                    print(f"ERROR: unrecognized prompt datatype")
+                    exit(1)
             else:
                 image_urls = []
                 for image in images:
@@ -683,8 +689,14 @@ class LLMUser(HttpUser):
             return _maybe_randomize(self.input), None
         else:
             item = self.input[random.randint(0, len(self.input) - 1)]
-            assert "prompt" in item
-            return _maybe_randomize(item["prompt"]), item.get("images", None)
+            if isinstance(item, list):
+                return item, None
+            elif isinstance(item, dict):
+                assert "prompt" in item
+                return _maybe_randomize(item["prompt"]), item.get("images", None)
+            else:
+                print("ERROR: unknown input prompt type")
+                exit(1)
 
     @task
     def generate_text(self):
