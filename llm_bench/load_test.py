@@ -35,8 +35,8 @@ def add_custom_metric(name, value, length_value=0):
 prompt_prefix = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
 prompt = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
-prompt_tokens = 35  # from Llama tokenizer tool (so we don't import it here)
-prompt_random_tokens = 10
+k_prompt_tokens = 35  # from Llama tokenizer tool (so we don't import it here)
+k_prompt_random_tokens = 10
 
 
 class FixedQPSPacer:
@@ -141,6 +141,19 @@ class LengthSampler:
         if self.cap is not None:
             s += f" capped at {self.cap}"
         return s
+
+class CycleLength:
+    def __init__(self, lengths):
+        self.lengths = lengths
+        self.idx = 0
+
+    def sample(self):
+        r = self.lengths[self.idx]
+        self.idx = (self.idx + 1) % len(self.lengths)
+        return r
+
+    def __str__(self):
+        return str(self.lengths)
 
 
 class InitTracker:
@@ -579,6 +592,19 @@ class LLMUser(HttpUser):
                     f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}"
                 )
 
+    def _get_fixed_prompt(self, tokens):
+        min_prompt_len = (
+            k_prompt_tokens
+            + k_prompt_random_tokens
+            * self.environment.parsed_options.prompt_randomize
+        )
+        assert tokens >= min_prompt_len, f"Minimal prompt length is {min_prompt_len}"
+        return (
+            prompt_prefix
+            * (tokens - min_prompt_len)
+            + prompt
+        )
+
     def _on_start(self):
         self.client.headers["Content-Type"] = "application/json"
         if self.environment.parsed_options.api_key:
@@ -593,35 +619,41 @@ class LLMUser(HttpUser):
 
         self.stream = self.environment.parsed_options.stream
         prompt_chars = self.environment.parsed_options.prompt_chars
+        self.input_idx = None
         if self.environment.parsed_options.prompt_text:
             self.input = _load_curl_like_data(
                 self.environment.parsed_options.prompt_text
             )
+        elif self.environment.parsed_options.cycle_prompt_tokens:
+            self.input = [
+                {"prompt": self._get_fixed_prompt(num_tokens)}
+                for num_tokens in self.environment.parsed_options.cycle_prompt_tokens
+            ]
+            self.input_idx = 0
         elif prompt_chars:
             self.input = (
                 prompt_prefix * (prompt_chars // len(prompt_prefix) + 1) + prompt
             )[:prompt_chars]
         else:
-            min_prompt_len = (
-                prompt_tokens
-                + prompt_random_tokens
-                * self.environment.parsed_options.prompt_randomize
+            self.input = self._get_fixed_prompt(self.environment.parsed_options.prompt_tokens)
+        if self.environment.parsed_options.cycle_max_tokens:
+            self.max_tokens_sampler = CycleLength(
+                self.environment.parsed_options.cycle_max_tokens
             )
-            assert (
-                self.environment.parsed_options.prompt_tokens >= min_prompt_len
-            ), f"Minimal prompt length is {min_prompt_len}"
-            self.input = (
-                prompt_prefix
-                * (self.environment.parsed_options.prompt_tokens - min_prompt_len)
-                + prompt
+        else:
+            self.max_tokens_sampler = LengthSampler(
+                distribution=self.environment.parsed_options.max_tokens_distribution,
+                mean=self.environment.parsed_options.max_tokens,
+                cap=self.environment.parsed_options.max_tokens_cap,
+                alpha=self.environment.parsed_options.max_tokens_range,
             )
-        self.max_tokens_sampler = LengthSampler(
-            distribution=self.environment.parsed_options.max_tokens_distribution,
-            mean=self.environment.parsed_options.max_tokens,
-            cap=self.environment.parsed_options.max_tokens_cap,
-            alpha=self.environment.parsed_options.max_tokens_range,
-        )
         self.temperature = self.environment.parsed_options.temperature
+
+        self.num_seq_requests = 1
+        if self.environment.parsed_options.cycle_max_tokens or self.environment.parsed_options.cycle_prompt_tokens:
+            if self.environment.parsed_options.cycle_max_tokens and self.environment.parsed_options.cycle_prompt_tokens:
+                assert len(self.environment.parsed_options.cycle_max_tokens) == len(self.environment.parsed_options.cycle_prompt_tokens)
+            self.num_seq_requests = len(self.environment.parsed_options.cycle_max_tokens or self.environment.parsed_options.cycle_prompt_tokens)
 
         logging_params = {
             # TODO: add some server info with git version
@@ -673,7 +705,7 @@ class LLMUser(HttpUser):
             return (
                 " ".join(
                     chr(ord("a") + random.randint(0, 25))
-                    for _ in range(prompt_random_tokens)
+                    for _ in range(k_prompt_random_tokens)
                 )
                 + " "
                 + prompt
@@ -682,12 +714,25 @@ class LLMUser(HttpUser):
         if isinstance(self.input, str):
             return _maybe_randomize(self.input), None
         else:
-            item = self.input[random.randint(0, len(self.input) - 1)]
+            if self.input_idx is not None:
+                item = self.input[self.input_idx]
+                self.input_idx = (self.input_idx + 1) % len(self.input)
+            else:
+                item = self.input[random.randint(0, len(self.input) - 1)]
             assert "prompt" in item
             return _maybe_randomize(item["prompt"]), item.get("images", None)
 
     @task
     def generate_text(self):
+        if self.num_seq_requests == 1:
+            self._generate_text()
+            return
+        t_start = time.perf_counter()
+        for _ in range(self.num_seq_requests):
+            self._generate_text()
+        add_custom_metric("request_batch_latency", (time.perf_counter() - t_start)*1000)
+
+    def _generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
         prompt, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
@@ -821,6 +866,12 @@ class LLMUser(HttpUser):
                 self.first_done = True
                 InitTracker.notify_first_request()
 
+def comma_separated_integers(value):
+    try:
+        # Split the string by commas and convert each part to an integer
+        return [int(i) for i in value.split(',')]
+    except ValueError:
+        raise argparse.ArgumentTypeError("Each item in the list should be an integer")
 
 @events.init_command_line_parser.add_listener
 def init_parser(parser):
@@ -852,6 +903,11 @@ def init_parser(parser):
         help="Length of the prompt in tokens. Default 512",
     )
     parser.add_argument(
+        "--cycle-prompt-tokens",
+        type=comma_separated_integers,
+        help="Comma-separated list of prompt length to cycle through",
+    )
+    parser.add_argument(
         "--prompt-chars",
         env_var="PROMPT_CHARS",
         type=int,
@@ -876,6 +932,11 @@ def init_parser(parser):
         type=int,
         default=64,
         help="Max number of tokens to generate. If --max-tokens-distribution is non-constant this is going to be the mean. Defaults to 64",
+    )
+    parser.add_argument(
+        "--cycle-max-tokens",
+        type=comma_separated_integers,
+        help="Comma-separated list of max_tokens to cycle through. If specified, disables all distribution numbers",
     )
     parser.add_argument(
         "--max-tokens-cap",
