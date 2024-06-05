@@ -32,11 +32,10 @@ def add_custom_metric(name, value, length_value=0):
     )
 
 
-prompt_prefix = "Pad "  # exactly one token
+PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
-prompt = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
-prompt_tokens = 35  # from Llama tokenizer tool (so we don't import it here)
-prompt_random_tokens = 10
+PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
+PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
 
 
 class FixedQPSPacer:
@@ -599,21 +598,17 @@ class LLMUser(HttpUser):
             )
         elif prompt_chars:
             self.input = (
-                prompt_prefix * (prompt_chars // len(prompt_prefix) + 1) + prompt
+                PROMPT_PREFIX_TOKEN * (prompt_chars // len(PROMPT_PREFIX_TOKEN) + 1)
+                + PROMPT_SUFFIX
             )[:prompt_chars]
         else:
-            min_prompt_len = (
-                prompt_tokens
-                + prompt_random_tokens
-                * self.environment.parsed_options.prompt_randomize
-            )
             assert (
-                self.environment.parsed_options.prompt_tokens >= min_prompt_len
-            ), f"Minimal prompt length is {min_prompt_len}"
+                self.environment.parsed_options.prompt_tokens >= PROMPT_SUFFIX_TOKENS
+            ), f"Minimal prompt length is {PROMPT_SUFFIX_TOKENS}"
             self.input = (
-                prompt_prefix
-                * (self.environment.parsed_options.prompt_tokens - min_prompt_len)
-                + prompt
+                PROMPT_PREFIX_TOKEN
+                * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
+                + PROMPT_SUFFIX
             )
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
@@ -669,14 +664,18 @@ class LLMUser(HttpUser):
         def _maybe_randomize(prompt):
             if not self.environment.parsed_options.prompt_randomize:
                 return prompt
+
             # single letters are single tokens
+            num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(
+                PROMPT_PREFIX_TOKEN
+            )
             return (
                 " ".join(
                     chr(ord("a") + random.randint(0, 25))
-                    for _ in range(prompt_random_tokens)
+                    for _ in range(num_random_tokens)
                 )
                 + " "
-                + prompt
+                + prompt[-len(PROMPT_SUFFIX) :]
             )
 
         if isinstance(self.input, str):
