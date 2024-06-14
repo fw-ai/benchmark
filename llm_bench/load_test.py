@@ -300,7 +300,7 @@ class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         data["min_tokens"] = max_tokens
-        data["prompt_cache_max_len"] = 0
+        data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         return data
 
 
@@ -957,6 +957,14 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Print the result of each generation",
+    )
+    parser.add_argument(
+        "-pcml",
+        "--prompt-cache-max-len",
+        env_var="PROMPT_CACHE_MAX_LEN",
+        type=int,
+        default=0,
+        help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
     )
 
 
