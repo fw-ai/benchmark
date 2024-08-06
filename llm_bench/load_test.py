@@ -921,7 +921,7 @@ def init_parser(parser):
         "--stream-usage",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Use stream_options.include_usage for OpenAI Compitable API",
+        help="Use stream_options.include_usage for OpenAI Compatible API",
     )
     parser.add_argument(
         "-k",
