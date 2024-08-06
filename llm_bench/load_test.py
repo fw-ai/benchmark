@@ -990,7 +990,6 @@ def init_parser(parser):
 def verify_arguments(environment, **kw):
     if not environment.parsed_options.stream and environment.parsed_options.stream_usage:
         print("WARNING: --stream-usage is set with --no-stream, ignoring")
-    # exit(1)
 
 @events.quitting.add_listener
 def _(environment, **kw):
