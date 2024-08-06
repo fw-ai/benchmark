@@ -272,22 +272,27 @@ class OpenAIProvider(BaseProvider):
                 data["images"] = images
         if self.parsed_options.logprobs is not None:
             data["logprobs"] = self.parsed_options.logprobs
+        if self.parsed_options.stream and self.parsed_options.stream_usage:
+            data["stream_options"] = {"include_usage": True}
         return data
 
     def parse_output_json(self, data, prompt):
         usage = data.get("usage", None)
 
-        assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
-        choice = data["choices"][0]
-        if self.parsed_options.chat:
-            if self.parsed_options.stream:
-                text = choice["delta"].get("content", "")
+        assert len(data["choices"]) <= 1, f"Too many choices {len(data['choices'])}"
+        if len(data["choices"]) > 0:
+            choice = data["choices"][0]
+            if self.parsed_options.chat:
+                if self.parsed_options.stream:
+                    text = choice["delta"].get("content", "")
+                else:
+                    text = choice["message"]["content"]
             else:
-                text = choice["message"]["content"]
+                text = choice["text"]
+            logprobs = choice.get("logprobs", None)
         else:
-            text = choice["text"]
-
-        logprobs = choice.get("logprobs", None)
+            text = ""
+            logprobs = None
         return ChunkMetadata(
             text=text,
             logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
@@ -734,9 +739,12 @@ class LLMUser(HttpUser):
                     data = orjson.loads(chunk)
                     out = self.provider_formatter.parse_output_json(data, prompt)
                     if out.usage_tokens:
-                        total_usage_tokens = (
-                            total_usage_tokens or 0
-                        ) + out.usage_tokens
+                        if self.stream:
+                            total_usage_tokens = out.usage_tokens
+                        else:
+                            total_usage_tokens = (
+                                total_usage_tokens or 0
+                            ) + out.usage_tokens
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
                     combined_text += out.text
@@ -903,6 +911,12 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Use the streaming API",
+    )
+    parser.add_argument(
+        "--stream-usage",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use stream_options.include_usage for the streaming API",
     )
     parser.add_argument(
         "-k",
