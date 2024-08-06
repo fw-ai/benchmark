@@ -339,6 +339,7 @@ class TritonInferProvider(BaseProvider):
     def get_url(self):
         assert not self.parsed_options.chat, "Chat is not supported"
         assert not self.parsed_options.stream, "Stream is not supported"
+        assert not self.parsed_options.stream_usage, "Stream usage is not supported"
         return f"/v2/models/{self.model}/infer"
 
     def format_payload(self, prompt, max_tokens, images):
@@ -408,6 +409,7 @@ class TritonGenerateProvider(BaseProvider):
 
     def get_url(self):
         assert not self.parsed_options.chat, "Chat is not supported"
+        assert not self.parsed_options.stream_usage, "Stream usage is not supported"
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/v2/models/{self.model}/generate{stream_suffix}"
 
@@ -448,6 +450,7 @@ class TgiProvider(BaseProvider):
 
     def get_url(self):
         assert not self.parsed_options.chat, "Chat is not supported"
+        assert not self.parsed_options.stream_usage, "Stream usage is not supported"
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/generate{stream_suffix}"
 
@@ -596,6 +599,7 @@ class LLMUser(HttpUser):
         )
 
         self.stream = self.environment.parsed_options.stream
+        self.stream_usage = self.environment.parsed_options.stream_usage
         prompt_chars = self.environment.parsed_options.prompt_chars
         if self.environment.parsed_options.prompt_text:
             self.input = _load_curl_like_data(
@@ -739,7 +743,8 @@ class LLMUser(HttpUser):
                     data = orjson.loads(chunk)
                     out = self.provider_formatter.parse_output_json(data, prompt)
                     if out.usage_tokens:
-                        if self.stream:
+                        if self.stream and self.stream_usage:
+                            # vllm contains usage in every chunk, cumulative manner
                             total_usage_tokens = out.usage_tokens
                         else:
                             total_usage_tokens = (
@@ -915,8 +920,8 @@ def init_parser(parser):
     parser.add_argument(
         "--stream-usage",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use stream_options.include_usage for the streaming API",
+        default=False,
+        help="Use stream_options.include_usage for OpenAI Compitable API",
     )
     parser.add_argument(
         "-k",
@@ -981,6 +986,11 @@ def init_parser(parser):
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
     )
 
+@events.init.add_listener
+def verify_arguments(environment, **kw):
+    if not environment.parsed_options.stream and environment.parsed_options.stream_usage:
+        print("WARNING: --stream-usage is set with --no-stream, ignoring")
+    # exit(1)
 
 @events.quitting.add_listener
 def _(environment, **kw):
