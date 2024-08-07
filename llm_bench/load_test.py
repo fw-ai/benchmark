@@ -584,6 +584,10 @@ class LLMUser(HttpUser):
             self.client.headers["Authorization"] = (
                 "Bearer " + self.environment.parsed_options.api_key
             )
+        if self.environment.parsed_options.header:
+            for header in self.environment.parsed_options.header:
+                key, val = header.split(":", 1)
+                self.client.headers[key] = val
         self._guess_provider()
         print(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](
@@ -965,6 +969,12 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        help="Arbitrary headers to add to the inference request. Can be used multiple times. For example, --header header1:value1 --header header2:value2",
     )
 
 
