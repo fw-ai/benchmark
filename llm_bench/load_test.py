@@ -290,7 +290,7 @@ class OpenAIProvider(BaseProvider):
         logprobs = choice.get("logprobs", None)
         return ChunkMetadata(
             text=text,
-            logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
+            logprob_tokens=len(logprobs["content"]) if logprobs else None,
             usage_tokens=usage["completion_tokens"] if usage else None,
             prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
         )
@@ -923,7 +923,8 @@ def init_parser(parser):
     )
     parser.add_argument(
         "--logprobs",
-        type=int,
+        type=bool,
+        action=argparse.BooleanOptionalAction,
         default=None,
         help="Whether to ask for logprobs, it makes things slower for some providers but is necessary for token count in streaming (unless it's Fireworks API that returns usage in streaming mode)",
     )
