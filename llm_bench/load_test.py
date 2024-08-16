@@ -485,6 +485,7 @@ class TgiProvider(BaseProvider):
 PROVIDER_CLASS_MAP = {
     "fireworks": FireworksProvider,
     "vllm": VllmProvider,
+    "sglang": VllmProvider,
     "openai": OpenAIProvider,
     "anyscale": OpenAIProvider,
     "together": TogetherProvider,
@@ -571,7 +572,7 @@ class LLMUser(HttpUser):
                 raise ValueError(
                     f"Model {self.model} not found in /v1/models. Specify --provider explicitly"
                 )
-            if owned_by in ["vllm", "fireworks"]:
+            if owned_by in PROVIDER_CLASS_MAP:
                 self.provider = owned_by
             else:
                 raise ValueError(
@@ -702,7 +703,6 @@ class LLMUser(HttpUser):
             stream=True,
             catch_response=True,
         ) as response:
-            dur_chunks = []
             combined_text = ""
             done = False
             prompt_usage_tokens = self.prompt_tokenizer_tokens
@@ -714,10 +714,6 @@ class LLMUser(HttpUser):
                 raise RuntimeError(f"Error in response: {response.text}") from e
             t_first_token = None
             for chunk in response.iter_lines(delimiter=b"\n\n"):
-                if t_first_token is None:
-                    t_first_token = time.perf_counter()
-                    t_prev = time.perf_counter()
-
                 if len(chunk) == 0:
                     continue  # come providers send empty lines between data chunks
                 if done:
@@ -725,8 +721,6 @@ class LLMUser(HttpUser):
                         print(f"WARNING: Received more chunks after [DONE]: {chunk}")
                 try:
                     now = time.perf_counter()
-                    dur_chunks.append(now - t_prev)
-                    t_prev = now
                     if self.stream:
                         assert chunk.startswith(
                             b"data:"
@@ -744,6 +738,11 @@ class LLMUser(HttpUser):
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
                     combined_text += out.text
+
+                    # some providers (SGLang) send an empty chunk first skewing the TTFT
+                    if combined_text and t_first_token is None:
+                        t_first_token = now
+
 
                     if out.logprob_tokens:
                         total_logprob_tokens = (
