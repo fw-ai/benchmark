@@ -14,6 +14,7 @@ import json
 import time
 import orjson
 import threading
+import tiktoken
 
 try:
     import locust_plugins
@@ -634,9 +635,8 @@ class LLMUser(HttpUser):
         }
         InitTracker.notify_init(self.environment, logging_params)
 
-        self.tokenizer = InitTracker.load_tokenizer(
-            self.environment.parsed_options.tokenizer
-        )
+        self.tokenizer = tiktoken.encoding_for_model("gpt-4")
+
         if self.tokenizer:
             self.prompt_tokenizer_tokens = len(
                 self.tokenizer.encode(self._get_input()[0])
@@ -794,6 +794,7 @@ class LLMUser(HttpUser):
             if self.stream:
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
+            add_custom_metric("throughput (out tok/s)", num_tokenizer_tokens/(dur_total - dur_first_token))
             if num_tokens:
                 if num_tokens != max_tokens:
                     print(
