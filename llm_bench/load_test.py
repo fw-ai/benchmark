@@ -1008,14 +1008,13 @@ def _(environment, **kw):
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
-    ttft_metrics = environment.stats.entries["time_to_first_token", "METRIC"]
-    entries["p50_ttft"] = ttft_metrics.get_response_time_percentile(0.50)
-    entries["p90_ttft"] = ttft_metrics.get_response_time_percentile(0.90)
-    entries["p99_ttft"] = ttft_metrics.get_response_time_percentile(0.99)
-    latency_metrics = environment.stats.entries["total_latency", "METRIC"]
-    entries["p50_latency"] = latency_metrics.get_response_time_percentile(0.50)
-    entries["p90_latency"] = latency_metrics.get_response_time_percentile(0.90)
-    entries["p99_latency"] = latency_metrics.get_response_time_percentile(0.99)
+    percentile_to_report = [50, 90, 99, 99.9]
+    percentile_metrics = ["time_to_first_token", "total_latency"]
+    for percentile_metrics in percentile_metrics:
+        metrics = environment.stats.entries[percentile_metrics, "METRIC"]
+        for percentile in percentile_to_report:
+            name = "P" + str(percentile) + "_" + percentile_metrics
+            entries[name] = metrics.get_response_time_percentile(percentile/100)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
