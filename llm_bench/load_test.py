@@ -1008,6 +1008,14 @@ def _(environment, **kw):
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
+    ttft_metrics = environment.stats.entries["time_to_first_token", "METRIC"]
+    entries["p50_ttft"] = ttft_metrics.get_response_time_percentile(0.50)
+    entries["p90_ttft"] = ttft_metrics.get_response_time_percentile(0.90)
+    entries["p99_ttft"] = ttft_metrics.get_response_time_percentile(0.99)
+    latency_metrics = environment.stats.entries["total_latency", "METRIC"]
+    entries["p50_latency"] = latency_metrics.get_response_time_percentile(0.50)
+    entries["p90_latency"] = latency_metrics.get_response_time_percentile(0.90)
+    entries["p99_latency"] = latency_metrics.get_response_time_percentile(0.99)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
