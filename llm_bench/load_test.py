@@ -1013,7 +1013,7 @@ def _(environment, **kw):
     for percentile_metric in percentile_metrics:
         metrics = environment.stats.entries[percentile_metric, "METRIC"]
         for percentile in percentile_to_report:
-            name = "P" + str(percentile) + "_" + percentile_metric
+            name = f"P{percentile}_{percentile_metric}"
             entries[name] = metrics.get_response_time_percentile(percentile/100)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
