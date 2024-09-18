@@ -102,7 +102,7 @@ locust -t 1min -u 100 -r 100 -p 512 -o 128 --stream --chat --qps 0.5 --summary-f
 Benchmark Fireworks public deployment deployment with 1 request only:
 
 ```bash
-locust -u 1 -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v2-7b
+locust -u 1 -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v3-8b
 ```
 
 Benchmark OpenAI deployment with 1 request only:
