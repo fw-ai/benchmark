@@ -32,12 +32,35 @@ def add_custom_metric(name, value, length_value=0):
         context=None,
     )
 
+prompts = [
+    "Describe how reinforcement learning differs from supervised learning, and provide real-world applications of both.",
+    "Explain the process of building a machine learning model from data collection to model deployment. Include the tools and techniques commonly used at each stage.",
+    "Compare and contrast the major cloud service providers (AWS, GCP, and Azure). Highlight their strengths and weaknesses in terms of scalability, pricing, and service offerings.",
+    "Discuss the current cybersecurity landscape and the most prevalent types of attacks. What are the best practices organizations can implement to protect their networks?",
+    "How does quantum computing differ from classical computing? Explain how quantum bits (qubits) function and describe a potential use case for quantum supremacy.",
+    "Examine the role of smart contracts in blockchain technology. How do they work, and what are the most common challenges in implementing them?",
+    "Describe the concept of black holes in astrophysics. What theories exist to explain their formation, and what mysteries remain unsolved?",
+    "Outline the periodic table's organization and how it reflects the electronic structure of elements. Explain trends such as electronegativity and atomic radius.",
+    "How does CRISPR-Cas9 technology work, and what are its ethical implications in genetic engineering?",
+    "Analyze the long-term impact of the Industrial Revolution on society, politics, and economics in Europe.",
+    "Compare the philosophies of existentialism and utilitarianism. How do they approach the question of what constitutes a 'good life'?",
+    "Discuss the psychological concept of cognitive dissonance and how it influences human behavior and decision-making.",
+    "How do social media platforms impact modern social interactions, relationships, and individual self-esteem?",
+    "Explain the concept of supply and demand in a market economy. How do government policies, such as subsidies or tariffs, affect these forces?",
+    "Evaluate the advantages and disadvantages of a federal system of government compared to a unitary system, using specific countries as examples.",
+    "Analyze the themes of isolation and identity in Mary Shelley's Frankenstein. How do these themes reflect the broader social concerns of the time?",
+    "Discuss the major environmental challenges posed by climate change. What are the most viable solutions to mitigate its impact?",
+    "What are the latest advancements in personalized medicine? Discuss how genomic data is used to tailor treatments to individual patients.",
+    "Compare the structural properties of steel and carbon fiber. In which applications would you prefer one over the other, and why?",
+    "Explain the concept of non-Euclidean geometry and its implications in fields like physics and computer science. How does it differ from traditional Euclidean geometry?"
+]
+
 
 PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
 PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
 PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
-
+tokenizer = tiktoken.encoding_for_model("gpt-4")
 
 class FixedQPSPacer:
     _instance = None
@@ -350,7 +373,7 @@ class TritonInferProvider(BaseProvider):
                 },
                 {
                     "name": "max_tokens",
-                    "datatype": "UINT32",
+                    "datatype": "INT32",
                     "shape": [1, 1],
                     "data": [[max_tokens]],
                 },
@@ -597,6 +620,10 @@ class LLMUser(HttpUser):
 
         self.stream = self.environment.parsed_options.stream
         prompt_chars = self.environment.parsed_options.prompt_chars
+
+        prompt_suffix = random.choice(prompts)
+        prompt_suffix_tokens = len(tokenizer.encode(prompt_suffix))
+
         if self.environment.parsed_options.prompt_text:
             self.input = _load_curl_like_data(
                 self.environment.parsed_options.prompt_text
@@ -604,16 +631,16 @@ class LLMUser(HttpUser):
         elif prompt_chars:
             self.input = (
                 PROMPT_PREFIX_TOKEN * (prompt_chars // len(PROMPT_PREFIX_TOKEN) + 1)
-                + PROMPT_SUFFIX
+                + prompt_suffix
             )[:prompt_chars]
         else:
             assert (
-                self.environment.parsed_options.prompt_tokens >= PROMPT_SUFFIX_TOKENS
-            ), f"Minimal prompt length is {PROMPT_SUFFIX_TOKENS}"
+                self.environment.parsed_options.prompt_tokens >= prompt_suffix_tokens
+            ), f"Minimal prompt length is {prompt_suffix_tokens}"
             self.input = (
                 PROMPT_PREFIX_TOKEN
-                * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
-                + PROMPT_SUFFIX
+                * (self.environment.parsed_options.prompt_tokens - prompt_suffix_tokens)
+                + prompt_suffix
             )
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
@@ -682,12 +709,16 @@ class LLMUser(HttpUser):
                 + prompt[-len(PROMPT_SUFFIX) :]
             )
 
+        prompt_suffix = random.choice(prompts)
+        prompt_suffix_tokens = len(tokenizer.encode(prompt_suffix))
+        prompt = (PROMPT_PREFIX_TOKEN
+                * (self.environment.parsed_options.prompt_tokens - prompt_suffix_tokens)) + prompt_suffix
         if isinstance(self.input, str):
-            return _maybe_randomize(self.input), None
+            return _maybe_randomize(prompt), None
         else:
             item = self.input[random.randint(0, len(self.input) - 1)]
             assert "prompt" in item
-            return _maybe_randomize(item["prompt"]), item.get("images", None)
+            return _maybe_randomize(prompt), item.get("images", None)
 
     @task
     def generate_text(self):
@@ -793,8 +824,12 @@ class LLMUser(HttpUser):
                 )
             if self.stream:
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
+                add_custom_metric("throughput (out tok/s)", num_tokenizer_tokens/(dur_total - dur_first_token))
+            else:
+                add_custom_metric("throughput (out tok/s)", num_tokenizer_tokens/(dur_total))
+                
             add_custom_metric("total_latency", dur_total * 1000)
-            add_custom_metric("throughput (out tok/s)", num_tokenizer_tokens/(dur_total - dur_first_token))
+            
             if num_tokens:
                 if num_tokens != max_tokens:
                     print(
@@ -906,7 +941,7 @@ def init_parser(parser):
         "--stream",
         dest="stream",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Use the streaming API",
     )
     parser.add_argument(
