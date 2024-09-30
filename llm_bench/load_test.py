@@ -264,9 +264,9 @@ class BaseProvider(abc.ABC):
 class OpenAIProvider(BaseProvider):
     def get_url(self):
         if self.parsed_options.chat:
-            return "/v1/chat/completions"
+            return "/chat/completions"
         else:
-            return "/v1/completions"
+            return "/completions"
 
     def format_payload(self, prompt, max_tokens, images):
         data = {
@@ -807,6 +807,10 @@ class LLMUser(HttpUser):
                     )
             num_tokens = num_tokens or 0
             num_chars = len(combined_text)
+            # print(combined_text)
+            if "RST_" in combined_text:
+                print(f"Error: {combined_text}")
+
             now = time.perf_counter()
             dur_total = now - t_start
             dur_generation = now - t_first_token

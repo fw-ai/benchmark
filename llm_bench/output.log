@@ -1,0 +1,953 @@
+locust-plugins is not installed, Grafana won't work
+[2024-09-30 19:17:09,634] mobavenue-cluster-1/INFO/locust.main: Run time limit set to 120 seconds
+[2024-09-30 19:17:09,634] mobavenue-cluster-1/INFO/locust.main: Starting Locust 2.18.1
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                         0     0(0.00%) |      0       0       0      0 |    0.00        0.00
+
+[2024-09-30 19:17:09,635] mobavenue-cluster-1/INFO/locust.runners: Ramping to 1 users at a rate of 1.00 per second
+[2024-09-30 19:17:09,636] mobavenue-cluster-1/INFO/locust.runners: All users spawned: {"LLMUser": 1} (1 total users)
+[2024-09-30 19:17:09,636] mobavenue-cluster-1/INFO/locust.runners: Resetting stats
+
+********************* Provider openai using model llama3_1 *********************
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                         0     0(0.00%) |      0       0       0      0 |    0.00        0.00
+
+Response received: total 1803.17 ms, first token 191.07 ms, 2273 chars, 500 tokens
+Response received: total 1613.51 ms, first token 84.56 ms, 2620 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                  2     0(0.00%) |     98      44     153     44 |    0.00        0.00
+METRIC   latency_per_char                                                                   2     0(0.00%) |      0       0       0      0 |    0.00        0.00
+METRIC   latency_per_token                                                                  2     0(0.00%) |      3       3       3      3 |    0.00        0.00
+METRIC   num_tokens                                                                         2     0(0.00%) |    500     500     500    500 |    0.00        0.00
+METRIC   overall_latency_per_token                                                          2     0(0.00%) |      3       3       3      3 |    0.00        0.00
+METRIC   prompt_tokens                                                                      2     0(0.00%) |   1000    1000    1000   1000 |    0.00        0.00
+METRIC   throughput (out tok/s)                                                             2     0(0.00%) |    318     310     327    310 |    0.00        0.00
+METRIC   time_to_first_token                                                                2     0(0.00%) |    137      84     191     85 |    0.00        0.00
+METRIC   total_latency                                                                      2     0(0.00%) |   1708    1613    1803   1613 |    0.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        18     0(0.00%) |    418       0    1803    150 |    0.00        0.00
+
+Response received: total 1647.00 ms, first token 86.63 ms, 2295 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                  3     0(0.00%) |     80      43     153     44 |    0.33        0.00
+METRIC   latency_per_char                                                                   3     0(0.00%) |      0       0       0      0 |    0.33        0.00
+METRIC   latency_per_token                                                                  3     0(0.00%) |      3       3       3      3 |    0.33        0.00
+METRIC   num_tokens                                                                         3     0(0.00%) |    500     500     500    500 |    0.33        0.00
+METRIC   overall_latency_per_token                                                          3     0(0.00%) |      3       3       3      3 |    0.33        0.00
+METRIC   prompt_tokens                                                                      3     0(0.00%) |   1000    1000    1000   1000 |    0.33        0.00
+METRIC   throughput (out tok/s)                                                             3     0(0.00%) |    319     310     327    320 |    0.33        0.00
+METRIC   time_to_first_token                                                                3     0(0.00%) |    120      84     191     87 |    0.33        0.00
+METRIC   total_latency                                                                      3     0(0.00%) |   1687    1613    1803   1613 |    0.33        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        27     0(0.00%) |    412       0    1803    150 |    3.00        0.00
+
+Response received: total 1698.01 ms, first token 90.51 ms, 2508 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                  4     0(0.00%) |     71      43     153     44 |    0.40        0.00
+METRIC   latency_per_char                                                                   4     0(0.00%) |      0       0       0      0 |    0.40        0.00
+METRIC   latency_per_token                                                                  4     0(0.00%) |      3       3       3      3 |    0.40        0.00
+METRIC   num_tokens                                                                         4     0(0.00%) |    500     500     500    500 |    0.40        0.00
+METRIC   overall_latency_per_token                                                          4     0(0.00%) |      3       3       3      3 |    0.40        0.00
+METRIC   prompt_tokens                                                                      4     0(0.00%) |   1000    1000    1000   1000 |    0.40        0.00
+METRIC   throughput (out tok/s)                                                             4     0(0.00%) |    317     310     327    310 |    0.40        0.00
+METRIC   time_to_first_token                                                                4     0(0.00%) |    113      84     191     87 |    0.40        0.00
+METRIC   total_latency                                                                      4     0(0.00%) |   1690    1613    1803   1613 |    0.40        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        36     0(0.00%) |    411       0    1803     91 |    3.60        0.00
+
+Response received: total 2465.30 ms, first token 94.57 ms, 2804 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                  5     0(0.00%) |     65      43     153     44 |    0.50        0.00
+METRIC   latency_per_char                                                                   5     0(0.00%) |      0       0       0      0 |    0.50        0.00
+METRIC   latency_per_token                                                                  5     0(0.00%) |      3       3       4      3 |    0.50        0.00
+METRIC   num_tokens                                                                         5     0(0.00%) |    500     500     500    500 |    0.50        0.00
+METRIC   overall_latency_per_token                                                          5     0(0.00%) |      3       3       4      3 |    0.50        0.00
+METRIC   prompt_tokens                                                                      5     0(0.00%) |   1000    1000    1000   1000 |    0.50        0.00
+METRIC   throughput (out tok/s)                                                             5     0(0.00%) |    295     210     327    310 |    0.50        0.00
+METRIC   time_to_first_token                                                                5     0(0.00%) |    109      84     191     91 |    0.50        0.00
+METRIC   total_latency                                                                      5     0(0.00%) |   1845    1613    2465   1700 |    0.50        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        45     0(0.00%) |    424       0    2465     95 |    4.50        0.00
+
+Response received: total 1737.54 ms, first token 85.26 ms, 2551 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                  6     0(0.00%) |     62      43     153     44 |    0.44        0.00
+METRIC   latency_per_char                                                                   6     0(0.00%) |      0       0       0      0 |    0.44        0.00
+METRIC   latency_per_token                                                                  6     0(0.00%) |      3       3       4      3 |    0.44        0.00
+METRIC   num_tokens                                                                         6     0(0.00%) |    500     500     500    500 |    0.44        0.00
+METRIC   overall_latency_per_token                                                          6     0(0.00%) |      3       3       4      3 |    0.44        0.00
+METRIC   prompt_tokens                                                                      6     0(0.00%) |   1000    1000    1000   1000 |    0.44        0.00
+METRIC   throughput (out tok/s)                                                             6     0(0.00%) |    297     210     327    310 |    0.44        0.00
+METRIC   time_to_first_token                                                                6     0(0.00%) |    105      84     191     87 |    0.44        0.00
+METRIC   total_latency                                                                      6     0(0.00%) |   1827    1613    2465   1700 |    0.44        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        54     0(0.00%) |    422       0    2465     91 |    4.00        0.00
+
+Response received: total 1649.42 ms, first token 82.24 ms, 2470 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                  7     0(0.00%) |     59      43     153     45 |    0.50        0.00
+METRIC   latency_per_char                                                                   7     0(0.00%) |      0       0       0      0 |    0.50        0.00
+METRIC   latency_per_token                                                                  7     0(0.00%) |      3       3       4      3 |    0.50        0.00
+METRIC   num_tokens                                                                         7     0(0.00%) |    500     500     500    500 |    0.50        0.00
+METRIC   overall_latency_per_token                                                          7     0(0.00%) |      3       3       4      3 |    0.50        0.00
+METRIC   prompt_tokens                                                                      7     0(0.00%) |   1000    1000    1000   1000 |    0.50        0.00
+METRIC   throughput (out tok/s)                                                             7     0(0.00%) |    300     210     327    310 |    0.50        0.00
+METRIC   time_to_first_token                                                                7     0(0.00%) |    102      82     191     87 |    0.50        0.00
+METRIC   total_latency                                                                      7     0(0.00%) |   1801    1613    2465   1700 |    0.50        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        63     0(0.00%) |    419       0    2465     91 |    4.50        0.00
+
+Response received: total 1636.77 ms, first token 86.17 ms, 2820 chars, 500 tokens
+Response received: total 1437.10 ms, first token 82.55 ms, 2798 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                  9     0(0.00%) |     56      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                   9     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                  9     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                         9     0(0.00%) |    500     500     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                          9     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                      9     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                             9     0(0.00%) |    310     210     369    320 |    0.60        0.00
+METRIC   time_to_first_token                                                                9     0(0.00%) |     98      82     191     86 |    0.60        0.00
+METRIC   total_latency                                                                      9     0(0.00%) |   1743    1437    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        81     0(0.00%) |    412       0    2465     87 |    5.40        0.00
+
+Response received: total 1349.29 ms, first token 86.19 ms, 2607 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 10     0(0.00%) |     55      43     153     44 |    0.50        0.00
+METRIC   latency_per_char                                                                  10     0(0.00%) |      0       0       0      0 |    0.50        0.00
+METRIC   latency_per_token                                                                 10     0(0.00%) |      3       2       4      3 |    0.50        0.00
+METRIC   num_tokens                                                                        10     0(0.00%) |    500     500     500    500 |    0.50        0.00
+METRIC   overall_latency_per_token                                                         10     0(0.00%) |      3       2       4      3 |    0.50        0.00
+METRIC   prompt_tokens                                                                     10     0(0.00%) |   1000    1000    1000   1000 |    0.50        0.00
+METRIC   throughput (out tok/s)                                                            10     0(0.00%) |    318     210     395    320 |    0.50        0.00
+METRIC   time_to_first_token                                                               10     0(0.00%) |     96      82     191     86 |    0.50        0.00
+METRIC   total_latency                                                                     10     0(0.00%) |   1703    1349    2465   1600 |    0.50        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        90     0(0.00%) |    409       0    2465     86 |    4.50        0.00
+
+Response received: total 1484.97 ms, first token 82.90 ms, 2532 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 11     0(0.00%) |     53      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  11     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 11     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        11     0(0.00%) |    500     500     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         11     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     11     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            11     0(0.00%) |    322     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               11     0(0.00%) |     95      82     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     11     0(0.00%) |   1683    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        99     0(0.00%) |    406       0    2465     86 |    5.40        0.00
+
+Response received: total 1597.81 ms, first token 87.16 ms, 2251 chars, 414 tokens
+WARNING: wrong number of tokens: 414, expected 500
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 12     0(0.00%) |     53      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  12     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 12     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        12     0(0.00%) |    492     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         12     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     12     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            12     0(0.00%) |    318     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               12     0(0.00%) |     94      82     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     12     0(0.00%) |   1676    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       108     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 2039.41 ms, first token 90.65 ms, 2463 chars, 500 tokens
+Response received: total 1452.13 ms, first token 90.09 ms, 2264 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 14     0(0.00%) |     51      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  14     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 14     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        14     0(0.00%) |    493     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         14     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     14     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            14     0(0.00%) |    317     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               14     0(0.00%) |     94      82     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     14     0(0.00%) |   1686    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       126     0(0.00%) |    405       0    2465     87 |    5.40        0.00
+
+Response received: total 1633.34 ms, first token 79.33 ms, 2561 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 15     0(0.00%) |     51      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  15     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 15     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        15     0(0.00%) |    494     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         15     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     15     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            15     0(0.00%) |    317     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               15     0(0.00%) |     93      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     15     0(0.00%) |   1682    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       135     0(0.00%) |    405       0    2465     87 |    5.40        0.00
+
+Response received: total 1611.46 ms, first token 86.25 ms, 2496 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 16     0(0.00%) |     50      43     153     44 |    0.70        0.00
+METRIC   latency_per_char                                                                  16     0(0.00%) |      0       0       0      0 |    0.70        0.00
+METRIC   latency_per_token                                                                 16     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   num_tokens                                                                        16     0(0.00%) |    494     414     500    500 |    0.70        0.00
+METRIC   overall_latency_per_token                                                         16     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   prompt_tokens                                                                     16     0(0.00%) |   1000    1000    1000   1000 |    0.70        0.00
+METRIC   throughput (out tok/s)                                                            16     0(0.00%) |    318     210     395    320 |    0.70        0.00
+METRIC   time_to_first_token                                                               16     0(0.00%) |     92      79     191     86 |    0.70        0.00
+METRIC   total_latency                                                                     16     0(0.00%) |   1678    1349    2465   1600 |    0.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       144     0(0.00%) |    404       0    2465     86 |    6.30        0.00
+
+Response received: total 1753.06 ms, first token 89.02 ms, 2720 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 17     0(0.00%) |     50      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  17     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 17     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        17     0(0.00%) |    494     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         17     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     17     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            17     0(0.00%) |    317     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               17     0(0.00%) |     92      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     17     0(0.00%) |   1682    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       153     0(0.00%) |    405       0    2465     87 |    5.40        0.00
+
+Response received: total 1723.70 ms, first token 79.67 ms, 2753 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 18     0(0.00%) |     50      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  18     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 18     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        18     0(0.00%) |    495     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         18     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     18     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            18     0(0.00%) |    316     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               18     0(0.00%) |     91      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     18     0(0.00%) |   1685    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       162     0(0.00%) |    405       0    2465     86 |    5.40        0.00
+
+Response received: total 1671.86 ms, first token 85.63 ms, 2571 chars, 500 tokens
+Response received: total 1653.51 ms, first token 84.66 ms, 2201 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 20     0(0.00%) |     49      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  20     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 20     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        20     0(0.00%) |    495     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         20     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     20     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            20     0(0.00%) |    316     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               20     0(0.00%) |     91      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     20     0(0.00%) |   1682    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       180     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1536.32 ms, first token 87.15 ms, 2638 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 21     0(0.00%) |     49      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  21     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 21     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        21     0(0.00%) |    495     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         21     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     21     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            21     0(0.00%) |    317     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               21     0(0.00%) |     91      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     21     0(0.00%) |   1675    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       189     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1584.78 ms, first token 88.76 ms, 2617 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 22     0(0.00%) |     48      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  22     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 22     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        22     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         22     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     22     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            22     0(0.00%) |    318     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               22     0(0.00%) |     90      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     22     0(0.00%) |   1671    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       198     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1715.03 ms, first token 89.08 ms, 2699 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 23     0(0.00%) |     48      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  23     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 23     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        23     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         23     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     23     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            23     0(0.00%) |    318     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               23     0(0.00%) |     90      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     23     0(0.00%) |   1673    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       207     0(0.00%) |    403       0    2465     87 |    5.40        0.00
+
+Response received: total 1530.98 ms, first token 81.46 ms, 2500 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 24     0(0.00%) |     48      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  24     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 24     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        24     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         24     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     24     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            24     0(0.00%) |    319     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               24     0(0.00%) |     90      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     24     0(0.00%) |   1667    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       216     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1885.71 ms, first token 83.41 ms, 2508 chars, 500 tokens
+Response received: total 1500.38 ms, first token 87.60 ms, 2606 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 26     0(0.00%) |     48      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  26     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 26     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        26     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         26     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     26     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            26     0(0.00%) |    319     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               26     0(0.00%) |     90      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     26     0(0.00%) |   1669    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       234     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1712.63 ms, first token 85.63 ms, 2637 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 27     0(0.00%) |     47      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  27     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 27     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        27     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         27     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     27     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            27     0(0.00%) |    318     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               27     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     27     0(0.00%) |   1671    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       243     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 2163.71 ms, first token 82.70 ms, 2507 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 28     0(0.00%) |     47      43     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  28     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 28     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        28     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         28     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     28     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            28     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               28     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     28     0(0.00%) |   1688    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       252     0(0.00%) |    405       0    2465     86 |    5.40        0.00
+
+Response received: total 1510.57 ms, first token 88.54 ms, 2588 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 29     0(0.00%) |     47      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  29     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 29     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        29     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         29     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     29     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            29     0(0.00%) |    317     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               29     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     29     0(0.00%) |   1682    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       261     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1503.31 ms, first token 91.05 ms, 2732 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 30     0(0.00%) |     47      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  30     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 30     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        30     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         30     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     30     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            30     0(0.00%) |    318     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               30     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     30     0(0.00%) |   1676    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       270     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1784.66 ms, first token 82.13 ms, 2712 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 31     0(0.00%) |     47      42     153     44 |    0.50        0.00
+METRIC   latency_per_char                                                                  31     0(0.00%) |      0       0       0      0 |    0.50        0.00
+METRIC   latency_per_token                                                                 31     0(0.00%) |      3       2       4      3 |    0.50        0.00
+METRIC   num_tokens                                                                        31     0(0.00%) |    497     414     500    500 |    0.50        0.00
+METRIC   overall_latency_per_token                                                         31     0(0.00%) |      3       2       4      3 |    0.50        0.00
+METRIC   prompt_tokens                                                                     31     0(0.00%) |   1000    1000    1000   1000 |    0.50        0.00
+METRIC   throughput (out tok/s)                                                            31     0(0.00%) |    317     210     395    320 |    0.50        0.00
+METRIC   time_to_first_token                                                               31     0(0.00%) |     89      79     191     86 |    0.50        0.00
+METRIC   total_latency                                                                     31     0(0.00%) |   1680    1349    2465   1600 |    0.50        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       279     0(0.00%) |    404       0    2465     86 |    4.50        0.00
+
+Response received: total 1790.40 ms, first token 89.72 ms, 2357 chars, 500 tokens
+Response received: total 1693.74 ms, first token 86.51 ms, 2428 chars, 441 tokens
+WARNING: wrong number of tokens: 441, expected 500
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 33     0(0.00%) |     47      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  33     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 33     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        33     0(0.00%) |    495     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         33     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     33     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            33     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               33     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     33     0(0.00%) |   1683    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       297     0(0.00%) |    404       0    2465     87 |    5.40        0.00
+
+Response received: total 1815.11 ms, first token 82.94 ms, 2260 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 34     0(0.00%) |     47      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  34     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 34     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        34     0(0.00%) |    495     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         34     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     34     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            34     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               34     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     34     0(0.00%) |   1687    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       306     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1788.74 ms, first token 95.61 ms, 2533 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 35     0(0.00%) |     47      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  35     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 35     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        35     0(0.00%) |    495     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         35     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     35     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            35     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               35     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     35     0(0.00%) |   1690    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       315     0(0.00%) |    404       0    2465     87 |    5.40        0.00
+
+Response received: total 1668.97 ms, first token 89.89 ms, 2611 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 36     0(0.00%) |     47      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  36     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 36     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        36     0(0.00%) |    495     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         36     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     36     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            36     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               36     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     36     0(0.00%) |   1690    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       324     0(0.00%) |    404       0    2465     87 |    5.40        0.00
+
+Response received: total 1794.71 ms, first token 79.92 ms, 2191 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 37     0(0.00%) |     47      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  37     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 37     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        37     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         37     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     37     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            37     0(0.00%) |    313     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               37     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     37     0(0.00%) |   1692    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       333     0(0.00%) |    405       0    2465     87 |    5.40        0.00
+
+Response received: total 1585.13 ms, first token 87.18 ms, 2433 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 38     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  38     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 38     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        38     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         38     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     38     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            38     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               38     0(0.00%) |     89      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     38     0(0.00%) |   1690    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       342     0(0.00%) |    404       0    2465     87 |    5.40        0.00
+
+Response received: total 1664.53 ms, first token 86.51 ms, 2594 chars, 500 tokens
+Response received: total 1616.53 ms, first token 85.17 ms, 2669 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 40     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  40     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 40     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        40     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         40     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     40     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            40     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               40     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     40     0(0.00%) |   1687    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       360     0(0.00%) |    404       0    2465     87 |    5.40        0.00
+
+Response received: total 1531.13 ms, first token 79.30 ms, 2668 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 41     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  41     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 41     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        41     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         41     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     41     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            41     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               41     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     41     0(0.00%) |   1683    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       369     0(0.00%) |    404       0    2465     87 |    5.40        0.00
+
+Response received: total 1532.58 ms, first token 84.28 ms, 1991 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 42     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  42     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 42     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        42     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         42     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     42     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            42     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               42     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     42     0(0.00%) |   1680    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       378     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1991.64 ms, first token 80.94 ms, 2298 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 43     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  43     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 43     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        43     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         43     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     43     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            43     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               43     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     43     0(0.00%) |   1687    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       387     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1647.78 ms, first token 85.79 ms, 2613 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 44     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  44     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 44     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        44     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         44     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     44     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            44     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               44     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     44     0(0.00%) |   1686    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       396     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1760.26 ms, first token 86.48 ms, 2475 chars, 500 tokens
+Response received: total 1507.82 ms, first token 88.43 ms, 2487 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 46     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  46     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 46     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        46     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         46     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     46     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            46     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               46     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     46     0(0.00%) |   1684    1349    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       414     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1933.49 ms, first token 83.69 ms, 2539 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 47     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  47     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 47     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        47     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         47     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     47     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            47     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               47     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     47     0(0.00%) |   1689    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       423     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1657.91 ms, first token 81.57 ms, 2410 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 48     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  48     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 48     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        48     0(0.00%) |    496     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         48     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     48     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            48     0(0.00%) |    314     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               48     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     48     0(0.00%) |   1688    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       432     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1504.24 ms, first token 82.65 ms, 2204 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 49     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  49     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 49     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        49     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         49     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     49     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            49     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               49     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     49     0(0.00%) |   1685    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       441     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1673.09 ms, first token 86.11 ms, 2511 chars, 500 tokens
+Response received: total 1495.28 ms, first token 86.91 ms, 2489 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 51     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  51     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 51     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        51     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         51     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     51     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            51     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               51     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     51     0(0.00%) |   1681    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       459     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1699.14 ms, first token 82.13 ms, 2722 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 52     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  52     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 52     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        52     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         52     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     52     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            52     0(0.00%) |    315     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               52     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     52     0(0.00%) |   1681    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       468     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1590.56 ms, first token 100.19 ms, 2447 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 53     0(0.00%) |     46      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  53     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 53     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        53     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         53     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     53     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            53     0(0.00%) |    316     210     395    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               53     0(0.00%) |     88      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     53     0(0.00%) |   1679    1349    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       477     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1339.11 ms, first token 87.10 ms, 2603 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 54     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  54     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 54     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        54     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         54     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     54     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            54     0(0.00%) |    317     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               54     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     54     0(0.00%) |   1673    1339    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       486     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1634.26 ms, first token 94.62 ms, 2654 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 55     0(0.00%) |     45      42     153     44 |    0.70        0.00
+METRIC   latency_per_char                                                                  55     0(0.00%) |      0       0       0      0 |    0.70        0.00
+METRIC   latency_per_token                                                                 55     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   num_tokens                                                                        55     0(0.00%) |    497     414     500    500 |    0.70        0.00
+METRIC   overall_latency_per_token                                                         55     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   prompt_tokens                                                                     55     0(0.00%) |   1000    1000    1000   1000 |    0.70        0.00
+METRIC   throughput (out tok/s)                                                            55     0(0.00%) |    317     210     399    320 |    0.70        0.00
+METRIC   time_to_first_token                                                               55     0(0.00%) |     88      79     191     86 |    0.70        0.00
+METRIC   total_latency                                                                     55     0(0.00%) |   1672    1339    2465   1600 |    0.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       495     0(0.00%) |    403       0    2465     86 |    6.30        0.00
+
+Response received: total 1886.96 ms, first token 85.15 ms, 2743 chars, 500 tokens
+Response received: total 1526.89 ms, first token 79.60 ms, 2543 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 57     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  57     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 57     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        57     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         57     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     57     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            57     0(0.00%) |    317     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               57     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     57     0(0.00%) |   1673    1339    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       513     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1891.65 ms, first token 80.98 ms, 2542 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 58     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  58     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 58     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        58     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         58     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     58     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            58     0(0.00%) |    316     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               58     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     58     0(0.00%) |   1677    1339    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       522     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1775.14 ms, first token 80.83 ms, 2641 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 59     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  59     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 59     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        59     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         59     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     59     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            59     0(0.00%) |    316     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               59     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     59     0(0.00%) |   1679    1339    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       531     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1886.76 ms, first token 87.60 ms, 2208 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 60     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  60     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 60     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        60     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         60     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     60     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            60     0(0.00%) |    315     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               60     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     60     0(0.00%) |   1682    1339    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       540     0(0.00%) |    404       0    2465     86 |    5.40        0.00
+
+Response received: total 1534.66 ms, first token 96.00 ms, 2598 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 61     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  61     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 61     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        61     0(0.00%) |    497     414     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         61     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     61     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            61     0(0.00%) |    316     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               61     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     61     0(0.00%) |   1680    1339    2465   1700 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       549     0(0.00%) |    403       0    2465     86 |    5.40        0.00
+
+Response received: total 1419.26 ms, first token 91.48 ms, 2419 chars, 500 tokens
+Response received: total 1339.18 ms, first token 89.73 ms, 2239 chars, 400 tokens
+WARNING: wrong number of tokens: 400, expected 500
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 63     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  63     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 63     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        63     0(0.00%) |    496     400     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         63     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     63     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            63     0(0.00%) |    317     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               63     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     63     0(0.00%) |   1670    1339    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       567     0(0.00%) |    402       0    2465     86 |    5.40        0.00
+
+Response received: total 1506.06 ms, first token 90.67 ms, 2618 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 64     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  64     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 64     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        64     0(0.00%) |    496     400     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         64     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     64     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            64     0(0.00%) |    317     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               64     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     64     0(0.00%) |   1668    1339    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       576     0(0.00%) |    402       0    2465     86 |    5.40        0.00
+
+Response received: total 1489.65 ms, first token 89.55 ms, 2558 chars, 500 tokens
+Response received: total 1426.09 ms, first token 83.58 ms, 2808 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 66     0(0.00%) |     45      42     153     44 |    0.70        0.00
+METRIC   latency_per_char                                                                  66     0(0.00%) |      0       0       0      0 |    0.70        0.00
+METRIC   latency_per_token                                                                 66     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   num_tokens                                                                        66     0(0.00%) |    496     400     500    500 |    0.70        0.00
+METRIC   overall_latency_per_token                                                         66     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   prompt_tokens                                                                     66     0(0.00%) |   1000    1000    1000   1000 |    0.70        0.00
+METRIC   throughput (out tok/s)                                                            66     0(0.00%) |    319     210     399    320 |    0.70        0.00
+METRIC   time_to_first_token                                                               66     0(0.00%) |     87      79     191     86 |    0.70        0.00
+METRIC   total_latency                                                                     66     0(0.00%) |   1661    1339    2465   1600 |    0.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       594     0(0.00%) |    402       0    2465     86 |    6.30        0.00
+
+Response received: total 1517.90 ms, first token 85.21 ms, 2611 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 67     0(0.00%) |     45      42     153     44 |    0.70        0.00
+METRIC   latency_per_char                                                                  67     0(0.00%) |      0       0       0      0 |    0.70        0.00
+METRIC   latency_per_token                                                                 67     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   num_tokens                                                                        67     0(0.00%) |    496     400     500    500 |    0.70        0.00
+METRIC   overall_latency_per_token                                                         67     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   prompt_tokens                                                                     67     0(0.00%) |   1000    1000    1000   1000 |    0.70        0.00
+METRIC   throughput (out tok/s)                                                            67     0(0.00%) |    319     210     399    320 |    0.70        0.00
+METRIC   time_to_first_token                                                               67     0(0.00%) |     87      79     191     86 |    0.70        0.00
+METRIC   total_latency                                                                     67     0(0.00%) |   1659    1339    2465   1600 |    0.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       603     0(0.00%) |    401       0    2465     86 |    6.30        0.00
+
+Response received: total 1520.51 ms, first token 83.92 ms, 2515 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 68     0(0.00%) |     45      42     153     44 |    0.70        0.00
+METRIC   latency_per_char                                                                  68     0(0.00%) |      0       0       0      0 |    0.70        0.00
+METRIC   latency_per_token                                                                 68     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   num_tokens                                                                        68     0(0.00%) |    496     400     500    500 |    0.70        0.00
+METRIC   overall_latency_per_token                                                         68     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   prompt_tokens                                                                     68     0(0.00%) |   1000    1000    1000   1000 |    0.70        0.00
+METRIC   throughput (out tok/s)                                                            68     0(0.00%) |    320     210     399    320 |    0.70        0.00
+METRIC   time_to_first_token                                                               68     0(0.00%) |     87      79     191     86 |    0.70        0.00
+METRIC   total_latency                                                                     68     0(0.00%) |   1657    1339    2465   1600 |    0.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       612     0(0.00%) |    401       0    2465     86 |    6.30        0.00
+
+Response received: total 1767.43 ms, first token 79.92 ms, 2621 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 69     0(0.00%) |     45      42     153     44 |    0.70        0.00
+METRIC   latency_per_char                                                                  69     0(0.00%) |      0       0       0      0 |    0.70        0.00
+METRIC   latency_per_token                                                                 69     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   num_tokens                                                                        69     0(0.00%) |    496     400     500    500 |    0.70        0.00
+METRIC   overall_latency_per_token                                                         69     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   prompt_tokens                                                                     69     0(0.00%) |   1000    1000    1000   1000 |    0.70        0.00
+METRIC   throughput (out tok/s)                                                            69     0(0.00%) |    319     210     399    320 |    0.70        0.00
+METRIC   time_to_first_token                                                               69     0(0.00%) |     87      79     191     86 |    0.70        0.00
+METRIC   total_latency                                                                     69     0(0.00%) |   1659    1339    2465   1600 |    0.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       621     0(0.00%) |    401       0    2465     86 |    6.30        0.00
+
+Response received: total 1531.73 ms, first token 84.36 ms, 2401 chars, 437 tokens
+WARNING: wrong number of tokens: 437, expected 500
+Response received: total 1451.04 ms, first token 79.37 ms, 2801 chars, 500 tokens
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 71     0(0.00%) |     45      42     153     44 |    0.70        0.00
+METRIC   latency_per_char                                                                  71     0(0.00%) |      0       0       0      0 |    0.70        0.00
+METRIC   latency_per_token                                                                 71     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   num_tokens                                                                        71     0(0.00%) |    495     400     500    500 |    0.70        0.00
+METRIC   overall_latency_per_token                                                         71     0(0.00%) |      3       2       4      3 |    0.70        0.00
+METRIC   prompt_tokens                                                                     71     0(0.00%) |   1000    1000    1000   1000 |    0.70        0.00
+METRIC   throughput (out tok/s)                                                            71     0(0.00%) |    320     210     399    320 |    0.70        0.00
+METRIC   time_to_first_token                                                               71     0(0.00%) |     87      79     191     86 |    0.70        0.00
+METRIC   total_latency                                                                     71     0(0.00%) |   1654    1339    2465   1600 |    0.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       639     0(0.00%) |    401       0    2465     86 |    6.30        0.00
+
+Response received: total 1418.92 ms, first token 82.96 ms, 2232 chars, 500 tokens
+[2024-09-30 19:19:09,303] mobavenue-cluster-1/INFO/locust.main: --run-time limit reached, shutting down
+[2024-09-30 19:19:09,304] mobavenue-cluster-1/INFO/locust.main: Shutting down (exit code 0)
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /chat/completions                                                                 72     0(0.00%) |     45      42     153     44 |    0.60        0.00
+METRIC   latency_per_char                                                                  72     0(0.00%) |      0       0       0      0 |    0.60        0.00
+METRIC   latency_per_token                                                                 72     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   num_tokens                                                                        72     0(0.00%) |    495     400     500    500 |    0.60        0.00
+METRIC   overall_latency_per_token                                                         72     0(0.00%) |      3       2       4      3 |    0.60        0.00
+METRIC   prompt_tokens                                                                     72     0(0.00%) |   1000    1000    1000   1000 |    0.60        0.00
+METRIC   throughput (out tok/s)                                                            72     0(0.00%) |    321     210     399    320 |    0.60        0.00
+METRIC   time_to_first_token                                                               72     0(0.00%) |     87      79     191     86 |    0.60        0.00
+METRIC   total_latency                                                                     72     0(0.00%) |   1651    1339    2465   1600 |    0.60        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       648     0(0.00%) |    400       0    2465     86 |    5.44        0.00
+
+Response time percentiles (approximated)
+Type     Name                                                                                  50%    66%    75%    80%    90%    95%    98%    99%  99.9% 99.99%   100% # reqs
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+POST     /chat/completions                                                                      44     44     44     45     45     45     52    150    150    150    150     72
+METRIC   latency_per_char                                                                        1      1      1      1      1      1      1      1      1      1      1     72
+METRIC   latency_per_token                                                                       3      3      3      3      4      4      4      5      5      5      5     72
+METRIC   num_tokens                                                                            500    500    500    500    500    500    500    500    500    500    500     72
+METRIC   overall_latency_per_token                                                               3      3      4      4      4      4      4      5      5      5      5     72
+METRIC   prompt_tokens                                                                        1000   1000   1000   1000   1000   1000   1000   1000   1000   1000   1000     72
+METRIC   throughput (out tok/s)                                                                320    340    350    350    360    370    400    400    400    400    400     72
+METRIC   time_to_first_token                                                                    86     87     89     90     91     96    100    190    190    190    190     72
+METRIC   total_latency                                                                        1600   1700   1800   1800   1900   2000   2200   2500   2500   2500   2500     72
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                             86    370    500   1000   1500   1600   1800   1900   2500   2500   2500    648
+
+=================================== Summary ====================================
+Provider           : openai
+Model              : llama3_1
+Prompt Tokens      : 1000.0
+Generation Tokens  : 500
+Stream             : True
+Temperature        : 0.2
+Logprobs           : None
+Concurrency        : 1
+Time To First Token: 87.46135568314155
+Latency Per Token  : 3.1568075051492004
+Num Tokens         : 495.72222222222223
+Total Latency      : 1651.283798069926
+Num Requests       : 72
+Qps                : 0.604024548715649
+================================================================================
