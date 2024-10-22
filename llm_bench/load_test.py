@@ -250,6 +250,7 @@ class OpenAIProvider(BaseProvider):
             "max_tokens": max_tokens,
             "stream": self.parsed_options.stream,
             "temperature": self.parsed_options.temperature,
+            "n": self.parsed_options.n,
         }
         if self.parsed_options.chat:
             if images is None:
@@ -334,6 +335,7 @@ class TritonInferProvider(BaseProvider):
     def get_url(self):
         assert not self.parsed_options.chat, "Chat is not supported"
         assert not self.parsed_options.stream, "Stream is not supported"
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
         return f"/v2/models/{self.model}/infer"
 
     def format_payload(self, prompt, max_tokens, images):
@@ -408,6 +410,7 @@ class TritonGenerateProvider(BaseProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         assert images is None, "images are not supported"
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
         data = {
             "text_input": prompt,
             "max_tokens": max_tokens,
@@ -442,6 +445,7 @@ class TgiProvider(BaseProvider):
     DEFAULT_MODEL_NAME = "<unused>"
 
     def get_url(self):
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
         assert not self.parsed_options.chat, "Chat is not supported"
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/generate{stream_suffix}"
@@ -975,7 +979,13 @@ def init_parser(parser):
         default=[],
         help="Arbitrary headers to add to the inference request. Can be used multiple times. For example, --header header1:value1 --header header2:value2",
     )
-
+    parser.add_argument(
+        "-n",
+        "--n",
+        default=1,
+        type=int,
+        help="How many sequences to generate (makes sense to use with non-zero temperature).",
+    )
 
 @events.quitting.add_listener
 def _(environment, **kw):
