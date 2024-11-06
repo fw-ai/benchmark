@@ -486,6 +486,14 @@ class TgiProvider(BaseProvider):
             )
 
 
+class NIMProvider(OpenAIProvider):
+    def format_payload(self, prompt, max_tokens, images):
+        data = super().format_payload(prompt, max_tokens, images)
+        data["min_tokens"] = max_tokens
+        data["max_tokens"] = max_tokens
+        return data
+
+
 PROVIDER_CLASS_MAP = {
     "fireworks": FireworksProvider,
     "vllm": VllmProvider,
@@ -496,6 +504,7 @@ PROVIDER_CLASS_MAP = {
     "triton-infer": TritonInferProvider,
     "triton-generate": TritonGenerateProvider,
     "tgi": TgiProvider,
+    "nim": NIMProvider,
 }
 
 
@@ -700,6 +709,8 @@ class LLMUser(HttpUser):
         prompt, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
+
+        # print(f"Sending request with {max_tokens} tokens", data)
 
         with self.client.post(
             self.provider_formatter.get_url(),
