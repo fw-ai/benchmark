@@ -113,6 +113,8 @@ class LengthSampler:
             raise ValueError(f"Unknown distribution {self.distribution}")
 
     def sample(self) -> int:
+        return 0
+
         for _ in range(1000):
             sample = self.sample_func()
             if sample <= 0:
@@ -250,7 +252,7 @@ class OpenAIProvider(BaseProvider):
             "max_tokens": max_tokens,
             "stream": self.parsed_options.stream,
             "temperature": self.parsed_options.temperature,
-            "n": self.parsed_options.n,
+            # "n": self.parsed_options.n,
         }
         if self.parsed_options.chat:
             if images is None:
@@ -278,7 +280,7 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data, prompt):
         usage = data.get("usage", None)
 
-        assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
+        # assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
         choice = data["choices"][0]
         if self.parsed_options.chat:
             if self.parsed_options.stream:
@@ -300,8 +302,13 @@ class OpenAIProvider(BaseProvider):
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        data["min_tokens"] = max_tokens
+        data["prompt"] = [prompt] * self.parsed_options.n
+        data["min_tokens"] = 1
+        data["max_tokens"] = 1
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        # data["echo"] = True
+        # data["logprobs"] = 0
+
         return data
 
 
