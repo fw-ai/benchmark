@@ -274,6 +274,7 @@ class OpenAIProvider(BaseProvider):
             "max_tokens": max_tokens,
             "stream": self.parsed_options.stream,
             "temperature": self.parsed_options.temperature,
+            "n": self.parsed_options.n,
         }
         if self.parsed_options.chat:
             if images is None:
@@ -358,6 +359,7 @@ class TritonInferProvider(BaseProvider):
     def get_url(self):
         assert not self.parsed_options.chat, "Chat is not supported"
         assert not self.parsed_options.stream, "Stream is not supported"
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
         return f"/v2/models/{self.model}/infer"
 
     def format_payload(self, prompt, max_tokens, images):
@@ -432,6 +434,7 @@ class TritonGenerateProvider(BaseProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         assert images is None, "images are not supported"
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
         data = {
             "text_input": prompt,
             "max_tokens": max_tokens,
@@ -466,6 +469,7 @@ class TgiProvider(BaseProvider):
     DEFAULT_MODEL_NAME = "<unused>"
 
     def get_url(self):
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
         assert not self.parsed_options.chat, "Chat is not supported"
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/generate{stream_suffix}"
@@ -509,6 +513,7 @@ class TgiProvider(BaseProvider):
 PROVIDER_CLASS_MAP = {
     "fireworks": FireworksProvider,
     "vllm": VllmProvider,
+    "sglang": VllmProvider,
     "openai": OpenAIProvider,
     "anyscale": OpenAIProvider,
     "together": TogetherProvider,
@@ -595,7 +600,7 @@ class LLMUser(HttpUser):
                 raise ValueError(
                     f"Model {self.model} not found in /v1/models. Specify --provider explicitly"
                 )
-            if owned_by in ["vllm", "fireworks"]:
+            if owned_by in PROVIDER_CLASS_MAP:
                 self.provider = owned_by
             else:
                 raise ValueError(
@@ -733,7 +738,6 @@ class LLMUser(HttpUser):
             stream=True,
             catch_response=True,
         ) as response:
-            dur_chunks = []
             combined_text = ""
             done = False
             prompt_usage_tokens = self.prompt_tokenizer_tokens
@@ -745,10 +749,6 @@ class LLMUser(HttpUser):
                 raise RuntimeError(f"Error in response: {response.text}") from e
             t_first_token = None
             for chunk in response.iter_lines(delimiter=b"\n\n"):
-                if t_first_token is None:
-                    t_first_token = time.perf_counter()
-                    t_prev = time.perf_counter()
-
                 if len(chunk) == 0:
                     continue  # come providers send empty lines between data chunks
                 if done:
@@ -756,8 +756,6 @@ class LLMUser(HttpUser):
                         print(f"WARNING: Received more chunks after [DONE]: {chunk}")
                 try:
                     now = time.perf_counter()
-                    dur_chunks.append(now - t_prev)
-                    t_prev = now
                     if self.stream:
                         assert chunk.startswith(
                             b"data:"
@@ -775,6 +773,11 @@ class LLMUser(HttpUser):
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
                     combined_text += out.text
+
+                    # some providers (SGLang) send an empty chunk first skewing the TTFT
+                    if combined_text and t_first_token is None:
+                        t_first_token = now
+
 
                     if out.logprob_tokens:
                         total_logprob_tokens = (
@@ -1016,7 +1019,13 @@ def init_parser(parser):
         default=[],
         help="Arbitrary headers to add to the inference request. Can be used multiple times. For example, --header header1:value1 --header header2:value2",
     )
-
+    parser.add_argument(
+        "-n",
+        "--n",
+        default=1,
+        type=int,
+        help="How many sequences to generate (makes sense to use with non-zero temperature).",
+    )
 
 @events.quitting.add_listener
 def _(environment, **kw):
@@ -1049,6 +1058,13 @@ def _(environment, **kw):
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
+    percentile_to_report = [50, 90, 99, 99.9]
+    percentile_metrics = ["time_to_first_token", "total_latency"]
+    for percentile_metric in percentile_metrics:
+        metrics = environment.stats.entries[percentile_metric, "METRIC"]
+        for percentile in percentile_to_report:
+            name = f"P{percentile}_{percentile_metric}"
+            entries[name] = metrics.get_response_time_percentile(percentile/100)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
