@@ -1,2 +1,7 @@
 locust==2.18.1
 orjson==3.9.10
+python-dotenv
+seaborn
+matplotlib
+pandas
+numpy

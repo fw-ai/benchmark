@@ -1,5 +1,7 @@
 # LLM Load test
 
+Please refer to the [`benchmark_suite.ipynb`](benchmark_suite.ipynb) for a detailed example of how to use the load_test.py script and run different types of benchmark suites.
+
 ## Installation
 
 The load test relies on [Locust package](https://locust.io/). Install it from pip.
