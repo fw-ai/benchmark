@@ -30,3 +30,5 @@ Captured metrics:
 Metrics summary can be exported to CSV. This way multiple configuration can be scripted over. CSV file can be imported to Google Sheets/Excel or Jupyter for further analysis.
 
 See [`llm_bench`](llm_bench) folder for detailed usage.
+
+See [`benchmark_suite.ipynb`](benchmark_suite.ipynb) for a detailed example of how to use the load test script and run different types of benchmark suites.
