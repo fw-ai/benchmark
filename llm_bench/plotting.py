@@ -6,7 +6,11 @@ from plotly.subplots import make_subplots
 
 def main(args):
     # Read the CSV data
-    df = pd.read_csv(args.input_file)
+    dfs = []
+    for f in args.input_files:
+        dfs.append(pd.read_csv(f))
+
+    df = pd.concat(dfs, axis=0)
 
     # Create the HTML file
     html_output = []
@@ -41,6 +45,13 @@ def main(args):
     # Get unique prompt token values
     prompt_tokens = sorted(df["Prompt Tokens"].unique())
 
+    line_and_fill_colors = [
+        ("blue", "135, 206, 250, 0.4"),
+        ("red", "255, 182, 193, 0.4"),
+        ("orange", "255, 200, 124, 0.4"),
+        ("pink", "255, 192, 203, 0.4"),
+        ("green", "144, 238, 144, 0.4"),
+    ]
     # Create plots for each prompt token value
     for token_value in prompt_tokens:
         # Filter data for current prompt token value
@@ -59,7 +70,8 @@ def main(args):
         )
 
         # Plot data for each provider
-        for provider in ["vllm", "adaptive"]:
+        # for provider in ["vllm", "adaptive"]:
+        for idx, provider in enumerate(df["Provider"].unique()):
             provider_df = token_df[token_df["Provider"] == provider]
 
             # First subplot: P90 Time to First Token
@@ -69,8 +81,8 @@ def main(args):
                     y=provider_df["P90 Time To First Token"],
                     name=f"{provider}",
                     fill="tozeroy",
-                    fillcolor=f'rgba{(135, 206, 235, 0.4) if provider == "vllm" else (255, 182, 193, 0.4)}',
-                    line=dict(color="blue" if provider == "vllm" else "red"),
+                    fillcolor=f"rgba({line_and_fill_colors[idx][1]})",
+                    line=dict(color=line_and_fill_colors[idx][0]),
                     showlegend=True,
                 ),
                 row=1,
@@ -84,8 +96,8 @@ def main(args):
                     y=provider_df["P90 Latency Per Token"],
                     name=f"{provider}",
                     fill="tozeroy",
-                    fillcolor=f'rgba{(135, 206, 235, 0.4) if provider == "vllm" else (255, 182, 193, 0.4)}',
-                    line=dict(color="blue" if provider == "vllm" else "red"),
+                    fillcolor=f"rgba({line_and_fill_colors[idx][1]})",
+                    line=dict(color=line_and_fill_colors[idx][0]),
                     showlegend=False,
                 ),
                 row=2,
@@ -98,8 +110,8 @@ def main(args):
                     y=provider_df["P90 Total Latency"],
                     name=f"{provider}",
                     fill="tozeroy",
-                    fillcolor=f'rgba{(135, 206, 235, 0.4) if provider == "vllm" else (255, 182, 193, 0.4)}',
-                    line=dict(color="blue" if provider == "vllm" else "red"),
+                    fillcolor=f"rgba({line_and_fill_colors[idx][1]})",
+                    line=dict(color=line_and_fill_colors[idx][0]),
                     showlegend=False,
                 ),
                 row=3,
@@ -142,10 +154,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Description of your program")
     parser.add_argument("--model", type=str, required=True, help="Name of the benchmarked model")
     parser.add_argument("--output-tokens", type=int, required=True, help="Number of output tokens")
-    parser.add_argument("--input-file", type=str, required=False, default="test.csv", help="Number of output tokens")
+    parser.add_argument(
+        "--input-files",  # Name of the argument
+        nargs="+",
+        type=str,
+        help="Provide 2 results files to plot",
+    )
     parser.add_argument(
         "--output-file", type=str, required=False, default="results.html", help="Number of output tokens"
     )
     args = parser.parse_args()
+    assert len(args.input_files) == 2, "Can only compare against 2 result files"
 
     main(args)
