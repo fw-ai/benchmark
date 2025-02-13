@@ -4,9 +4,10 @@
 provider="vllm"
 summary_file="vllm.csv"
 model="meta-llama/Llama-3.1-8B-Instruct"
-api_key=""
+api_key="not-relevant-for-vllm"
+randomize=false
 
-while getopts ":p:s:u:m:k:" opt; do
+while getopts ":p:s:u:m:k:r:" opt; do
   case $opt in
     p) provider="$OPTARG"
     ;;
@@ -18,6 +19,8 @@ while getopts ":p:s:u:m:k:" opt; do
     ;;
     k) api_key="$OPTARG"
     ;;
+    r) randomize=true
+    ;;
     \?) echo "Invalid option -$OPTARG" >&2
     ;;
   esac
@@ -25,16 +28,13 @@ done
 
 
 lengths=(128 256 512 1024 2048 4096)
-# lengths=(256 512 1024 2048 4096)
-# lengths=(256 2048)
 qps=(0.125 0.5 1 2 4 6 8 10 12 14 16 18 20)
-# qps=(8)
 
 for length in "${lengths[@]}"; do
     for q in "${qps[@]}"; do
         echo "Running load test with $length input token size and $q qps"
         echo ""
-        locust \
+        locust_command="locust \
             -H $url \
             -m $model \
             --tokenizer meta-llama/Llama-3.1-8B-Instruct \
@@ -48,7 +48,13 @@ for length in "${lengths[@]}"; do
             --stream \
             --summary-file $summary_file \
             -t 60 \
-            -k $api_key
+            -k $api_key"
+          
+        if [ "$randomize" = true ]; then
+            locust_command+=" --prompt-randomize"
+        fi
+
+        eval $locust_command
 
         sleep 5
     done

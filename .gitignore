@@ -2,3 +2,5 @@
 __pycache__/
 # Benchmark results
 .env
+.DS_Store
+.vscode

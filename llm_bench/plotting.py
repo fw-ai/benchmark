@@ -7,8 +7,12 @@ from plotly.subplots import make_subplots
 def main(args):
     # Read the CSV data
     dfs = []
-    for f in args.input_files:
-        dfs.append(pd.read_csv(f))
+    for idx, f in enumerate(args.input_files):
+        this_df = pd.read_csv(f)
+        if args.provider_suffixes:
+            suffix = args.provider_suffixes[idx]
+            this_df["Provider"] = this_df["Provider"].astype(str) + f"-{suffix}"
+        dfs.append(this_df)
 
     df = pd.concat(dfs, axis=0)
 
@@ -40,6 +44,8 @@ def main(args):
     html_output.append(
         f"<h1>Model:{args.model}   |   Output tokens:{args.output_tokens}   |   Time per test (s):60   |   GPU:1 x L40S </h1>"
     )
+    if args.extra_header:
+        html_output.append(f"<h1>{args.extra_header}</h1>")
     # html_output.append("")
 
     # Get unique prompt token values
@@ -159,11 +165,25 @@ if __name__ == "__main__":
         nargs="+",
         type=str,
         help="Provide 2 results files to plot",
+        required=True,
+    )
+    parser.add_argument(
+        "--provider-suffixes",  # Name of the argument
+        nargs="+",
+        type=str,
+        help="Provide suffixes to attach to provider names, so you can compare same provider with different configs",
+        required=False,
     )
     parser.add_argument(
         "--output-file", type=str, required=False, default="results.html", help="Number of output tokens"
     )
+    parser.add_argument("--extra-header", type=str, required=False, help="Add an h1 header to top of page")
+
     args = parser.parse_args()
-    assert len(args.input_files) == 2, "Can only compare against 2 result files"
+    assert len(args.input_files) <= 5, "Can only compare 5 result files at a time"
+    if args.provider_suffixes:
+        assert len(args.input_files) == len(
+            args.provider_suffixes
+        ), "If passing suffixes, you must pass one per input file"
 
     main(args)
