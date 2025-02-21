@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "vllm-svc-%s" .Values.modelName | quote }}
+  namespace: default
+spec:
+  ports:
+  - name: {{ printf "vllm-http-%s" .Values.modelName | quote }}
+    port: 80
+    protocol: TCP
+    targetPort: 8000
+    nodePort: {{ .Values.nodePort }}
+  # The label selector should match the deployment labels & it is useful for prefix caching feature
+  selector:
+    app: {{ printf "vllm-%s" .Values.modelName | quote }}
+  sessionAffinity: None
+  type: NodePort

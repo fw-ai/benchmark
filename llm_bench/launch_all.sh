@@ -7,7 +7,7 @@ model="meta-llama/Llama-3.1-8B-Instruct"
 api_key="not-relevant-for-vllm"
 randomize=false
 
-while getopts ":p:s:u:m:k:r:" opt; do
+while getopts "p:s:u:m:k:r" opt; do
   case $opt in
     p) provider="$OPTARG"
     ;;

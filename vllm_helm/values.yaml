@@ -1,0 +1,16 @@
+modelName: llama-7b
+modelHfId: meta-llama/Llama-3.1-8B-Instruct
+resources:
+  limits:
+    cpu: 13
+    memory: 100Gi
+    nvidia.com/gpu: 1
+  requests:
+    cpu: 10
+    memory: 80Gi
+    nvidia.com/gpu: 1
+nodeSelector: {}
+nodePort: 30500
+  # eks.amazonaws.com/nodegroup: g6e-single
+hfToken: "replace your hf token"
+image: "vllm/vllm-openai:v0.7.1"

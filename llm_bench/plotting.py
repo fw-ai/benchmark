@@ -65,11 +65,12 @@ def main(args):
 
         # Create figure with two subplots
         fig = make_subplots(
-            rows=3,
+            rows=4,
             cols=1,
             subplot_titles=(
-                f"P90 Time to First Token vs. Concurrency",
-                f"P90 Time per Output Token vs. Concurrency",
+                "% incomplete requests/total requests vs. Concurrency",
+                "P90 Time to First Token vs. Concurrency",
+                "P90 Time per Output Token vs. Concurrency",
                 "P90 Total Latency vs. Concurrency",
             ),
             vertical_spacing=0.1,
@@ -80,11 +81,12 @@ def main(args):
         for idx, provider in enumerate(df["Provider"].unique()):
             provider_df = token_df[token_df["Provider"] == provider]
 
-            # First subplot: P90 Time to First Token
+            # Incomplete requests/total requests
+            ratio = round((provider_df["Incomplete Requests"] / provider_df["Total Requests"]) * 100, 2)
             fig.add_trace(
                 go.Scatter(
                     x=provider_df["Concurrency"],
-                    y=provider_df["P90 Time To First Token"],
+                    y=ratio,
                     name=f"{provider}",
                     fill="tozeroy",
                     fillcolor=f"rgba({line_and_fill_colors[idx][1]})",
@@ -95,11 +97,11 @@ def main(args):
                 col=1,
             )
 
-            # Second subplot: P90 Latency per Token
+            # P90 Time to First Token
             fig.add_trace(
                 go.Scatter(
                     x=provider_df["Concurrency"],
-                    y=provider_df["P90 Latency Per Token"],
+                    y=provider_df["P90 Time To First Token"],
                     name=f"{provider}",
                     fill="tozeroy",
                     fillcolor=f"rgba({line_and_fill_colors[idx][1]})",
@@ -110,6 +112,22 @@ def main(args):
                 col=1,
             )
 
+            # P90 Latency per Token
+            fig.add_trace(
+                go.Scatter(
+                    x=provider_df["Concurrency"],
+                    y=provider_df["P90 Latency Per Token"],
+                    name=f"{provider}",
+                    fill="tozeroy",
+                    fillcolor=f"rgba({line_and_fill_colors[idx][1]})",
+                    line=dict(color=line_and_fill_colors[idx][0]),
+                    showlegend=False,
+                ),
+                row=3,
+                col=1,
+            )
+
+            # P90 Total Latency
             fig.add_trace(
                 go.Scatter(
                     x=provider_df["Concurrency"],
@@ -120,7 +138,7 @@ def main(args):
                     line=dict(color=line_and_fill_colors[idx][0]),
                     showlegend=False,
                 ),
-                row=3,
+                row=4,
                 col=1,
             )
 
@@ -137,9 +155,11 @@ def main(args):
         fig.update_xaxes(title_text="Concurrency (QPS)", row=1, col=1)
         fig.update_xaxes(title_text="Concurrency (QPS)", row=2, col=1)
         fig.update_xaxes(title_text="Concurrency (QPS)", row=3, col=1)
-        fig.update_yaxes(title_text="TTFT (ms)", row=1, col=1)
-        fig.update_yaxes(title_text="TPOT(ms)", row=2, col=1)
-        fig.update_yaxes(title_text="Total latency(ms)", row=3, col=1)
+        fig.update_xaxes(title_text="Concurrency (QPS)", row=4, col=1)
+        fig.update_yaxes(title_text="% incomplete requests/total requests", row=1, col=1)
+        fig.update_yaxes(title_text="TTFT (ms)", row=2, col=1)
+        fig.update_yaxes(title_text="TPOT(ms)", row=3, col=1)
+        fig.update_yaxes(title_text="Total latency(ms)", row=4, col=1)
 
         # Add to HTML output
         html_output.append(f"<h2>Input Tokens: {int(token_value)}</h2>")

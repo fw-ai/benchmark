@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "vllm-%s" .Values.modelName | quote }}
+  namespace: default
+  labels:
+    app: {{ printf "vllm-%s" .Values.modelName | quote }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ printf "vllm-%s" .Values.modelName | quote }}
+  template:
+    metadata:
+      labels:
+        app: {{ printf "vllm-%s" .Values.modelName | quote }}
+    spec:
+      volumes:
+      - name: cache-volume
+        hostPath:
+            path: /dev/vllm-cache
+            type: DirectoryOrCreate
+      # vLLM needs to access the host's shared memory for tensor parallel inference.
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "2Gi"
+      nodeSelector:
+         {{- with .Values.nodeSelector}}
+         {{ toYaml . }}
+         {{- end}}
+      containers:
+      - name: {{ printf "vllm-%s" .Values.modelName | quote }}
+        image: {{ .Values.image }}
+        command: ["/bin/sh", "-c"]
+        args: [
+          {{ printf "vllm serve %s --trust-remote-code --enable-chunked-prefill --max_num_batched_tokens 1024 --enable-prefix-caching" .Values.modelHfId | quote }}
+        ]
+        resources:
+          limits:
+            {{- toYaml .Values.resources.limits | nindent 14 }}
+          requests:
+            {{- toYaml .Values.resources.requests | nindent 14 }}
+        env:
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: cache-volume
+        - name: shm
+          mountPath: /dev/shm
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 5

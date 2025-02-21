@@ -14,7 +14,7 @@ import json
 import time
 import orjson
 import threading
-import uuid
+from uuid import uuid4
 from sseclient import SSEClient
 
 try:
@@ -32,6 +32,35 @@ def add_custom_metric(name, value, length_value=0):
         exception=None,
         context=None,
     )
+
+
+class RequestTracker:
+    lock = threading.Lock()
+    requests = {}  # {request_id: 'initiated'/'first_received'/'last_received'}
+
+    @classmethod
+    def add_request(cls, request_id):
+        with cls.lock:
+            cls.requests[request_id] = "initiated"
+
+    @classmethod
+    def mark_first_chunk(cls, request_id):
+        with cls.lock:
+            if request_id in cls.requests:
+                cls.requests[request_id] = "first_received"
+
+    @classmethod
+    def mark_last_chunk(cls, request_id):
+        with cls.lock:
+            if request_id in cls.requests:
+                cls.requests[request_id] = "last_received"
+
+    @classmethod
+    def get_counts(cls):
+        with cls.lock:
+            initiated = sum(1 for s in cls.requests.values() if s == "initiated")
+            first_only = sum(1 for s in cls.requests.values() if s == "first_received")
+            return initiated, first_only
 
 
 PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
@@ -684,10 +713,12 @@ class LLMUser(HttpUser):
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
-        id = uuid.uuid4()
+        request_id = str(uuid4())
         with self.client.post(
             self.provider_formatter.get_url(), data=json.dumps(data), stream=True, catch_response=True, timeout=120
         ) as response:
+            RequestTracker.add_request(request_id)
+
             sseclient = SSEClient(response)
             combined_text = ""
             done = False
@@ -726,6 +757,7 @@ class LLMUser(HttpUser):
                     # some providers (SGLang) send an empty chunk first skewing the TTFT
                     if combined_text and t_first_token is None:
                         t_first_token = now
+                        RequestTracker.mark_first_chunk(request_id)
 
                     if out.logprob_tokens:
                         total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
@@ -734,6 +766,7 @@ class LLMUser(HttpUser):
                     response.failure(e)
                     return
             assert t_first_token is not None, "empty response received"
+            RequestTracker.mark_last_chunk(request_id)
             if (
                 (total_logprob_tokens is not None)
                 and (total_usage_tokens is not None)
@@ -994,6 +1027,12 @@ def _(environment, **kw):
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
             entries[name] = metrics.get_response_time_percentile(percentile / 100)
+
+    initiated_reqs, first_chunk_only_reqs = RequestTracker.get_counts()
+    entries["total_requests"] = len(RequestTracker.requests)
+    entries["incomplete_requests_nofirstchunk"] = initiated_reqs
+    entries["incomplete_requests_nolastchunk"] = first_chunk_only_reqs
+    entries["incomplete_requests"] = initiated_reqs + first_chunk_only_reqs
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
