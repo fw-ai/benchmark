@@ -59,8 +59,9 @@ prompts = [
 PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
 PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
-PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
+
 tokenizer = tiktoken.encoding_for_model("gpt-4")
+PROMPT_SUFFIX_TOKENS = len(tokenizer.encode(PROMPT_SUFFIX))
 
 class FixedQPSPacer:
     _instance = None
@@ -698,32 +699,38 @@ class LLMUser(HttpUser):
 
     def _get_input(self):
         def _maybe_randomize(prompt):
+
+            prompt_suffix_tokens = len(tokenizer.encode(prompt_suffix))
+            
             if not self.environment.parsed_options.prompt_randomize:
+                prompt = (PROMPT_PREFIX_TOKEN * (self.environment.parsed_options.prompt_tokens - prompt_suffix_tokens)) + prompt
                 return prompt
 
             # single letters are single tokens
             num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(
                 PROMPT_PREFIX_TOKEN
             )
+
+            num_cache_tokens = self.environment.parsed_options.prompt_cache_max_len
+            num_random_tokens = self.environment.parsed_options.prompt_tokens - num_cache_tokens - prompt_suffix_tokens
             return (
+                PROMPT_PREFIX_TOKEN * num_cache_tokens +
                 " ".join(
                     chr(ord("a") + random.randint(0, 25))
                     for _ in range(num_random_tokens)
                 )
                 + " "
-                + prompt[-len(PROMPT_SUFFIX) :]
+                + prompt
             )
 
         prompt_suffix = random.choice(prompts)
-        prompt_suffix_tokens = len(tokenizer.encode(prompt_suffix))
-        prompt = (PROMPT_PREFIX_TOKEN
-                * (self.environment.parsed_options.prompt_tokens - prompt_suffix_tokens)) + prompt_suffix
+        
         if isinstance(self.input, str):
-            return _maybe_randomize(prompt), None
+            return _maybe_randomize(prompt_suffix), None
         else:
             item = self.input[random.randint(0, len(self.input) - 1)]
             assert "prompt" in item
-            return _maybe_randomize(prompt), item.get("images", None)
+            return _maybe_randomize(prompt_suffix), item.get("images", None)
 
     @task
     def generate_text(self):
