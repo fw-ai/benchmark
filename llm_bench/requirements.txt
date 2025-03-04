@@ -3,3 +3,4 @@ orjson==3.9.10
 sseclient-py==1.8.0
 plotly==6.0.0
 pandas==2.2.3
+transformers==4.47.0

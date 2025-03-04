@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  nginx.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+
+        location / {
+            root /assets;
+            autoindex on;
+            autoindex_exact_size off;
+            autoindex_localtime on;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: benchmarks-reports
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: benchmarks-reports
+  template:
+    metadata:
+      labels:
+        app: benchmarks-reports
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: "500m"   # Request 0.5 CPU (optional)
+              memory: "100Mi"  # Request 100MB RAM (optional)
+            limits:
+              cpu: "1"       # Limit to 1 full CPU
+              memory: "200Mi"  # Limit to 200MB RAM
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+            - name: assets
+              mountPath: /assets
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+        - name: assets
+          hostPath:
+            path: /mnt/fluidstack/nfs/llm-benchmarks
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: benchmarks-reports
+spec:
+  selector:
+    app: benchmarks-reports
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: benchmarks-reports-ui
+spec:
+  ingressClassName: cloudflare-tunnel
+  rules:
+  - host: inference-benchmarks.tech-adaptive-ml.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: benchmarks-reports
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
