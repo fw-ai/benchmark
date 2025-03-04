@@ -9,9 +9,8 @@ spec:
     port: 80
     protocol: TCP
     targetPort: 8000
-    nodePort: {{ .Values.nodePort }}
   # The label selector should match the deployment labels & it is useful for prefix caching feature
   selector:
     app: {{ printf "vllm-%s" .Values.modelName | quote }}
   sessionAffinity: None
-  type: NodePort
+  type: ClusterIP
