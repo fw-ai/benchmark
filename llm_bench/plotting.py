@@ -2,6 +2,7 @@ import argparse
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import os
 
 
 def main(args):
@@ -41,8 +42,10 @@ def main(args):
     <body>
     """
     )
+
+    gpu_name = os.environ.get("GPU_NAME", "")
     html_output.append(
-        f"<h1>Model:{args.model}   |   Output tokens:{args.output_tokens}   |   Time per test (s):60   |   GPU:1 x L40S </h1>"
+        f"<h1>Model:{args.model}   |   Output tokens:{args.output_tokens}   |   Time per test (s):60   |   GPU:1 x {gpu_name} </h1>"
     )
     if args.extra_header:
         html_output.append(f"<h1>{args.extra_header}</h1>")

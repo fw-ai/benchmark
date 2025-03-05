@@ -8,6 +8,7 @@ echo "ADAPTIVE_API_KEY=$ADAPTIVE_API_KEY"
 
 HARMONY_ENDPOINT=http://adaptive-harmony-0.adaptive-harmony-hdls-svc.default.svc.cluster.local:50053
 ADAPTIVE_VERSION=$(curl -s $HARMONY_ENDPOINT/version_info | jq -r 'try .image_tag // empty' || echo "")
+export GPU_NAME=$(curl -s "$HARMONY_ENDPOINT/infra_info?gpu_name=yes" | jq -r 'try .gpu_name // empty' || echo "")
 
 OUTPUT_DIR=/llm-benchmarks
 PREFIX=$(date +"%Y-%m-%d-%H%M")
