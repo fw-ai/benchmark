@@ -9,7 +9,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: benchmark-job
-          image: public.ecr.aws/o5q0o9k5/adaptive/llm-bench:v4
+          image: public.ecr.aws/o5q0o9k5/adaptive/llm-bench:v5
           env:
             - name: VLLM_ENDPOINT
               value: http://vllm-svc-llama-7b
