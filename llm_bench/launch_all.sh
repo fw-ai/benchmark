@@ -27,7 +27,7 @@ while getopts "p:s:u:m:k:r" opt; do
 done
 
 
-lengths=(128 256 512 1024 2048 4096)
+lengths=(8192 16384)
 qps=(0.125 0.5 1 2 4 6 8 10 12 14 16 18 20)
 
 for length in "${lengths[@]}"; do
@@ -47,7 +47,7 @@ for length in "${lengths[@]}"; do
             --chat \
             --stream \
             --summary-file $summary_file \
-            -t 60 \
+            -t 300 \
             -k $api_key"
           
         if [ "$randomize" = true ]; then
