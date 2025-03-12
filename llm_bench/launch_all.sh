@@ -6,8 +6,9 @@ summary_file="vllm.csv"
 model="meta-llama/Llama-3.1-8B-Instruct"
 api_key="not-relevant-for-vllm"
 randomize=false
+duration=60
 
-while getopts "p:s:u:m:k:r" opt; do
+while getopts "p:s:u:m:k:r:d" opt; do
   case $opt in
     p) provider="$OPTARG"
     ;;
@@ -21,14 +22,21 @@ while getopts "p:s:u:m:k:r" opt; do
     ;;
     r) randomize=true
     ;;
+    d) duration="$OPTARG"
+    ;;
     \?) echo "Invalid option -$OPTARG" >&2
     ;;
   esac
 done
 
+lengths_str="${LENGTHS:-128,256,512,1024,2048,4096}" 
+qps_str="${QPS:-0.125,0.5,1,2,4,6,8,10,12,14,16,18,20}"
 
-lengths=(8192 16384)
-qps=(0.125 0.5 1 2 4 6 8 10 12 14 16 18 20)
+IFS=',' read -ra lengths <<< "$lengths_str"
+IFS=',' read -ra qps <<< "$qps_str"
+
+echo $lengths
+echo $qps
 
 for length in "${lengths[@]}"; do
     for q in "${qps[@]}"; do
@@ -47,7 +55,7 @@ for length in "${lengths[@]}"; do
             --chat \
             --stream \
             --summary-file $summary_file \
-            -t 300 \
+            -t $duration \
             -k $api_key"
           
         if [ "$randomize" = true ]; then
