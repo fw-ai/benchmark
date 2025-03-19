@@ -779,7 +779,8 @@ class LLMUser(HttpUser):
                         ) + out.usage_tokens
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
-                    combined_text += out.text
+                    if out.text:
+                        combined_text += out.text
 
                     # some providers (SGLang) send an empty chunk first skewing the TTFT
                     if combined_text and t_first_token is None:
