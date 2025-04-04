@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: benchmark-cronjob
+spec:
+  schedule: "0 10 * * 6"  # Every saturday at 10 AM UTC
+  jobTemplate:
+    spec:
+      backoffLimit: 5
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: benchmark-job
+              image: public.ecr.aws/o5q0o9k5/adaptive/llm-bench:v11
+              imagePullPolicy: Always
+              env:
+                - name: VLLM_ENDPOINT
+                  value: http://vllm-svc-llama-7b
+
+                - name: ADAPTIVE_ENDPOINT
+                  value: http://adaptive-control-plane-svc
+
+                # Huggingface token
+                - name: HF_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: hf-token-secret
+                      key: token
+                - name: ADAPTIVE_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: adaptive-api-key
+                      key: token
+              securityContext:
+                privileged: true
+              volumeMounts:
+                - mountPath: /llm-benchmarks
+                  name: llm-benchmarks-volume
+          volumes:
+            - name: llm-benchmarks-volume
+              hostPath:
+                path: /mnt/fluidstack/nfs/llm-benchmarks
+                type: Directory

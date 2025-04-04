@@ -9,7 +9,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: benchmark-job
-          image: public.ecr.aws/o5q0o9k5/adaptive/llm-bench:v7
+          image: public.ecr.aws/o5q0o9k5/adaptive/llm-bench:v11
           imagePullPolicy: Always
           env:
             - name: VLLM_ENDPOINT
@@ -24,6 +24,11 @@ spec:
                 secretKeyRef:
                   name: hf-token-secret
                   key: token
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: benchmarks-slack-wh
+                  key: wh
             - name: ADAPTIVE_API_KEY
               valueFrom:
                 secretKeyRef:

@@ -733,6 +733,8 @@ class LLMUser(HttpUser):
             # for chunk in response.iter_lines(delimiter=b"\n\n"):
             for chunk in sseclient.events():
                 # print(f"{id}:{chunk.data}")
+
+                
                 # if len(chunk) == 0:
                 # continue  # come providers send empty lines between data chunks
                 if done:
@@ -746,6 +748,11 @@ class LLMUser(HttpUser):
                         if chunk.data.strip() == "[DONE]":
                             done = True
                             continue
+                    
+                    # ignore telemetry data
+                    if chunk.data.startswith('{"TTFT":{"') or chunk.data.startswith('{"TotalRequestDuration":{"'):
+                        continue
+
                     data = orjson.loads(chunk.data)
                     out = self.provider_formatter.parse_output_json(data, prompt)
                     if out.usage_tokens:
