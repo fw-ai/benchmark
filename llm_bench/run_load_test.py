@@ -1,10 +1,17 @@
 import os
 
-model_name = "llama3p3-70b-instruct-fp8-engine"
-user, input_tok, output_tok = 1, 6000, 350
-token = "sk-xxxxxxx"
-url = "http://localhost:8000/v1"
+model_name = "llama3p1"
+users = [1,2,4,8]
+input_toks = [64, 256, 512, 1024]
+output_toks = [64, 256, 512, 1024]
 
-os.system(
-    f"locust -t 2min -u {user} -r {user} -o {output_tok} -H {url} -p {input_tok} --api-key {token} --model={model_name} --prompt-randomize --chat --stream --provider openai --temperature 0.2 --summary summary.txt"
-)
+for user in users:
+    for input_tok in input_toks:
+        for output_tok in output_toks:
+    
+            token = "sk-xxxxxxx"
+            url = "http://localhost:8000/v1"
+
+            os.system(
+                f"locust -t 30sec -u {user} -r {user} -o {output_tok} -H {url} -p {input_tok} --api-key {token} --model={model_name} --prompt-randomize --chat --stream --provider openai --temperature 0.2 --summary summary-test.txt"
+            )
