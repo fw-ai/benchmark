@@ -249,7 +249,7 @@ class OpenAIProvider(BaseProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         data = {
-            # "model": self.model,
+            "model": self.model,
             "max_tokens": max_tokens,
             "stream": self.parsed_options.stream,
             "temperature": self.parsed_options.temperature,
@@ -634,7 +634,7 @@ class LLMUser(HttpUser):
                 # So using /completions endpoint requires a bit more work to support this
                 raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
             self.prompt_images = [
-                self._create_random_image(width, height) for width, height in image_resolutions
+                self._create_base64_image(width, height) for width, height in image_resolutions
             ]
         
         self.max_tokens_sampler = LengthSampler(
@@ -687,9 +687,7 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
-        print(self.environment.parsed_options.prompt_images_with_resolutions)
-
-    def _create_random_image(self, width, height):
+    def _create_base64_image(self, width, height):
         """Create a random RGB image with the given dimensions and return as base64 data URI."""
         img = Image.new('RGB', (width, height))
         buffer = io.BytesIO()
@@ -768,7 +766,6 @@ class LLMUser(HttpUser):
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
         prompt, images = self._get_input()
-        print(prompt)
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
