@@ -729,7 +729,7 @@ class LLMUser(HttpUser):
     def insert_image_placeholders(self, prompt, num_images):
         """
         Insert <image> placeholders evenly throughout the prompt.
-        E.g., for 3 images, a prompt "abcdefg" is changed to <image>abc<image>def<image>
+        E.g., for 3 images, a prompt "abcdefgh" is changed to "ab<image>cd<image>ef<image>gh"
 
         Images are spaced out evenly based on on character length.
         This may result in a few extra tokens if the image tags are placed in the middle of tokens.
