@@ -735,10 +735,7 @@ class LLMUser(HttpUser):
         This may result in a few extra tokens if the image tags are placed in the middle of tokens.
         But shouldn't affect results meaningfully.
         """
-        prompt_length = len(prompt)
-        segment_length = prompt_length // (num_images + 1)
-        for i in range(num_images):
-            prompt = prompt[:segment_length * (i + 1)] + "<image>" + prompt[segment_length * (i + 1):]
+        
         return prompt
 
     @task
