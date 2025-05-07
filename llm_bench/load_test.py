@@ -731,7 +731,7 @@ class LLMUser(HttpUser):
         Insert <image> placeholders evenly throughout the prompt.
         E.g., for a prompt of Hello World, and 3 images, the output should be <image>Hello <image>World<image>
 
-        Images are spaced out evenly based on on character length
+        Images are spaced out evenly based on on character length.
         """
         
     @task
