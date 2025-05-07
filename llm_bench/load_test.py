@@ -669,6 +669,8 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
+        print(self.environment.parsed_options.image_resolutions)
+
     def _get_input(self):
         def _maybe_randomize(prompt):
             if not self.environment.parsed_options.prompt_randomize:
