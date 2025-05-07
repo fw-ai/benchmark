@@ -733,6 +733,11 @@ class LLMUser(HttpUser):
 
         Images are spaced out evenly based on on character length.
         """
+        prompt_length = len(prompt)
+        segment_length = prompt_length // (num_images + 1)
+        for i in range(num_images):
+            prompt = prompt[:segment_length * (i + 1)] + " <image> " + prompt[segment_length * (i + 1):]
+        return prompt
         
     @task
     def generate_text(self):
