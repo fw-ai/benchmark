@@ -14,6 +14,9 @@ import json
 import time
 import orjson
 import threading
+import base64
+import io
+from PIL import Image
 
 try:
     import locust_plugins
@@ -622,7 +625,12 @@ class LLMUser(HttpUser):
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         if image_resolutions:
-            
+            if isinstance(self.input, list) and any("images" in item for item in self.input):
+                raise AssertionError("Cannot provide both prompt_images_with_resolutions and images in prompt. Please provide only one of the two.")
+
+            self.images = [
+                self._create_random_image(width, height) for width, height in image_resolutions
+            ]
         
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
@@ -675,6 +683,14 @@ class LLMUser(HttpUser):
         self.first_done = False
 
         print(self.environment.parsed_options.prompt_images_with_resolutions)
+
+    def _create_random_image(self, width, height):
+        """Create a random RGB image with the given dimensions and return as base64 data URI."""
+        img = Image.new('RGB', (width, height))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG")
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return f"data:image/jpeg;base64,{img_str}"
 
     def _get_input(self):
         def _maybe_randomize(prompt):
@@ -892,6 +908,16 @@ def init_parser(parser):
         help="Include a few random numbers in the generated prompt to avoid caching",
     )
     parser.add_argument(
+        "--prompt-images-with-resolutions",
+        type=parse_resolution,
+        nargs="+",
+        default=[],
+        help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
+             "For example, \"--prompt-images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
+             "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
+             "Images will be spaced out evenly across the prompt.",
+    )
+    parser.add_argument(
         "-o",
         "--max-tokens",
         env_var="MAX_TOKENS",
@@ -1001,16 +1027,6 @@ def init_parser(parser):
         default=1,
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
-    )
-    parser.add_argument(
-        "--prompt-images-with-resolutions",
-        type=parse_resolution,
-        nargs="+",
-        default=[],
-        help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
-             "For example, \"--prompt-images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
-             "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
-             "Images will be spaced out evenly across the prompt.",
     )
 
 @events.quitting.add_listener
