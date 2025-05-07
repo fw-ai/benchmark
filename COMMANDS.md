@@ -17,7 +17,7 @@ locust -t 1min \
     --provider=fireworks \
     --model=accounts/fireworks/models/llama-v3p1-8b-instruct \
     --api-key $FIREWORKS_API_KEY \
-    --image-resolutions 1024x1024 2048x3803 \
+    --prompt-images-with-resolutions 1024x1024 2048x3803 \
     -H https://api.fireworks.ai/inference \
     --summary-file results.csv
 ```
