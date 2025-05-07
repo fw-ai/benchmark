@@ -748,7 +748,7 @@ class LLMUser(HttpUser):
         for i in range(num_images):
             # Move a sliding window of segment_length across the prompt
             # Truncating to ensure all segments are non-overlapping
-            # If segment_end is truncated, it will be included in the next segment
+            # If segment_end is truncated, that character will be included in the next segment
             segment_start = int(i * segment_length)
             segment_end = int((i + 1) * segment_length)
             result += prompt[segment_start:segment_end] + "<image>"
