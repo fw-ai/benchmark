@@ -110,7 +110,7 @@ locust -u 1 -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREW
 Benchmark Fireworks public deployment with 1 request and 2 images (1024w x 1024h and 3084w x 1080h):
 
 ```
-locust -u 1  -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v3-8b --chat --prompt-images-with-resolutions 1024x1024 3084x1080
+locust -u 1  -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama4-scout-instruct-basic --chat --prompt-images-with-resolutions 1024x1024 3084x1080
 ```
 
 Benchmark OpenAI deployment with 1 request only:

@@ -1106,7 +1106,7 @@ def _(environment, **kw):
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
-    percentile_to_report = [50, 90, 99, 99.9]
+    percentile_to_report = [50, 90, 95, 99, 99.9]
     percentile_metrics = ["time_to_first_token", "total_latency"]
     for percentile_metric in percentile_metrics:
         metrics = environment.stats.entries[percentile_metric, "METRIC"]
