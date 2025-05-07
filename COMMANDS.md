@@ -21,3 +21,10 @@ locust -t 1min \
     -H https://api.fireworks.ai/inference \
     --summary-file results.csv
 ```
+
+--image-resolutions
+--with-images-by-resolutions
+--images-by-resolutions
+--images-by-urls
+--images-with-resolutions
+--images-with-urls

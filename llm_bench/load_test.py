@@ -998,12 +998,12 @@ def init_parser(parser):
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
     parser.add_argument(
-        "--image-resolutions",
+        "--images-with-resolutions",
         type=parse_resolution,
         nargs="+",
         default=[],
-        help="Image resolutions to use for vision models. "
-             "For example, --image-resolutions 3084x1080 1024x1024 will insert 2 images "
+        help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
+             "For example, \"--images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
              "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
              "Images will be spaced out evenly across the prompt.",
     )
