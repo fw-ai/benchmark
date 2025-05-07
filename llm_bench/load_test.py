@@ -619,6 +619,11 @@ class LLMUser(HttpUser):
                 * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
                 + PROMPT_SUFFIX
             )
+
+        image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
+        if image_resolutions:
+            
+        
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
             mean=self.environment.parsed_options.max_tokens,
@@ -669,7 +674,7 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
-        print(self.environment.parsed_options.images_with_resolutions)
+        print(self.environment.parsed_options.prompt_images_with_resolutions)
 
     def _get_input(self):
         def _maybe_randomize(prompt):
