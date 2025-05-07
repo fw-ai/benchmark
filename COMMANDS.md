@@ -32,9 +32,9 @@ locust -t 1min \
     --provider=fireworks \
     --model=test \
     --chat \
-    --prompt-images-with-resolutions 1024x1024 2048x3803 \
     -H http://localhost:80 \
     --summary-file results.csv
+    # --prompt-images-with-resolutions 1024x1024 2048x3803 \
 ```
 
 --image-resolutions

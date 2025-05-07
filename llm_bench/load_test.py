@@ -624,6 +624,7 @@ class LLMUser(HttpUser):
             )
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
+        self.prompt_images = None
         if image_resolutions:
             if isinstance(self.input, list) and any("images" in item for item in self.input):
                 raise AssertionError("Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two.")
