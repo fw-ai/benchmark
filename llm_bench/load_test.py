@@ -735,8 +735,25 @@ class LLMUser(HttpUser):
         This may result in a few extra tokens if the image tags are placed in the middle of tokens.
         But shouldn't affect results meaningfully.
         """
+        if num_images <= 0:
+            return prompt
         
-        return prompt
+        prompt_length = len(prompt)
+        if prompt_length == 0:
+            return "<image>" * num_images
+        
+        segment_length = prompt_length / (num_images + 1)
+        result = ""
+        for i in range(num_images):
+            # Calculate the position to insert the image tag
+            insert_position = int((i + 1) * segment_length)
+            # Add the text segment followed by an image tag
+            result += prompt[int(i * segment_length):insert_position] + "<image>"
+        
+        # Final segment
+        result += prompt[int(num_images * segment_length):]
+
+        return result
 
     @task
     def generate_text(self):
