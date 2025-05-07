@@ -39,7 +39,7 @@ PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
 PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
 PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
-
+PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 class FixedQPSPacer:
     _instance = None
@@ -740,7 +740,7 @@ class LLMUser(HttpUser):
         
         prompt_length = len(prompt)
         if prompt_length == 0:
-            return "<image>" * num_images
+            return PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
         
         # we need num_images + 1 segments to place between <image> tags
         segment_length = prompt_length / (num_images + 1)
@@ -751,7 +751,7 @@ class LLMUser(HttpUser):
             # If segment_end is truncated, that character will be included in the next segment
             segment_start = int(i * segment_length)
             segment_end = int((i + 1) * segment_length)
-            result += prompt[segment_start:segment_end] + "<image>"
+            result += prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
         
         # Final segment
         result += prompt[int(num_images * segment_length):]
