@@ -1003,7 +1003,7 @@ def init_parser(parser):
         nargs="+",
         default=[],
         help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
-             "For example, \"--images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
+             "For example, \"--prompt-images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
              "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
              "Images will be spaced out evenly across the prompt.",
     )
