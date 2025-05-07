@@ -627,6 +627,11 @@ class LLMUser(HttpUser):
         if image_resolutions:
             if isinstance(self.input, list) and any("images" in item for item in self.input):
                 raise AssertionError("Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two.")
+            if not self.environment.parsed_options.chat:
+                # Using regular /completions endpoint, each model has it's own image placeholder
+                # e.g., <|image|> for Phi, <|image_pad|> for Qwen, <image> for Llava
+                # So using /completions endpoint requires a bit more work to support this
+                raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
             self.prompt_images = [
                 self._create_random_image(width, height) for width, height in image_resolutions
             ]
@@ -957,7 +962,8 @@ def init_parser(parser):
         help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
              "For example, \"--prompt-images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
              "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
-             "Images will be spaced out evenly across the prompt.",
+             "Images will be spaced out evenly across the prompt."
+             "Only supported with --chat mode.",
     )
     parser.add_argument(
         "-o",
