@@ -626,9 +626,8 @@ class LLMUser(HttpUser):
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         if image_resolutions:
             if isinstance(self.input, list) and any("images" in item for item in self.input):
-                raise AssertionError("Cannot provide both prompt_images_with_resolutions and images in prompt. Please provide only one of the two.")
-
-            self.images = [
+                raise AssertionError("Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two.")
+            self.prompt_images = [
                 self._create_random_image(width, height) for width, height in image_resolutions
             ]
         
@@ -711,12 +710,30 @@ class LLMUser(HttpUser):
             )
 
         if isinstance(self.input, str):
-            return _maybe_randomize(self.input), None
+            prompt = self.input
+            images = None
         else:
             item = self.input[random.randint(0, len(self.input) - 1)]
             assert "prompt" in item
-            return _maybe_randomize(item["prompt"]), item.get("images", None)
+            prompt = item["prompt"]
+            images = item.get("images", None)
+        
+        prompt = _maybe_randomize(prompt)
 
+        if self.prompt_images:
+            images = self.prompt_images
+            prompt = self.insert_image_placeholders(prompt, len(images))
+
+        return prompt, images
+
+    def insert_image_placeholders(self, prompt, num_images):
+        """
+        Insert <image> placeholders evenly throughout the prompt.
+        E.g., for a prompt of Hello World, and 3 images, the output should be <image>Hello <image>World<image>
+
+        Images are spaced out evenly based on on character length
+        """
+        
     @task
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
