@@ -986,6 +986,16 @@ def init_parser(parser):
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
+    parser.add_argument(
+        "--image-resolutions",
+        type=str,
+        nargs="+",
+        default=[],
+        help="Image resolutions to use for vision models. "
+             "For example, --image-resolutions 3084x1080 1024x1024 will insert 2 images "
+             "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
+             "Images will be spaced out evenly across the prompt.",
+    )
 
 @events.quitting.add_listener
 def _(environment, **kw):
