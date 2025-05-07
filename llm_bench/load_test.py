@@ -669,7 +669,7 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
-        print(self.environment.parsed_options.image_resolutions)
+        print(self.environment.parsed_options.images_with_resolutions)
 
     def _get_input(self):
         def _maybe_randomize(prompt):
@@ -998,7 +998,7 @@ def init_parser(parser):
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
     parser.add_argument(
-        "--images-with-resolutions",
+        "--prompt-images-with-resolutions",
         type=parse_resolution,
         nargs="+",
         default=[],
