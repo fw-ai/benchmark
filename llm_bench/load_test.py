@@ -742,13 +742,16 @@ class LLMUser(HttpUser):
         if prompt_length == 0:
             return "<image>" * num_images
         
+        # we need num_images + 1 segments to place between <image> tags
         segment_length = prompt_length / (num_images + 1)
         result = ""
         for i in range(num_images):
-            # Calculate the position to insert the image tag
-            insert_position = int((i + 1) * segment_length)
-            # Add the text segment followed by an image tag
-            result += prompt[int(i * segment_length):insert_position] + "<image>"
+            # Move a sliding window of segment_length across the prompt
+            # Truncating to ensure all segments are non-overlapping
+            # If segment_end is truncated, it will be included in the next segment
+            segment_start = int(i * segment_length)
+            segment_end = int((i + 1) * segment_length)
+            result += prompt[segment_start:segment_end] + "<image>"
         
         # Final segment
         result += prompt[int(num_images * segment_length):]
