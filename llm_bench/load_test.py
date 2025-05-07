@@ -14,6 +14,7 @@ import json
 import time
 import orjson
 import threading
+import itertools
 
 try:
     import locust_plugins
@@ -38,6 +39,33 @@ PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests
 PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
 
 
+class InputDirReader:
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self, dir):
+        self._dir = dir
+        self._iter = itertools.cycle(self._get_input())
+
+    @classmethod
+    def instance(cls, dir):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(dir)
+        return cls._instance
+
+    def _get_input(self):
+        for file in os.listdir(self._dir):
+            path = os.path.join(self._dir, file)
+            with open(path, "r") as f:
+                for line in f:
+                    yield line
+
+    def get_input(self):
+        with self._lock:
+            return next(self._iter)
+    
+        
 class FixedQPSPacer:
     _instance = None
     _lock = threading.Lock()
@@ -253,20 +281,24 @@ class OpenAIProvider(BaseProvider):
             "n": self.parsed_options.n,
         }
         if self.parsed_options.chat:
-            if images is None:
-                data["messages"] = [{"role": "user", "content": prompt}]
+            if isinstance(prompt, str):
+                if images is None:
+                    data["messages"] = [{"role": "user", "content": prompt}]
+                else:
+                    image_urls = []
+                    for image in images:
+                        image_urls.append(
+                            {"type": "image_url", "image_url": {"url": image}}
+                        )
+                    data["messages"] = [
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": prompt}, *image_urls],
+                        }
+                    ]
             else:
-                image_urls = []
-                for image in images:
-                    image_urls.append(
-                        {"type": "image_url", "image_url": {"url": image}}
-                    )
-                data["messages"] = [
-                    {
-                        "role": "user",
-                        "content": [{"type": "text", "text": prompt}, *image_urls],
-                    }
-                ]
+                assert images is None
+                data["messages"] = prompt
         else:
             data["prompt"] = prompt
             if images is not None:
@@ -642,12 +674,6 @@ class LLMUser(HttpUser):
         self.tokenizer = InitTracker.load_tokenizer(
             self.environment.parsed_options.tokenizer
         )
-        if self.tokenizer:
-            self.prompt_tokenizer_tokens = len(
-                self.tokenizer.encode(self._get_input()[0])
-            )
-        else:
-            self.prompt_tokenizer_tokens = None
 
         if self.environment.parsed_options.qps is not None:
             if self.environment.parsed_options.burst:
@@ -670,6 +696,14 @@ class LLMUser(HttpUser):
         self.first_done = False
 
     def _get_input(self):
+        if self.environment.parsed_options.prompt_dir:
+            input_reader = InputDirReader.instance(self.environment.parsed_options.prompt_dir)
+            prompt = next(input_reader.get_input())
+            if self.environment.parsed_options.chat:
+                prompt = json.loads(prompt)
+            return prompt, None
+
+
         def _maybe_randomize(prompt):
             if not self.environment.parsed_options.prompt_randomize:
                 return prompt
@@ -696,8 +730,17 @@ class LLMUser(HttpUser):
 
     @task
     def generate_text(self):
-        max_tokens = self.max_tokens_sampler.sample()
         prompt, images = self._get_input()
+        # Get number of tokens in the prompt.
+        if self.tokenizer:
+            if isinstance(prompt, str):
+                prompt_tokenizer_tokens = len(self.tokenizer.apply_chat_template(prompt, tokenize=True))
+            else:
+                prompt_tokenizer_tokens = len(self.tokenizer.encode(prompt))
+        else:
+            prompt_tokenizer_tokens = None
+        
+        max_tokens = self.max_tokens_sampler.sample()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
@@ -709,7 +752,7 @@ class LLMUser(HttpUser):
         ) as response:
             combined_text = ""
             done = False
-            prompt_usage_tokens = self.prompt_tokenizer_tokens
+            prompt_usage_tokens = prompt_tokenizer_tokens
             total_usage_tokens = None
             total_logprob_tokens = None
             try:
@@ -868,6 +911,12 @@ def init_parser(parser):
         env_var="PROMPT_TEXT",
         type=str,
         help="Prompt text to use instead of generating one. It can be a file reference starting with an ampersand, e.g. `@prompt.txt`",
+    )
+    parser.add_argument(
+        "--prompt-dir",
+        env_var="PROMPT_DIR",
+        type=str,
+        help="Directory containing prompt files. If specified, it's used instead of prompt-text file.",
     )
     parser.add_argument(
         "--prompt-randomize",
