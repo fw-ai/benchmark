@@ -729,20 +729,23 @@ class LLMUser(HttpUser):
     def insert_image_placeholders(self, prompt, num_images):
         """
         Insert <image> placeholders evenly throughout the prompt.
-        E.g., for a prompt of Hello World, and 3 images, the output should be <image>Hello <image>World<image>
+        E.g., for a prompt of "abcdefg", and 3 images, the output should be <image>abc<image>def<image>
 
         Images are spaced out evenly based on on character length.
+        This may result in a few extra tokens if the image tags are placed in the middle of tokens.
+        But shouldn't affect results meaningfully.
         """
         prompt_length = len(prompt)
         segment_length = prompt_length // (num_images + 1)
         for i in range(num_images):
-            prompt = prompt[:segment_length * (i + 1)] + " <image> " + prompt[segment_length * (i + 1):]
+            prompt = prompt[:segment_length * (i + 1)] + "<image>" + prompt[segment_length * (i + 1):]
         return prompt
-        
+
     @task
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
         prompt, images = self._get_input()
+        print(prompt)
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
