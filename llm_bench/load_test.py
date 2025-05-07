@@ -828,6 +828,15 @@ class LLMUser(HttpUser):
                 InitTracker.notify_first_request()
 
 
+def parse_resolution(res_str):
+    """Parse a resolution string like '3084x1080' into a tuple of integers (width, height)."""
+    try:
+        width, height = map(int, res_str.split('x'))
+        return (width, height)
+    except (ValueError, AttributeError):
+        raise argparse.ArgumentTypeError(f"Invalid resolution format: {res_str}. Expected format: WIDTHxHEIGHT (e.g. 1024x1024)")
+
+
 @events.init_command_line_parser.add_listener
 def init_parser(parser):
     parser.add_argument(
@@ -988,7 +997,7 @@ def init_parser(parser):
     )
     parser.add_argument(
         "--image-resolutions",
-        type=str,
+        type=parse_resolution,
         nargs="+",
         default=[],
         help="Image resolutions to use for vision models. "
