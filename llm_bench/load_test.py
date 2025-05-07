@@ -249,7 +249,7 @@ class OpenAIProvider(BaseProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         data = {
-            "model": self.model,
+            # "model": self.model,
             "max_tokens": max_tokens,
             "stream": self.parsed_options.stream,
             "temperature": self.parsed_options.temperature,
