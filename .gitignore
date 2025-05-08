@@ -3,3 +3,4 @@ __pycache__/
 # Benchmark results
 llm_bench/results/
 .env
+env/

@@ -14,6 +14,9 @@ import json
 import time
 import orjson
 import threading
+import base64
+import io
+from PIL import Image
 
 try:
     import locust_plugins
@@ -36,7 +39,7 @@ PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
 PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
 PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
-
+PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 class FixedQPSPacer:
     _instance = None
@@ -619,6 +622,21 @@ class LLMUser(HttpUser):
                 * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
                 + PROMPT_SUFFIX
             )
+
+        image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
+        self.prompt_images = None
+        if image_resolutions:
+            if isinstance(self.input, list) and any("images" in item for item in self.input):
+                raise AssertionError("Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two.")
+            if not self.environment.parsed_options.chat:
+                # Using regular /completions endpoint, each model has it's own image placeholder
+                # e.g., <|image|> for Phi, <|image_pad|> for Qwen, <image> for Llava
+                # So using /completions endpoint requires a bit more work to support this
+                raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
+            self.prompt_images = [
+                self._create_base64_image(width, height) for width, height in image_resolutions
+            ]
+        
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
             mean=self.environment.parsed_options.max_tokens,
@@ -669,6 +687,14 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
+    def _create_base64_image(self, width, height):
+        """Create a random RGB image with the given dimensions and return as base64 data URI."""
+        img = Image.new('RGB', (width, height))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG")
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return f"data:image/jpeg;base64,{img_str}"
+
     def _get_input(self):
         def _maybe_randomize(prompt):
             if not self.environment.parsed_options.prompt_randomize:
@@ -688,11 +714,53 @@ class LLMUser(HttpUser):
             )
 
         if isinstance(self.input, str):
-            return _maybe_randomize(self.input), None
+            prompt = self.input
+            images = None
         else:
             item = self.input[random.randint(0, len(self.input) - 1)]
             assert "prompt" in item
-            return _maybe_randomize(item["prompt"]), item.get("images", None)
+            prompt = item["prompt"]
+            images = item.get("images", None)
+        
+        prompt = _maybe_randomize(prompt)
+
+        if self.prompt_images:
+            images = self.prompt_images
+            prompt = self.insert_image_placeholders(prompt, len(images))
+
+        return prompt, images
+
+    def insert_image_placeholders(self, prompt, num_images):
+        """
+        Insert <image> placeholders evenly throughout the prompt.
+        E.g., for 3 images, a prompt "abcdefgh" is changed to "ab<image>cd<image>ef<image>gh"
+
+        Images are spaced out evenly based on on character length.
+        This may result in a few extra tokens if the image tags are placed in the middle of tokens.
+        But shouldn't affect results meaningfully.
+        """
+        if num_images <= 0:
+            return prompt
+        
+        prompt_length = len(prompt)
+        if prompt_length == 0:
+            return PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
+        
+        # we need num_images + 1 segments to place between <image> tags
+        segment_length = prompt_length / (num_images + 1)
+        result = ""
+        for i in range(num_images):
+            # Move a sliding window of segment_length across the prompt
+            # Truncating to ensure all segments are non-overlapping
+            # If segment_end is truncated, that character will be included in the next segment
+            segment_start = int(i * segment_length)
+            segment_end = int((i + 1) * segment_length)
+            result += prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
+        
+        # Final segment
+        result += prompt[int(num_images * segment_length):]
+
+        return result
 
     @task
     def generate_text(self):
@@ -828,6 +896,15 @@ class LLMUser(HttpUser):
                 InitTracker.notify_first_request()
 
 
+def parse_resolution(res_str):
+    """Parse a resolution string like '3084x1080' into a tuple of integers (width, height)."""
+    try:
+        width, height = map(int, res_str.split('x'))
+        return (width, height)
+    except (ValueError, AttributeError):
+        raise argparse.ArgumentTypeError(f"Invalid resolution format: {res_str}. Expected format: WIDTHxHEIGHT (e.g. 1024x1024)")
+
+
 @events.init_command_line_parser.add_listener
 def init_parser(parser):
     parser.add_argument(
@@ -874,6 +951,17 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Include a few random numbers in the generated prompt to avoid caching",
+    )
+    parser.add_argument(
+        "--prompt-images-with-resolutions",
+        type=parse_resolution,
+        nargs="+",
+        default=[],
+        help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
+             "For example, \"--prompt-images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
+             "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
+             "Images will be spaced out evenly across the prompt."
+             "Only supported with --chat mode.",
     )
     parser.add_argument(
         "-o",
@@ -1018,7 +1106,7 @@ def _(environment, **kw):
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
-    percentile_to_report = [50, 90, 99, 99.9]
+    percentile_to_report = [50, 90, 95, 99, 99.9]
     percentile_metrics = ["time_to_first_token", "total_latency"]
     for percentile_metric in percentile_metrics:
         metrics = environment.stats.entries[percentile_metric, "METRIC"]
