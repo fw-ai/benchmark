@@ -41,6 +41,7 @@ PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests
 PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
+
 class FixedQPSPacer:
     _instance = None
     _lock = threading.Lock()
@@ -103,15 +104,11 @@ class LengthSampler:
             mx = self.mean + int(self.alpha * self.mean)
             if self.cap is not None:
                 mx = min(mx, self.cap)
-            self.sample_func = lambda: random.randint(
-                max(1, self.mean - int(self.alpha * self.mean)), mx
-            )
+            self.sample_func = lambda: random.randint(max(1, self.mean - int(self.alpha * self.mean)), mx)
         elif self.distribution == "constant":
             self.sample_func = lambda: self.mean
         elif self.distribution == "normal":
-            self.sample_func = lambda: int(
-                random.gauss(self.mean, self.mean * self.alpha)
-            )
+            self.sample_func = lambda: int(random.gauss(self.mean, self.mean * self.alpha))
         else:
             raise ValueError(f"Unknown distribution {self.distribution}")
 
@@ -124,9 +121,7 @@ class LengthSampler:
                 continue
             return sample
         else:
-            raise ValueError(
-                "Can't sample a value after 1000 attempts, check distribution parameters"
-            )
+            raise ValueError("Can't sample a value after 1000 attempts, check distribution parameters")
 
     def __str__(self):
         r = int(self.mean * self.alpha)
@@ -168,10 +163,7 @@ class InitTracker:
     @classmethod
     def notify_first_request(cls):
         with cls.lock:
-            if (
-                cls.environment.parsed_options.qps is not None
-                and cls.first_request_done == 0
-            ):
+            if cls.environment.parsed_options.qps is not None and cls.first_request_done == 0:
                 # if in QPS mode, reset after first successful request comes back
                 cls.reset_stats()
             cls.first_request_done += 1
@@ -261,9 +253,7 @@ class OpenAIProvider(BaseProvider):
             else:
                 image_urls = []
                 for image in images:
-                    image_urls.append(
-                        {"type": "image_url", "image_url": {"url": image}}
-                    )
+                    image_urls.append({"type": "image_url", "image_url": {"url": image}})
                 data["messages"] = [
                     {
                         "role": "user",
@@ -479,12 +469,8 @@ class TgiProvider(BaseProvider):
             # non-streaming response
             return ChunkMetadata(
                 text=data["generated_text"],
-                logprob_tokens=(
-                    len(data["details"]["tokens"]) if "details" in data else None
-                ),
-                usage_tokens=(
-                    data["details"]["generated_tokens"] if "details" in data else None
-                ),
+                logprob_tokens=(len(data["details"]["tokens"]) if "details" in data else None),
+                usage_tokens=(data["details"]["generated_tokens"] if "details" in data else None),
                 prompt_usage_tokens=None,
             )
 
@@ -561,9 +547,7 @@ class LLMUser(HttpUser):
             resp.raise_for_status()
             resp = resp.json()
         except Exception as e:
-            raise ValueError(
-                "Argument --model or --provider was not specified and /v1/models failed"
-            ) from e
+            raise ValueError("Argument --model or --provider was not specified and /v1/models failed") from e
 
         models = resp["data"]
         assert len(models) > 0, "No models found in /v1/models"
@@ -576,50 +560,38 @@ class LLMUser(HttpUser):
                 break
         if self.provider is None:
             if not owned_by:
-                raise ValueError(
-                    f"Model {self.model} not found in /v1/models. Specify --provider explicitly"
-                )
+                raise ValueError(f"Model {self.model} not found in /v1/models. Specify --provider explicitly")
             if owned_by in PROVIDER_CLASS_MAP:
                 self.provider = owned_by
             else:
-                raise ValueError(
-                    f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}"
-                )
+                raise ValueError(f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}")
 
     def _on_start(self):
         self.client.headers["Content-Type"] = "application/json"
         if self.environment.parsed_options.api_key:
-            self.client.headers["Authorization"] = (
-                "Bearer " + self.environment.parsed_options.api_key
-            )
+            self.client.headers["Authorization"] = "Bearer " + self.environment.parsed_options.api_key
         if self.environment.parsed_options.header:
             for header in self.environment.parsed_options.header:
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
         self._guess_provider()
         print(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
-        self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](
-            self.model, self.environment.parsed_options
-        )
+        self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
 
         self.stream = self.environment.parsed_options.stream
         prompt_chars = self.environment.parsed_options.prompt_chars
         if self.environment.parsed_options.prompt_text:
-            self.input = _load_curl_like_data(
-                self.environment.parsed_options.prompt_text
-            )
+            self.input = _load_curl_like_data(self.environment.parsed_options.prompt_text)
         elif prompt_chars:
-            self.input = (
-                PROMPT_PREFIX_TOKEN * (prompt_chars // len(PROMPT_PREFIX_TOKEN) + 1)
-                + PROMPT_SUFFIX
-            )[:prompt_chars]
+            self.input = (PROMPT_PREFIX_TOKEN * (prompt_chars // len(PROMPT_PREFIX_TOKEN) + 1) + PROMPT_SUFFIX)[
+                :prompt_chars
+            ]
         else:
             assert (
                 self.environment.parsed_options.prompt_tokens >= PROMPT_SUFFIX_TOKENS
             ), f"Minimal prompt length is {PROMPT_SUFFIX_TOKENS}"
             self.input = (
-                PROMPT_PREFIX_TOKEN
-                * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
+                PROMPT_PREFIX_TOKEN * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
                 + PROMPT_SUFFIX
             )
 
@@ -627,16 +599,16 @@ class LLMUser(HttpUser):
         self.prompt_images = None
         if image_resolutions:
             if isinstance(self.input, list) and any("images" in item for item in self.input):
-                raise AssertionError("Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two.")
+                raise AssertionError(
+                    "Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two."
+                )
             if not self.environment.parsed_options.chat:
                 # Using regular /completions endpoint, each model has it's own image placeholder
                 # e.g., <|image|> for Phi, <|image_pad|> for Qwen, <image> for Llava
                 # So using /completions endpoint requires a bit more work to support this
                 raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
-            self.prompt_images = [
-                self._create_base64_image(width, height) for width, height in image_resolutions
-            ]
-        
+            self.prompt_images = [self._create_base64_image(width, height) for width, height in image_resolutions]
+
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
             mean=self.environment.parsed_options.max_tokens,
@@ -657,13 +629,9 @@ class LLMUser(HttpUser):
         }
         InitTracker.notify_init(self.environment, logging_params)
 
-        self.tokenizer = InitTracker.load_tokenizer(
-            self.environment.parsed_options.tokenizer
-        )
+        self.tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
         if self.tokenizer:
-            self.prompt_tokenizer_tokens = len(
-                self.tokenizer.encode(self._get_input()[0])
-            )
+            self.prompt_tokenizer_tokens = len(self.tokenizer.encode(self._get_input()[0]))
         else:
             self.prompt_tokenizer_tokens = None
 
@@ -678,9 +646,7 @@ class LLMUser(HttpUser):
             self.wait_time = pacer.wait_time_till_next
             self.wait()
         elif self.environment.parsed_options.burst:
-            self.wait_time = partial(
-                constant_pacing(self.environment.parsed_options.burst), self
-            )
+            self.wait_time = partial(constant_pacing(self.environment.parsed_options.burst), self)
         else:
             # introduce initial delay to avoid all users hitting the service at the same time
             time.sleep(random.random())
@@ -689,10 +655,10 @@ class LLMUser(HttpUser):
 
     def _create_base64_image(self, width, height):
         """Create a random RGB image with the given dimensions and return as base64 data URI."""
-        img = Image.new('RGB', (width, height))
+        img = Image.new("RGB", (width, height))
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG")
-        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
         return f"data:image/jpeg;base64,{img_str}"
 
     def _get_input(self):
@@ -701,14 +667,9 @@ class LLMUser(HttpUser):
                 return prompt
 
             # single letters are single tokens
-            num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(
-                PROMPT_PREFIX_TOKEN
-            )
+            num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(PROMPT_PREFIX_TOKEN)
             return (
-                " ".join(
-                    chr(ord("a") + random.randint(0, 25))
-                    for _ in range(num_random_tokens)
-                )
+                " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_random_tokens))
                 + " "
                 + prompt[-len(PROMPT_SUFFIX) :]
             )
@@ -721,7 +682,7 @@ class LLMUser(HttpUser):
             assert "prompt" in item
             prompt = item["prompt"]
             images = item.get("images", None)
-        
+
         prompt = _maybe_randomize(prompt)
 
         if self.prompt_images:
@@ -741,11 +702,11 @@ class LLMUser(HttpUser):
         """
         if num_images <= 0:
             return prompt
-        
+
         prompt_length = len(prompt)
         if prompt_length == 0:
             return PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
-        
+
         # we need num_images + 1 segments to place between <image> tags
         segment_length = prompt_length / (num_images + 1)
         result = ""
@@ -756,9 +717,9 @@ class LLMUser(HttpUser):
             segment_start = int(i * segment_length)
             segment_end = int((i + 1) * segment_length)
             result += prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
-        
+
         # Final segment
-        result += prompt[int(num_images * segment_length):]
+        result += prompt[int(num_images * segment_length) :]
 
         return result
 
@@ -794,9 +755,7 @@ class LLMUser(HttpUser):
                 try:
                     now = time.perf_counter()
                     if self.stream:
-                        assert chunk.startswith(
-                            b"data:"
-                        ), f"Unexpected chunk not starting with 'data': {chunk}"
+                        assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
                         chunk = chunk[len(b"data:") :]
                         if chunk.strip() == b"[DONE]":
                             done = True
@@ -804,9 +763,7 @@ class LLMUser(HttpUser):
                     data = orjson.loads(chunk)
                     out = self.provider_formatter.parse_output_json(data, prompt)
                     if out.usage_tokens:
-                        total_usage_tokens = (
-                            total_usage_tokens or 0
-                        ) + out.usage_tokens
+                        total_usage_tokens = (total_usage_tokens or 0) + out.usage_tokens
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
                     combined_text += out.text
@@ -815,11 +772,8 @@ class LLMUser(HttpUser):
                     if combined_text and t_first_token is None:
                         t_first_token = now
 
-
                     if out.logprob_tokens:
-                        total_logprob_tokens = (
-                            total_logprob_tokens or 0
-                        ) + out.logprob_tokens
+                        total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
                 except Exception as e:
                     print(f"Failed to parse response: {chunk} with error {repr(e)}")
                     response.failure(e)
@@ -830,9 +784,7 @@ class LLMUser(HttpUser):
                 and (total_usage_tokens is not None)
                 and total_logprob_tokens != total_usage_tokens
             ):
-                print(
-                    f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}"
-                )
+                print(f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}")
             if total_logprob_tokens is not None:
                 num_tokens = total_logprob_tokens
             else:
@@ -859,21 +811,15 @@ class LLMUser(HttpUser):
                 print(combined_text)
                 print("---")
             if num_chars:
-                add_custom_metric(
-                    "latency_per_char", dur_generation / num_chars * 1000, num_chars
-                )
+                add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
             if self.stream:
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
                 if num_tokens != max_tokens:
-                    print(
-                        f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}"
-                    )
+                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
                 add_custom_metric("num_tokens", num_tokens)
-                add_custom_metric(
-                    "latency_per_token", dur_generation / num_tokens * 1000, num_tokens
-                )
+                add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
                 add_custom_metric(
                     "overall_latency_per_token",
                     dur_total / num_tokens * 1000,
@@ -899,10 +845,12 @@ class LLMUser(HttpUser):
 def parse_resolution(res_str):
     """Parse a resolution string like '3084x1080' into a tuple of integers (width, height)."""
     try:
-        width, height = map(int, res_str.split('x'))
+        width, height = map(int, res_str.split("x"))
         return (width, height)
     except (ValueError, AttributeError):
-        raise argparse.ArgumentTypeError(f"Invalid resolution format: {res_str}. Expected format: WIDTHxHEIGHT (e.g. 1024x1024)")
+        raise argparse.ArgumentTypeError(
+            f"Invalid resolution format: {res_str}. Expected format: WIDTHxHEIGHT (e.g. 1024x1024)"
+        )
 
 
 @events.init_command_line_parser.add_listener
@@ -958,10 +906,10 @@ def init_parser(parser):
         nargs="+",
         default=[],
         help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
-             "For example, \"--prompt-images-with-resolutions 3084x1080 1024x1024\" will insert 2 images "
-             "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
-             "Images will be spaced out evenly across the prompt."
-             "Only supported with --chat mode.",
+        'For example, "--prompt-images-with-resolutions 3084x1080 1024x1024" will insert 2 images '
+        "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
+        "Images will be spaced out evenly across the prompt."
+        "Only supported with --chat mode.",
     )
     parser.add_argument(
         "-o",
@@ -1075,6 +1023,7 @@ def init_parser(parser):
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
 
+
 @events.quitting.add_listener
 def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
@@ -1085,9 +1034,7 @@ def _(environment, **kw):
 
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
-        entries["concurrency"] = (
-            f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
-        )
+        entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
     else:
         entries["concurrency"] = InitTracker.users
     for metric_name in [
@@ -1097,9 +1044,7 @@ def _(environment, **kw):
         "total_latency",
         "prompt_tokens",  # might overwrite the static value based on server side tokenization
     ]:
-        entries[metric_name] = environment.stats.entries[
-            (metric_name, "METRIC")
-        ].avg_response_time
+        entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
     if not environment.parsed_options.stream:
         # if there's no streaming these metrics are meaningless
         entries["time_to_first_token"] = ""
@@ -1112,7 +1057,7 @@ def _(environment, **kw):
         metrics = environment.stats.entries[percentile_metric, "METRIC"]
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
-            entries[name] = metrics.get_response_time_percentile(percentile/100)
+            entries[name] = metrics.get_response_time_percentile(percentile / 100)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
