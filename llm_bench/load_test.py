@@ -247,6 +247,8 @@ class OpenAIProvider(BaseProvider):
             "temperature": self.parsed_options.temperature,
             "n": self.parsed_options.n,
         }
+        if self.parsed_options.top_k is not None:
+            data["top_k"] = self.parsed_options.top_k
         if self.parsed_options.chat:
             if images is None:
                 data["messages"] = [{"role": "user", "content": prompt}]
@@ -627,6 +629,10 @@ class LLMUser(HttpUser):
             "temperature": self.temperature,
             "logprobs": self.environment.parsed_options.logprobs,
         }
+
+        if self.environment.parsed_options.top_k is not None:
+            logging_params["top_k"] = self.environment.parsed_options.top_k
+
         InitTracker.notify_init(self.environment, logging_params)
 
         self.tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
@@ -939,6 +945,13 @@ def init_parser(parser):
         type=float,
         default=0.3,
         help="Specifies the width of the distribution. Specified value `alpha` is relative to `max-tokens`. For uniform distribution we'd sample from [max_tokens - max_tokens * alpha, max_tokens + max_tokens * alpha]. For normal distribution we'd sample from `N(max_tokens, max_tokens * alpha)`. Defaults to 0.3",
+    )
+    parser.add_argument(
+        "--top-k",
+        env_var="TOP_K",
+        type=int,
+        default=None,
+        help="Specifies the top-k sampling parameter.",
     )
     parser.add_argument(
         "--stream",
