@@ -615,7 +615,8 @@ class LLMUser(HttpUser):
             )[:prompt_chars]
         else:
             assert (
-                self.environment.parsed_options.prompt_tokens >= PROMPT_SUFFIX_TOKENS
+                self.environment.parsed_options.prompt_images_with_resolutions != [] 
+                or self.environment.parsed_options.prompt_tokens >= PROMPT_SUFFIX_TOKENS
             ), f"Minimal prompt length is {PROMPT_SUFFIX_TOKENS}"
             self.input = (
                 PROMPT_PREFIX_TOKEN
