@@ -37,3 +37,7 @@ for qps in 2 4 6 8 10 12 14; do
 done
 
 ```
+
+
+- 3 million Etsy listing per day
+- Complete within ~20 hrs
