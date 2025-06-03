@@ -9,6 +9,7 @@ import sys
 import traceback
 from typing import Optional
 from locust import HttpUser, task, events, constant_pacing
+from urllib3 import PoolManager
 import copy
 import json
 import time
@@ -519,6 +520,7 @@ def _load_curl_like_data(text):
 
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
+    pool_manager = PoolManager(maxsize=50, block=True)
 
     def on_start(self):
         try:
