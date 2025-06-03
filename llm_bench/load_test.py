@@ -988,6 +988,15 @@ def init_parser(parser):
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
+    #DEBUG
+    import logging
+    from http.client import HTTPConnection
+    logging.basicConfig()
+    logging.getLogger().setLevel(logging.DEBUG)
+    requests_log = logging.getLogger("requests.packages.urllib3")
+    requests_log.setLevel(logging.DEBUG)
+    requests_log.propagate = True
+    #DEBUG
 
 @events.quitting.add_listener
 def _(environment, **kw):
