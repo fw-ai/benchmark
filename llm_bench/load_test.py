@@ -249,6 +249,8 @@ class OpenAIProvider(BaseProvider):
         }
         if self.parsed_options.top_k is not None:
             data["top_k"] = self.parsed_options.top_k
+        if self.parsed_options.top_p is not None:
+            data["top_p"] = self.parsed_options.top_p
         if self.parsed_options.chat:
             if images is None:
                 data["messages"] = [{"role": "user", "content": prompt}]
@@ -633,6 +635,8 @@ class LLMUser(HttpUser):
 
         if self.environment.parsed_options.top_k is not None:
             logging_params["top_k"] = self.environment.parsed_options.top_k
+        if self.environment.parsed_options.top_p is not None:
+            logging_params["top_p"] = self.environment.parsed_options.top_p
 
         InitTracker.notify_init(self.environment, logging_params)
 
@@ -953,6 +957,13 @@ def init_parser(parser):
         type=int,
         default=None,
         help="Specifies the top-k sampling parameter.",
+    )
+    parser.add_argument(
+        "--top-p",
+        env_var="TOP_P",
+        type=float,
+        default=None,
+        help="Specifies the top-p sampling parameter.",
     )
     parser.add_argument(
         "--stream",
