@@ -845,8 +845,8 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                if num_tokens != max_tokens:
-                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                if num_tokens != max_tokens * self.environment.parsed_options.n:
+                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens * self.environment.parsed_options.n} (max_tokens={max_tokens}, n={self.environment.parsed_options.n})")
                 add_custom_metric("num_tokens", num_tokens)
                 add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
                 add_custom_metric(
