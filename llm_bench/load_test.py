@@ -273,23 +273,45 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data, prompt):
         usage = data.get("usage", None)
 
-        assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
-        choice = data["choices"][0]
-        if self.parsed_options.chat:
-            if self.parsed_options.stream:
-                text = choice["delta"].get("content", "")
-            else:
-                text = choice["message"]["content"]
-        else:
-            text = choice["text"]
+        if self.parsed_options.n > 1:
+            texts = []
+            for choice in data["choices"]:
+                if self.parsed_options.chat:
+                    if self.parsed_options.stream:
+                        text = choice["delta"].get("content", "")
+                    else:
+                        text = choice["message"]["content"]
+                else:
+                    text = choice["text"]
+                texts.append(text)
 
-        logprobs = choice.get("logprobs", None)
-        return ChunkMetadata(
-            text=text,
-            logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
-            usage_tokens=usage["completion_tokens"] if usage else None,
-            prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
-        )
+            combined_text = "\n".join(texts)
+
+            logprobs = data["choices"][0].get("logprobs", None)
+
+            return ChunkMetadata(
+                text=combined_text,
+                logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
+                usage_tokens=usage["completion_tokens"] if usage else None,
+                prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
+            )
+        else:
+            choice = data["choices"][0]
+            if self.parsed_options.chat:
+                if self.parsed_options.stream:
+                    text = choice["delta"].get("content", "")
+                else:
+                    text = choice["message"]["content"]
+            else:
+                text = choice["text"]
+
+            logprobs = choice.get("logprobs", None)
+            return ChunkMetadata(
+                text=text,
+                logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
+                usage_tokens=usage["completion_tokens"] if usage else None,
+                prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
+            )
 
 
 class FireworksProvider(OpenAIProvider):
