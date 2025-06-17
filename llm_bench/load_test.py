@@ -25,6 +25,8 @@ except ImportError:
 
 
 def add_custom_metric(name, value, length_value=0):
+    if name == "total_latency":
+        value = value * 1000
     events.request.fire(
         request_type="METRIC",
         name=name,
