@@ -25,6 +25,8 @@ except ImportError:
 
 
 def add_custom_metric(name, value, length_value=0):
+    if name == "total_latency":
+        value = value * 1000
     events.request.fire(
         request_type="METRIC",
         name=name,
@@ -273,23 +275,45 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data, prompt):
         usage = data.get("usage", None)
 
-        assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
-        choice = data["choices"][0]
-        if self.parsed_options.chat:
-            if self.parsed_options.stream:
-                text = choice["delta"].get("content", "")
-            else:
-                text = choice["message"]["content"]
-        else:
-            text = choice["text"]
+        if self.parsed_options.n > 1:
+            texts = []
+            for choice in data["choices"]:
+                if self.parsed_options.chat:
+                    if self.parsed_options.stream:
+                        text = choice["delta"].get("content", "")
+                    else:
+                        text = choice["message"]["content"]
+                else:
+                    text = choice["text"]
+                texts.append(text)
 
-        logprobs = choice.get("logprobs", None)
-        return ChunkMetadata(
-            text=text,
-            logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
-            usage_tokens=usage["completion_tokens"] if usage else None,
-            prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
-        )
+            combined_text = "\n".join(texts)
+
+            logprobs = data["choices"][0].get("logprobs", None)
+
+            return ChunkMetadata(
+                text=combined_text,
+                logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
+                usage_tokens=usage["completion_tokens"] if usage else None,
+                prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
+            )
+        else:
+            choice = data["choices"][0]
+            if self.parsed_options.chat:
+                if self.parsed_options.stream:
+                    text = choice["delta"].get("content", "")
+                else:
+                    text = choice["message"]["content"]
+            else:
+                text = choice["text"]
+
+            logprobs = choice.get("logprobs", None)
+            return ChunkMetadata(
+                text=text,
+                logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
+                usage_tokens=usage["completion_tokens"] if usage else None,
+                prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
+            )
 
 
 class FireworksProvider(OpenAIProvider):
@@ -823,8 +847,8 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                if num_tokens != max_tokens:
-                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                if num_tokens != max_tokens * self.environment.parsed_options.n:
+                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens * self.environment.parsed_options.n} (max_tokens={max_tokens}, n={self.environment.parsed_options.n})")
                 add_custom_metric("num_tokens", num_tokens)
                 add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
                 add_custom_metric(
