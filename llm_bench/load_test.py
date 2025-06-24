@@ -297,6 +297,7 @@ class FireworksProvider(OpenAIProvider):
         data = super().format_payload(prompt, max_tokens, images)
         data["min_tokens"] = max_tokens
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        del data["model"]
         return data
 
 
