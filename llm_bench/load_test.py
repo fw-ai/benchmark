@@ -312,11 +312,6 @@ class VllmProvider(OpenAIProvider):
         data["ignore_eos"] = True
         return data
 
-class GeminiProvider(OpenAIProvider):
-    def format_payload(self, prompt, max_tokens, images):
-        data = super().format_payload(prompt, max_tokens, images)
-        return data
-
 class TogetherProvider(OpenAIProvider):
     def get_url(self):
         assert not self.parsed_options.chat, "Chat is not supported"
@@ -497,7 +492,6 @@ PROVIDER_CLASS_MAP = {
     "triton-infer": TritonInferProvider,
     "triton-generate": TritonGenerateProvider,
     "tgi": TgiProvider,
-    "gemini": GeminiProvider,
 }
 
 
