@@ -700,19 +700,13 @@ class LLMUser(HttpUser):
 
         if self.prompt_images:
             images = self.prompt_images
-            prompt = self.insert_image_placeholders(prompt, len(images))
+            prompt_images_positioning = self.environment.parsed_options.prompt_images_positioning
+            prompt = self.insert_image_placeholders(prompt, len(images), prompt_images_positioning)
 
         return prompt, images
 
-    def insert_image_placeholders(self, prompt, num_images):
-        """
-        Insert <image> placeholders evenly throughout the prompt.
-        E.g., for 3 images, a prompt "abcdefgh" is changed to "ab<image>cd<image>ef<image>gh"
+    def insert_image_placeholders(self, prompt, num_images, prompt_images_positioning):
 
-        Images are spaced out evenly based on on character length.
-        This may result in a few extra tokens if the image tags are placed in the middle of tokens.
-        But shouldn't affect results meaningfully.
-        """
         if num_images <= 0:
             return prompt
 
@@ -720,21 +714,34 @@ class LLMUser(HttpUser):
         if prompt_length == 0:
             return PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
 
-        # we need num_images + 1 segments to place between <image> tags
-        segment_length = prompt_length / (num_images + 1)
-        result = ""
-        for i in range(num_images):
-            # Move a sliding window of segment_length across the prompt
-            # Truncating to ensure all segments are non-overlapping
-            # If segment_end is truncated, that character will be included in the next segment
-            segment_start = int(i * segment_length)
-            segment_end = int((i + 1) * segment_length)
-            result += prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
+        if prompt_images_positioning == "space-evenly":
+            """
+            Insert <image> placeholders evenly throughout the prompt.
+            E.g., for 3 images, a prompt "abcdefgh" is changed to "ab<image>cd<image>ef<image>gh"
 
-        # Final segment
-        result += prompt[int(num_images * segment_length) :]
+            Images are spaced out evenly based on on character length.
+            This may result in a few extra tokens if the image tags are placed in the middle of tokens.
+            But shouldn't affect results meaningfully.
+            """
+            # we need num_images + 1 segments to place between <image> tags
+            segment_length = prompt_length / (num_images + 1)
+            result = ""
+            for i in range(num_images):
+                # Move a sliding window of segment_length across the prompt
+                # Truncating to ensure all segments are non-overlapping
+                # If segment_end is truncated, that character will be included in the next segment
+                segment_start = int(i * segment_length)
+                segment_end = int((i + 1) * segment_length)
+                result += prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
 
-        return result
+            # Final segment
+            result += prompt[int(num_images * segment_length) :]
+
+            return result
+        elif prompt_images_positioning == "end":
+            return prompt + PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
+        else:
+            raise ValueError(f"Invalid prompt images positioning: {prompt_images_positioning}")
 
     @task
     def generate_text(self):
@@ -923,6 +930,16 @@ def init_parser(parser):
         "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
         "Images will be spaced out evenly across the prompt."
         "Only supported with --chat mode.",
+    )
+    parser.add_argument(
+        "--prompt-images-positioning",
+        type=str,
+        choices=["space-evenly", "end"],
+        default="space-evenly",
+        help="How to position the images in the prompt. "
+        "space-evenly: images are spaced out evenly across the prompt. E.g., 3 images in 'abcdefgh' is 'ab<image>cd<image>ef<image>gh'"
+        "end: images are added to the end of the prompt. E.g., 3 images in 'abcdefgh' is 'abcdefgh<image><image><image>'"
+        "Only relevant with --prompt-images-with-resolutions.",
     )
     parser.add_argument(
         "-o",
