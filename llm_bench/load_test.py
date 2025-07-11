@@ -284,9 +284,14 @@ class OpenAIProvider(BaseProvider):
             text = choice["text"]
 
         logprobs = choice.get("logprobs", None)
+        if "tokens" in logprobs:
+            logprob_tokens = len(logprobs["tokens"])
+        else:
+            logprob_tokens = None
+
         return ChunkMetadata(
             text=text,
-            logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
+            logprob_tokens=logprob_tokens,
             usage_tokens=usage["completion_tokens"] if usage else None,
             prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
         )
@@ -305,7 +310,6 @@ class VllmProvider(OpenAIProvider):
         data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
         return data
-
 
 class TogetherProvider(OpenAIProvider):
     def get_url(self):
@@ -589,14 +593,16 @@ class LLMUser(HttpUser):
                 :prompt_chars
             ]
         else:
-            assert (
-                self.environment.parsed_options.prompt_images_with_resolutions != [] 
-                or self.environment.parsed_options.prompt_tokens >= PROMPT_SUFFIX_TOKENS
-            ), f"Minimal prompt length is {PROMPT_SUFFIX_TOKENS}"
-            self.input = (
-                PROMPT_PREFIX_TOKEN * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
-                + PROMPT_SUFFIX
-            )
+            # Ensure we have enough tokens to meet the desired prompt length
+            # If prompt_tokens < PROMPT_SUFFIX_TOKENS, just pad with prefix tokens to reach the desired length (skip the suffix)
+            if self.environment.parsed_options.prompt_tokens < PROMPT_SUFFIX_TOKENS:
+                self.input = PROMPT_PREFIX_TOKEN * self.environment.parsed_options.prompt_tokens
+            else:
+                # Normal case: prefix tokens + suffix
+                self.input = (
+                    PROMPT_PREFIX_TOKEN * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
+                    + PROMPT_SUFFIX
+                )
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         self.prompt_images = None
@@ -675,11 +681,19 @@ class LLMUser(HttpUser):
 
             # single letters are single tokens
             num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(PROMPT_PREFIX_TOKEN)
-            return (
-                " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_random_tokens))
-                + " "
-                + prompt[-len(PROMPT_SUFFIX) :]
-            )
+            
+            if num_random_tokens > 0:
+                # Normal case: prompt has pad tokens + suffix
+                return (
+                    " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_random_tokens))
+                    + " "
+                    + prompt[-len(PROMPT_SUFFIX) :]
+                )
+            else:
+                # Case where prompt is shorter than or equal to suffix length
+                # Just randomize the entire prompt - replace all tokens with random ones
+                num_tokens = len(prompt) // len(PROMPT_PREFIX_TOKEN)
+                return " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_tokens))
 
         if isinstance(self.input, str):
             prompt = self.input
@@ -700,7 +714,6 @@ class LLMUser(HttpUser):
         return prompt, images
 
     def insert_image_placeholders(self, prompt, num_images, prompt_images_positioning):
-
         if num_images <= 0:
             return prompt
 
