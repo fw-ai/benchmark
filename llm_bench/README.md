@@ -65,6 +65,7 @@ Generation options:
 - `--chat`: specify to call chat API instead of raw completions
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
+- `--num-queries`: stop sending requests after reaching specified number of queries.
 
 ### Writing results
 
