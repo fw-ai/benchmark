@@ -39,9 +39,9 @@ There are several primary modes the script can be used:
 
 ### Workload
 
-The tool currently supports only a fixed prompt specified as one of:
-- `-p`: prompt length in tokens. The script will generate some prompt of this length.
-- `--prompt-text`: use the specified text as a prompt instead of generating one. It can be a file reference starting with an ampersand, e.g. `@prompt.txt`.
+Input is read from --dataset, which is either:
+- `limerics`: default dataset. Requires --tokenizer to be passed. Will be used to auto-generate realistic prompts.
+- `@`-prefixed, specifies a path to JSONL file, used to read contents of each request.
 
 The number of tokens to generate is sampled on every request from a given distribution:
 - `-o`/`--max-tokens`: maximum number of tokens to generate. If --max-tokens-distribution is non-constant this is going to be the mean of the distribution.
@@ -80,14 +80,30 @@ The typical workflow would be to run benchmark several times appending to the sa
 ### Custom prompts
 
 Sometimes it's necessary to replay exact prompts, for example in the case of embedding images.
-`--prompt-text` option can be used in this case to specify a file with .jsonl extension (starting with an ampersand, e.g. `@prompt.jsonl`.).
-jsonl files will be read line-by-line and will be randomly chosen for each request. Each line has to have a valid JSON object with 'prompt' and optional 'images' keys. For example:
+`--dataset` option can be used in this case to specify a file with .jsonl extension (starting with an ampersand, e.g. `@prompt.jsonl`.).
+jsonl files will be read line-by-line. Each line has to have a valid JSON object, which will be used to form the resulting API request.
+Examples:
+
+Chat dataset (--chat option):
 ```
-{"prompt": "<image>What color is the cat?", images: ["data:image/jpeg;base64,BASE_64_DATA]}
-{"prompt": "<image>What color is the dog?", images: ["data:image/jpeg;base64,BASE_64_DATA]}
+{"messages": [{"role": "user", "content": "Write a poem about a cat"}], "temperature": 0.9}
+{"messages": [{"role": "user", "content": "Write a poem about a dog"}], "temperature": 1}
 ```
 
+Non-chat dataset (--no-chat option):
+```
+{"prompt": "One two three four"}
+{"prompt": "Five six seven eight"}
+```
+
+
 ## Examples
+
+Download tokenizer for the model being benchmarked from Huggingface.
+```
+huggingface-cli download meta-llama/Meta-Llama-3-8B-Instruct --local-dir /models/Meta-Llama-3-8B-Instruct   --include '*.json'
+export TOKENIZER=/models/Meta-Llama-3-8B-Instruct
+```
 
 Maintain fixed 8 requests concurrency against local deployment:
 
@@ -104,25 +120,19 @@ locust -t 1min -u 100 -r 100 -p 512 -o 128 --stream --chat --qps 0.5 --summary-f
 Benchmark Fireworks public deployment deployment with 1 request only:
 
 ```bash
-locust -u 1 -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v3-8b
+locust -u 1 -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v3p1-8b-instruct
 ```
 
 Benchmark Fireworks public deployment with 1 request and 2 images (1024w x 1024h and 3084w x 1080h):
 
-```
-locust -u 1  -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama4-scout-instruct-basic --chat --prompt-images-with-resolutions 1024x1024 3084x1080
+```bash
+locust -u 1  -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v3p1-8b-instruct --chat --prompt-images-with-resolutions 1024x1024 3084x1080
 ```
 
-Benchmark OpenAI deployment with 1 request only:
+Benchmark OpenAI deployment reading prompts from a file at 1 QPS:
 
 ```bash
-locust -u 1 -H https://api.openai.com -p 128 -o 200 --api-key $OPENAI_API_KEY --model=gpt-3.5-turbo --chat
-```
-
-Benchmark local Triton deployment with a given prompt at 1 QPS:
-
-```bash
-locust -u 100 -r 100  --prompt-text "$PROMPT" -o 100 --provider triton-infer -H http://localhost:8000 --tokenizer /path/to/my/hf/tokenizer --qps 1
+locust --dataset '@input.jsonl' -u 1 -H https://api.openai.com -o 200 --api-key $OPENAI_API_KEY --model=gpt-3.5-turbo --chat
 ```
 
 ## UI mode

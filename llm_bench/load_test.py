@@ -13,10 +13,11 @@ import copy
 import json
 import time
 import orjson
-import threading
 import base64
 import io
+import itertools
 from PIL import Image
+import transformers
 
 try:
     import locust_plugins
@@ -35,16 +36,112 @@ def add_custom_metric(name, value, length_value=0):
     )
 
 
-PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
-# "Lengthy" prompt borrowed from nat.dev
-PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
-PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
+
+
+class LimericsDataset:
+    _PROMPT = "\n\nTranslate the limericks above to Spanish, then re-write limericks using different styles. Do it 10 times."
+
+    def __init__(
+        self,
+        path: str,
+        tokenizer_path: str,
+        chat: bool,
+        num_tokens: int,
+        common_tokens: int,
+    ):
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
+        self._num_tokens = num_tokens
+
+        self._all_limericks = []
+        with open(path, "r") as f:
+            text = f.read()
+            lims = text.split("\n\n")
+            for i, lim in enumerate(lims):
+                num_tokens = len(self._tokenizer.encode(lim))
+                self._all_limericks.append((lim, num_tokens))
+
+        self._prefix = ""
+        self._suffix = self._PROMPT
+        self._prefix_suffix_tokens = len(self._tokenizer.encode(self._PROMPT))
+        while self._prefix_suffix_tokens < common_tokens:
+            lim, num_tokens = self._all_limericks[
+                random.randint(0, len(self._all_limericks) - 1)
+            ]
+            self._prefix += lim + "\n\n"
+            self._prefix_suffix_tokens += num_tokens
+
+        if chat:
+            empty_tempalate_tokens = self._tokenizer.apply_chat_template(
+                [{"role": "user", "content": ""}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+            self._prefix_suffix_tokens += len(empty_tempalate_tokens)
+
+    def __next__(self):
+        prompt_tokens = self._prefix_suffix_tokens
+        prompt = self._prefix
+        while prompt_tokens < self._num_tokens:
+            lim, num_tokens = self._all_limericks[
+                random.randint(0, len(self._all_limericks) - 1)
+            ]
+
+            prompt += lim + "\n\n"
+            prompt_tokens += num_tokens
+        prompt += self._suffix
+
+        return prompt, prompt_tokens
+
+    def __iter__(self):
+        return self
+
+
+class JsonlDataset:
+    def __init__(self, path: str):
+        self.path = path
+
+    def __iter__(self):
+        return itertools.cycle(self._read_data())
+
+    def _read_data(self):
+        with open(self.path, "r") as f:
+            for line in f:
+                yield json.loads(line), 0
+
+
+class DatasetHolder:
+    _instance = None
+
+    @classmethod
+    def _create_dataset(cls, options: argparse.Namespace): 
+        if options.dataset.startswith("@"):
+            return JsonlDataset(options.dataset[1:])
+        elif options.dataset == "limerics":
+            assert (
+                options.tokenizer is not None
+            ), "--tokenizer is required for limerics dataset"
+            return LimericsDataset(
+                path=os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "limericks.txt"
+                ),
+                tokenizer_path=options.tokenizer,
+                chat=options.chat,
+                num_tokens=options.prompt_tokens,
+                common_tokens=options.prompt_cache_max_len,
+            )
+        else:
+            raise ValueError(f"Unknown dataset: {options.dataset}")
+
+    @classmethod
+    def get_instance(cls, options: argparse.Namespace):
+        if cls._instance is None:
+            cls._instance = cls._create_dataset(options)
+        return cls._instance
 
 
 class FixedQPSPacer:
     _instance = None
-    _lock = threading.Lock()
 
     def __init__(self, qps, distribution):
         self.qps = qps
@@ -71,17 +168,15 @@ class FixedQPSPacer:
 
     @classmethod
     def instance(cls, qps, distribution):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls(qps, distribution)
-            else:
-                assert cls._instance.qps == qps
-                assert cls._instance.distribution == distribution
-            return cls._instance
+        if cls._instance is None:
+            cls._instance = cls(qps, distribution)
+        else:
+            assert cls._instance.qps == qps
+            assert cls._instance.distribution == distribution
+        return cls._instance
 
     def wait_time_till_next(self):
-        with self._lock:
-            t = next(self.iterator)
+        t = next(self.iterator)
         now = time.time()
         if now > t:
             print(
@@ -104,11 +199,15 @@ class LengthSampler:
             mx = self.mean + int(self.alpha * self.mean)
             if self.cap is not None:
                 mx = min(mx, self.cap)
-            self.sample_func = lambda: random.randint(max(1, self.mean - int(self.alpha * self.mean)), mx)
+            self.sample_func = lambda: random.randint(
+                max(1, self.mean - int(self.alpha * self.mean)), mx
+            )
         elif self.distribution == "constant":
             self.sample_func = lambda: self.mean
         elif self.distribution == "normal":
-            self.sample_func = lambda: int(random.gauss(self.mean, self.mean * self.alpha))
+            self.sample_func = lambda: int(
+                random.gauss(self.mean, self.mean * self.alpha)
+            )
         else:
             raise ValueError(f"Unknown distribution {self.distribution}")
 
@@ -121,7 +220,9 @@ class LengthSampler:
                 continue
             return sample
         else:
-            raise ValueError("Can't sample a value after 1000 attempts, check distribution parameters")
+            raise ValueError(
+                "Can't sample a value after 1000 attempts, check distribution parameters"
+            )
 
     def __str__(self):
         r = int(self.mean * self.alpha)
@@ -141,7 +242,6 @@ class LengthSampler:
 
 
 class InitTracker:
-    lock = threading.Lock()
     users = None
     first_request_done = 0
     logging_params = None
@@ -150,37 +250,37 @@ class InitTracker:
 
     @classmethod
     def notify_init(cls, environment, logging_params):
-        with cls.lock:
-            if cls.environment is None:
-                cls.environment = environment
-            if cls.logging_params is None:
-                cls.logging_params = logging_params
-            else:
-                assert (
-                    cls.logging_params == logging_params
-                ), f"Inconsistent settings between workers: {cls.logging_params} != {logging_params}"
+        if cls.environment is None:
+            cls.environment = environment
+        if cls.logging_params is None:
+            cls.logging_params = logging_params
+        else:
+            assert (
+                cls.logging_params == logging_params
+            ), f"Inconsistent settings between workers: {cls.logging_params} != {logging_params}"
 
     @classmethod
     def notify_first_request(cls):
-        with cls.lock:
-            if cls.environment.parsed_options.qps is not None and cls.first_request_done == 0:
-                # if in QPS mode, reset after first successful request comes back
-                cls.reset_stats()
-            cls.first_request_done += 1
-            if (
-                cls.environment.parsed_options.qps is not None
-                and cls.first_request_done == 0
-                and cls.users == cls.first_request_done
-            ):
-                # if in fixed load mode, reset after all users issued one request (we're in a steady state)
-                cls.reset_stats()
+        if (
+            cls.environment.parsed_options.qps is not None
+            and cls.first_request_done == 0
+        ):
+            # if in QPS mode, reset after first successful request comes back
+            cls.reset_stats()
+        cls.first_request_done += 1
+        if (
+            cls.environment.parsed_options.qps is not None
+            and cls.first_request_done == 0
+            and cls.users == cls.first_request_done
+        ):
+            # if in fixed load mode, reset after all users issued one request (we're in a steady state)
+            cls.reset_stats()
 
     @classmethod
     def notify_spawning_complete(cls, user_count):
-        with cls.lock:
-            cls.users = user_count
-            if cls.users == cls.first_request_done:
-                cls.reset_stats()
+        cls.users = user_count
+        if cls.users == cls.first_request_done:
+            cls.reset_stats()
 
     @classmethod
     def reset_stats(cls):
@@ -193,15 +293,14 @@ class InitTracker:
     def load_tokenizer(cls, dir):
         if not dir:
             return None
-        with cls.lock:
-            if cls.tokenizer:
-                return cls.tokenizer
-            import transformers
-
-            cls.tokenizer = transformers.AutoTokenizer.from_pretrained(dir)
-            cls.tokenizer.add_bos_token = False
-            cls.tokenizer.add_eos_token = False
+        if cls.tokenizer:
             return cls.tokenizer
+        import transformers
+
+        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(dir)
+        cls.tokenizer.add_bos_token = False
+        cls.tokenizer.add_eos_token = False
+        return cls.tokenizer
 
 
 events.spawning_complete.add_listener(InitTracker.notify_spawning_complete)
@@ -229,7 +328,7 @@ class BaseProvider(abc.ABC):
     def format_payload(self, prompt, max_tokens, images): ...
 
     @abc.abstractmethod
-    def parse_output_json(self, json, prompt): ...
+    def parse_output_json(self, json): ...
 
 
 class OpenAIProvider(BaseProvider):
@@ -249,28 +348,36 @@ class OpenAIProvider(BaseProvider):
         }
         if self.parsed_options.top_k is not None:
             data["top_k"] = self.parsed_options.top_k
-        if self.parsed_options.chat:
-            if images is None:
-                data["messages"] = [{"role": "user", "content": prompt}]
-            else:
-                image_urls = []
-                for image in images:
-                    image_urls.append({"type": "image_url", "image_url": {"url": image}})
-                data["messages"] = [
-                    {
-                        "role": "user",
-                        "content": [{"type": "text", "text": prompt}, *image_urls],
-                    }
-                ]
-        else:
-            data["prompt"] = prompt
-            if images is not None:
-                data["images"] = images
         if self.parsed_options.logprobs is not None:
             data["logprobs"] = self.parsed_options.logprobs
+        if isinstance(prompt, str):
+            if self.parsed_options.chat:
+                if images is None:
+                    data["messages"] = [{"role": "user", "content": prompt}]
+                else:
+                    image_urls = []
+                    for image in images:
+                        image_urls.append(
+                            {"type": "image_url", "image_url": {"url": image}}
+                        )
+                    data["messages"] = [
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": prompt}, *image_urls],
+                        }
+                    ]
+            else:
+                data["prompt"] = prompt
+                if images is not None:
+                    data["images"] = images
+        else:
+            assert isinstance(prompt, dict), "prompt must be a dict"
+            for k, v in prompt.items():
+                data[k] = v
+
         return data
 
-    def parse_output_json(self, data, prompt):
+    def parse_output_json(self, data):
         usage = data.get("usage", None)
 
         assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
@@ -311,6 +418,7 @@ class VllmProvider(OpenAIProvider):
         data["ignore_eos"] = True
         return data
 
+
 class TogetherProvider(OpenAIProvider):
     def get_url(self):
         assert not self.parsed_options.chat, "Chat is not supported"
@@ -322,122 +430,10 @@ class TogetherProvider(OpenAIProvider):
         data["stream_tokens"] = data.pop("stream")
         return data
 
-    def parse_output_json(self, data, prompt):
+    def parse_output_json(self, data):
         if not self.parsed_options.stream:
             data = data["output"]
-        return super().parse_output_json(data, prompt)
-
-
-class TritonInferProvider(BaseProvider):
-    DEFAULT_MODEL_NAME = "ensemble"
-
-    def get_url(self):
-        assert not self.parsed_options.chat, "Chat is not supported"
-        assert not self.parsed_options.stream, "Stream is not supported"
-        assert self.parsed_options.n == 1, "n > 1 is not supported"
-        return f"/v2/models/{self.model}/infer"
-
-    def format_payload(self, prompt, max_tokens, images):
-        assert images is None, "images are not supported"
-        # matching latest TRT-LLM example, your model configuration might be different
-        data = {
-            "inputs": [
-                {
-                    "name": "text_input",
-                    "datatype": "BYTES",
-                    "shape": [1, 1],
-                    "data": [[prompt]],
-                },
-                {
-                    "name": "max_tokens",
-                    "datatype": "UINT32",
-                    "shape": [1, 1],
-                    "data": [[max_tokens]],
-                },
-                {
-                    "name": "bad_words",
-                    "datatype": "BYTES",
-                    "shape": [1, 1],
-                    "data": [[""]],
-                },
-                {
-                    "name": "stop_words",
-                    "datatype": "BYTES",
-                    "shape": [1, 1],
-                    "data": [[""]],
-                },
-                {
-                    "name": "temperature",
-                    "datatype": "FP32",
-                    "shape": [1, 1],
-                    "data": [[self.parsed_options.temperature]],
-                },
-            ]
-        }
-        assert self.parsed_options.logprobs is None, "logprobs are not supported"
-        return data
-
-    def parse_output_json(self, data, prompt):
-        for output in data["outputs"]:
-            if output["name"] == "text_output":
-                assert output["datatype"] == "BYTES"
-                assert output["shape"] == [1]
-                text = output["data"][0]
-                # Triton returns the original prompt in the output, cut it off
-                text = text.removeprefix("<s> ")
-                if text.startswith(prompt):
-                    # HF tokenizers get confused by the leading space
-                    text = text[len(prompt) :].removeprefix(" ")
-                else:
-                    print("WARNING: prompt not found in the output")
-                return ChunkMetadata(
-                    text=text,
-                    logprob_tokens=None,
-                    usage_tokens=None,
-                    prompt_usage_tokens=None,
-                )
-        raise ValueError("text_output not found in the response")
-
-
-class TritonGenerateProvider(BaseProvider):
-    DEFAULT_MODEL_NAME = "ensemble"
-
-    def get_url(self):
-        assert not self.parsed_options.chat, "Chat is not supported"
-        stream_suffix = "_stream" if self.parsed_options.stream else ""
-        return f"/v2/models/{self.model}/generate{stream_suffix}"
-
-    def format_payload(self, prompt, max_tokens, images):
-        assert images is None, "images are not supported"
-        assert self.parsed_options.n == 1, "n > 1 is not supported"
-        data = {
-            "text_input": prompt,
-            "max_tokens": max_tokens,
-            "stream": self.parsed_options.stream,
-            "temperature": self.parsed_options.temperature,
-            # for whatever reason these has to be provided
-            "bad_words": "",
-            "stop_words": "",
-        }
-        assert self.parsed_options.logprobs is None, "logprobs are not supported"
-        return data
-
-    def parse_output_json(self, data, prompt):
-        text = data["text_output"]
-        if not self.parsed_options.stream:
-            # Triton returns the original prompt in the output, cut it off
-            text = text.removeprefix("<s> ")
-            if text.startswith(prompt):
-                # HF tokenizers get confused by the leading space
-                text = text[len(prompt) :].removeprefix(" ")
-            else:
-                print("WARNING: prompt not found in the output")
-        return ChunkMetadata(
-            text=text,
-            logprob_tokens=None,
-            usage_tokens=None,
-            prompt_usage_tokens=None,
-        )
+        return super().parse_output_json(data)
 
 
 class TgiProvider(BaseProvider):
@@ -450,6 +446,7 @@ class TgiProvider(BaseProvider):
         return f"/generate{stream_suffix}"
 
     def format_payload(self, prompt, max_tokens, images):
+        assert isinstance(prompt, str), "prompt must be a string"
         assert images is None, "images are not supported"
         data = {
             "inputs": prompt,
@@ -462,7 +459,7 @@ class TgiProvider(BaseProvider):
         }
         return data
 
-    def parse_output_json(self, data, prompt):
+    def parse_output_json(self, data):
         if "token" in data:
             # streaming chunk
             return ChunkMetadata(
@@ -475,8 +472,12 @@ class TgiProvider(BaseProvider):
             # non-streaming response
             return ChunkMetadata(
                 text=data["generated_text"],
-                logprob_tokens=(len(data["details"]["tokens"]) if "details" in data else None),
-                usage_tokens=(data["details"]["generated_tokens"] if "details" in data else None),
+                logprob_tokens=(
+                    len(data["details"]["tokens"]) if "details" in data else None
+                ),
+                usage_tokens=(
+                    data["details"]["generated_tokens"] if "details" in data else None
+                ),
                 prompt_usage_tokens=None,
             )
 
@@ -486,10 +487,7 @@ PROVIDER_CLASS_MAP = {
     "vllm": VllmProvider,
     "sglang": VllmProvider,
     "openai": OpenAIProvider,
-    "anyscale": OpenAIProvider,
     "together": TogetherProvider,
-    "triton-infer": TritonInferProvider,
-    "triton-generate": TritonGenerateProvider,
     "tgi": TgiProvider,
 }
 
@@ -534,8 +532,6 @@ class LLMUser(HttpUser):
                 self.provider = "together"
             elif "openai" in self.host:
                 self.provider = "openai"
-            elif "anyscale" in self.host:
-                self.provider = "anyscale"
 
         if (
             self.model is None
@@ -553,7 +549,9 @@ class LLMUser(HttpUser):
             resp.raise_for_status()
             resp = resp.json()
         except Exception as e:
-            raise ValueError("Argument --model or --provider was not specified and /v1/models failed") from e
+            raise ValueError(
+                "Argument --model or --provider was not specified and /v1/models failed"
+            ) from e
 
         models = resp["data"]
         assert len(models) > 0, "No models found in /v1/models"
@@ -566,57 +564,50 @@ class LLMUser(HttpUser):
                 break
         if self.provider is None:
             if not owned_by:
-                raise ValueError(f"Model {self.model} not found in /v1/models. Specify --provider explicitly")
+                raise ValueError(
+                    f"Model {self.model} not found in /v1/models. Specify --provider explicitly"
+                )
             if owned_by in PROVIDER_CLASS_MAP:
                 self.provider = owned_by
             else:
-                raise ValueError(f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}")
+                raise ValueError(
+                    f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}"
+                )
 
     def _on_start(self):
         self.client.headers["Content-Type"] = "application/json"
         if self.environment.parsed_options.api_key:
-            self.client.headers["Authorization"] = "Bearer " + self.environment.parsed_options.api_key
+            self.client.headers["Authorization"] = (
+                "Bearer " + self.environment.parsed_options.api_key
+            )
         if self.environment.parsed_options.header:
             for header in self.environment.parsed_options.header:
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
         self._guess_provider()
         print(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
-        self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
+        self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](
+            self.model, self.environment.parsed_options
+        )
 
         self.stream = self.environment.parsed_options.stream
-        prompt_chars = self.environment.parsed_options.prompt_chars
-        if self.environment.parsed_options.prompt_text:
-            self.input = _load_curl_like_data(self.environment.parsed_options.prompt_text)
-        elif prompt_chars:
-            self.input = (PROMPT_PREFIX_TOKEN * (prompt_chars // len(PROMPT_PREFIX_TOKEN) + 1) + PROMPT_SUFFIX)[
-                :prompt_chars
-            ]
-        else:
-            # Ensure we have enough tokens to meet the desired prompt length
-            # If prompt_tokens < PROMPT_SUFFIX_TOKENS, just pad with prefix tokens to reach the desired length (skip the suffix)
-            if self.environment.parsed_options.prompt_tokens < PROMPT_SUFFIX_TOKENS:
-                self.input = PROMPT_PREFIX_TOKEN * self.environment.parsed_options.prompt_tokens
-            else:
-                # Normal case: prefix tokens + suffix
-                self.input = (
-                    PROMPT_PREFIX_TOKEN * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
-                    + PROMPT_SUFFIX
-                )
 
-        image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
+        image_resolutions = (
+            self.environment.parsed_options.prompt_images_with_resolutions
+        )
         self.prompt_images = None
         if image_resolutions:
-            if isinstance(self.input, list) and any("images" in item for item in self.input):
-                raise AssertionError(
-                    "Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two."
-                )
             if not self.environment.parsed_options.chat:
                 # Using regular /completions endpoint, each model has it's own image placeholder
                 # e.g., <|image|> for Phi, <|image_pad|> for Qwen, <image> for Llava
                 # So using /completions endpoint requires a bit more work to support this
-                raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
-            self.prompt_images = [self._create_base64_image(width, height) for width, height in image_resolutions]
+                raise AssertionError(
+                    "--prompt-images-with-resolutions is only supported with --chat mode."
+                )
+            self.prompt_images = [
+                self._create_base64_image(width, height)
+                for width, height in image_resolutions
+            ]
 
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
@@ -642,12 +633,6 @@ class LLMUser(HttpUser):
 
         InitTracker.notify_init(self.environment, logging_params)
 
-        self.tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        if self.tokenizer:
-            self.prompt_tokenizer_tokens = len(self.tokenizer.encode(self._get_input()[0]))
-        else:
-            self.prompt_tokenizer_tokens = None
-
         if self.environment.parsed_options.qps is not None:
             if self.environment.parsed_options.burst:
                 raise ValueError("Burst and QPS modes are mutually exclusive")
@@ -659,12 +644,17 @@ class LLMUser(HttpUser):
             self.wait_time = pacer.wait_time_till_next
             self.wait()
         elif self.environment.parsed_options.burst:
-            self.wait_time = partial(constant_pacing(self.environment.parsed_options.burst), self)
+            self.wait_time = partial(
+                constant_pacing(self.environment.parsed_options.burst), self
+            )
         else:
             # introduce initial delay to avoid all users hitting the service at the same time
             time.sleep(random.random())
 
         self.first_done = False
+
+        dataset = DatasetHolder.get_instance(self.environment.parsed_options)
+        self.dataset = iter(dataset)
 
     def _create_base64_image(self, width, height):
         """Create a random RGB image with the given dimensions and return as base64 data URI."""
@@ -675,43 +665,20 @@ class LLMUser(HttpUser):
         return f"data:image/jpeg;base64,{img_str}"
 
     def _get_input(self):
-        def _maybe_randomize(prompt):
-            if not self.environment.parsed_options.prompt_randomize:
-                return prompt
-
-            # single letters are single tokens
-            num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(PROMPT_PREFIX_TOKEN)
-            
-            if num_random_tokens > 0:
-                # Normal case: prompt has pad tokens + suffix
-                return (
-                    " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_random_tokens))
-                    + " "
-                    + prompt[-len(PROMPT_SUFFIX) :]
-                )
-            else:
-                # Case where prompt is shorter than or equal to suffix length
-                # Just randomize the entire prompt - replace all tokens with random ones
-                num_tokens = len(prompt) // len(PROMPT_PREFIX_TOKEN)
-                return " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_tokens))
-
-        if isinstance(self.input, str):
-            prompt = self.input
-            images = None
-        else:
-            item = self.input[random.randint(0, len(self.input) - 1)]
-            assert "prompt" in item
-            prompt = item["prompt"]
-            images = item.get("images", None)
-
-        prompt = _maybe_randomize(prompt)
+        prompt, prompt_tokens = next(self.dataset)
 
         if self.prompt_images:
             images = self.prompt_images
-            prompt_images_positioning = self.environment.parsed_options.prompt_images_positioning
-            prompt = self.insert_image_placeholders(prompt, len(images), prompt_images_positioning)
+            prompt_images_positioning = (
+                self.environment.parsed_options.prompt_images_positioning
+            )
+            prompt = self.insert_image_placeholders(
+                prompt, len(images), prompt_images_positioning
+            )
+        else:
+            images = None
 
-        return prompt, images
+        return prompt, prompt_tokens, images
 
     def insert_image_placeholders(self, prompt, num_images, prompt_images_positioning):
         if num_images <= 0:
@@ -739,7 +706,9 @@ class LLMUser(HttpUser):
                 # If segment_end is truncated, that character will be included in the next segment
                 segment_start = int(i * segment_length)
                 segment_end = int((i + 1) * segment_length)
-                result += prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
+                result += (
+                    prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
+                )
 
             # Final segment
             result += prompt[int(num_images * segment_length) :]
@@ -748,12 +717,14 @@ class LLMUser(HttpUser):
         elif prompt_images_positioning == "end":
             return prompt + PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
         else:
-            raise ValueError(f"Invalid prompt images positioning: {prompt_images_positioning}")
+            raise ValueError(
+                f"Invalid prompt images positioning: {prompt_images_positioning}"
+            )
 
     @task
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        prompt, images = self._get_input()
+        prompt, prompt_usage_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
@@ -765,7 +736,6 @@ class LLMUser(HttpUser):
         ) as response:
             combined_text = ""
             done = False
-            prompt_usage_tokens = self.prompt_tokenizer_tokens
             total_usage_tokens = None
             total_logprob_tokens = None
             try:
@@ -782,15 +752,19 @@ class LLMUser(HttpUser):
                 try:
                     now = time.perf_counter()
                     if self.stream:
-                        assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
+                        assert chunk.startswith(
+                            b"data:"
+                        ), f"Unexpected chunk not starting with 'data': {chunk}"
                         chunk = chunk[len(b"data:") :]
                         if chunk.strip() == b"[DONE]":
                             done = True
                             continue
                     data = orjson.loads(chunk)
-                    out = self.provider_formatter.parse_output_json(data, prompt)
+                    out = self.provider_formatter.parse_output_json(data)
                     if out.usage_tokens:
-                        total_usage_tokens = (total_usage_tokens or 0) + out.usage_tokens
+                        total_usage_tokens = (
+                            total_usage_tokens or 0
+                        ) + out.usage_tokens
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
                     combined_text += out.text
@@ -800,7 +774,9 @@ class LLMUser(HttpUser):
                         t_first_token = now
 
                     if out.logprob_tokens:
-                        total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
+                        total_logprob_tokens = (
+                            total_logprob_tokens or 0
+                        ) + out.logprob_tokens
                 except Exception as e:
                     print(f"Failed to parse response: {chunk} with error {repr(e)}")
                     response.failure(e)
@@ -811,19 +787,14 @@ class LLMUser(HttpUser):
                 and (total_usage_tokens is not None)
                 and total_logprob_tokens != total_usage_tokens
             ):
-                print(f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}")
+                print(
+                    f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}"
+                )
             if total_logprob_tokens is not None:
                 num_tokens = total_logprob_tokens
             else:
                 num_tokens = total_usage_tokens
-            if self.tokenizer:
-                num_tokenizer_tokens = len(self.tokenizer.encode(combined_text))
-                if num_tokens is None:
-                    num_tokens = num_tokenizer_tokens
-                elif num_tokens != num_tokenizer_tokens:
-                    print(
-                        f"WARNING: tokenizer token count {num_tokenizer_tokens} != {num_tokens} received from server"
-                    )
+
             num_tokens = num_tokens or 0
             num_chars = len(combined_text)
             now = time.perf_counter()
@@ -838,27 +809,25 @@ class LLMUser(HttpUser):
                 print(combined_text)
                 print("---")
             if num_chars:
-                add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
+                add_custom_metric(
+                    "latency_per_char", dur_generation / num_chars * 1000, num_chars
+                )
             if self.stream:
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
                 if num_tokens != max_tokens:
-                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                    print(
+                        f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}"
+                    )
                 add_custom_metric("num_tokens", num_tokens)
-                add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
+                add_custom_metric(
+                    "latency_per_token", dur_generation / num_tokens * 1000, num_tokens
+                )
                 add_custom_metric(
                     "overall_latency_per_token",
                     dur_total / num_tokens * 1000,
                     num_tokens,
-                )
-            if (
-                prompt_usage_tokens is not None
-                and self.prompt_tokenizer_tokens is not None
-                and prompt_usage_tokens != self.prompt_tokenizer_tokens
-            ):
-                print(
-                    f"WARNING: prompt usage tokens {prompt_usage_tokens} != {self.prompt_tokenizer_tokens} derived from local tokenizer"
                 )
             prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
             if prompt_tokens:
@@ -889,6 +858,14 @@ def init_parser(parser):
         help="Which flavor of API to use. If not specified, we'll try to guess based on the URL and /v1/models output",
     )
     parser.add_argument(
+        "-d",
+        "--dataset",
+        env_var="DATASET",
+        type=str,
+        help="Either 'limerics' or a path to a JSONL file",
+        default="limerics",
+    )
+    parser.add_argument(
         "-m",
         "--model",
         env_var="MODEL",
@@ -896,9 +873,15 @@ def init_parser(parser):
         help="The model to use for generating text. If not specified we will pick the first model from the service as returned by /v1/models",
     )
     parser.add_argument(
+        "--tokenizer",
+        env_var="TOKENIZER",
+        type=str,
+        help="Specify HF tokenizer to use for validating the output of the model. It's optional, we're going to rely on 'usage' or 'logprobs' field to get token count information",
+    )
+    parser.add_argument(
         "--chat",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Use /v1/chat/completions API",
     )
     parser.add_argument(
@@ -908,24 +891,6 @@ def init_parser(parser):
         type=int,
         default=512,
         help="Length of the prompt in tokens. Default 512",
-    )
-    parser.add_argument(
-        "--prompt-chars",
-        env_var="PROMPT_CHARS",
-        type=int,
-        help="Length of the prompt in characters.",
-    )
-    parser.add_argument(
-        "--prompt-text",
-        env_var="PROMPT_TEXT",
-        type=str,
-        help="Prompt text to use instead of generating one. It can be a file reference starting with an ampersand, e.g. `@prompt.txt`",
-    )
-    parser.add_argument(
-        "--prompt-randomize",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Include a few random numbers in the generated prompt to avoid caching",
     )
     parser.add_argument(
         "--prompt-images-with-resolutions",
@@ -1035,11 +1000,6 @@ def init_parser(parser):
         help="Makes requests to arrive in bursts every specified number of seconds. Note that burst duration has to be longer than maximum time of the response. Size of the burst is controlled by --users. The spawn rate -r is best set to a high value",
     )
     parser.add_argument(
-        "--tokenizer",
-        type=str,
-        help="Specify HF tokenizer to use for validating the output of the model. It's optional, we're going to rely on 'usage' or 'logprobs' field to get token count information",
-    )
-    parser.add_argument(
         "--show-response",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1078,7 +1038,9 @@ def _(environment, **kw):
 
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
-        entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
+        entries["concurrency"] = (
+            f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
+        )
     else:
         entries["concurrency"] = InitTracker.users
     for metric_name in [
@@ -1088,7 +1050,9 @@ def _(environment, **kw):
         "total_latency",
         "prompt_tokens",  # might overwrite the static value based on server side tokenization
     ]:
-        entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
+        entries[metric_name] = environment.stats.entries[
+            (metric_name, "METRIC")
+        ].avg_response_time
     if not environment.parsed_options.stream:
         # if there's no streaming these metrics are meaningless
         entries["time_to_first_token"] = ""
