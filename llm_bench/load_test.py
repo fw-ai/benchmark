@@ -14,6 +14,9 @@ import json
 import time
 import orjson
 import threading
+import base64
+import io
+from PIL import Image
 
 try:
     import locust_plugins
@@ -36,6 +39,7 @@ PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 # "Lengthy" prompt borrowed from nat.dev
 PROMPT_SUFFIX = """Generate a Django application with Authentication, JWT, Tests, DB support. Show docker-compose for python and postgres. Show the complete code for every file!"""
 PROMPT_SUFFIX_TOKENS = 35  # from Llama tokenizer tool (so we don't import it here)
+PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 
 class FixedQPSPacer:
@@ -100,15 +104,11 @@ class LengthSampler:
             mx = self.mean + int(self.alpha * self.mean)
             if self.cap is not None:
                 mx = min(mx, self.cap)
-            self.sample_func = lambda: random.randint(
-                max(1, self.mean - int(self.alpha * self.mean)), mx
-            )
+            self.sample_func = lambda: random.randint(max(1, self.mean - int(self.alpha * self.mean)), mx)
         elif self.distribution == "constant":
             self.sample_func = lambda: self.mean
         elif self.distribution == "normal":
-            self.sample_func = lambda: int(
-                random.gauss(self.mean, self.mean * self.alpha)
-            )
+            self.sample_func = lambda: int(random.gauss(self.mean, self.mean * self.alpha))
         else:
             raise ValueError(f"Unknown distribution {self.distribution}")
 
@@ -121,9 +121,7 @@ class LengthSampler:
                 continue
             return sample
         else:
-            raise ValueError(
-                "Can't sample a value after 1000 attempts, check distribution parameters"
-            )
+            raise ValueError("Can't sample a value after 1000 attempts, check distribution parameters")
 
     def __str__(self):
         r = int(self.mean * self.alpha)
@@ -165,10 +163,7 @@ class InitTracker:
     @classmethod
     def notify_first_request(cls):
         with cls.lock:
-            if (
-                cls.environment.parsed_options.qps is not None
-                and cls.first_request_done == 0
-            ):
+            if cls.environment.parsed_options.qps is not None and cls.first_request_done == 0:
                 # if in QPS mode, reset after first successful request comes back
                 cls.reset_stats()
             cls.first_request_done += 1
@@ -261,15 +256,15 @@ class OpenAIProvider(BaseProvider):
             "temperature": self.parsed_options.temperature,
             "n": self.parsed_options.n,
         }
+        if self.parsed_options.top_k is not None:
+            data["top_k"] = self.parsed_options.top_k
         if self.parsed_options.chat:
             if images is None:
                 data["messages"] = [{"role": "user", "content": prompt}]
             else:
                 image_urls = []
                 for image in images:
-                    image_urls.append(
-                        {"type": "image_url", "image_url": {"url": image}}
-                    )
+                    image_urls.append({"type": "image_url", "image_url": {"url": image}})
                 data["messages"] = [
                     {
                         "role": "user",
@@ -305,9 +300,14 @@ class OpenAIProvider(BaseProvider):
             text = choice["text"]
 
         logprobs = choice.get("logprobs", None)
+        if logprobs and "tokens" in logprobs:
+            logprob_tokens = len(logprobs["tokens"])
+        else:
+            logprob_tokens = None
+
         return ChunkMetadata(
             text=text,
-            logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
+            logprob_tokens=logprob_tokens,
             usage_tokens=usage["completion_tokens"] if usage else None,
             prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
         )
@@ -327,7 +327,6 @@ class VllmProvider(OpenAIProvider):
         data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
         return data
-
 
 class TogetherProvider(OpenAIProvider):
     def get_url(self):
@@ -493,12 +492,8 @@ class TgiProvider(BaseProvider):
             # non-streaming response
             return ChunkMetadata(
                 text=data["generated_text"],
-                logprob_tokens=(
-                    len(data["details"]["tokens"]) if "details" in data else None
-                ),
-                usage_tokens=(
-                    data["details"]["generated_tokens"] if "details" in data else None
-                ),
+                logprob_tokens=(len(data["details"]["tokens"]) if "details" in data else None),
+                usage_tokens=(data["details"]["generated_tokens"] if "details" in data else None),
                 prompt_usage_tokens=None,
             )
 
@@ -575,9 +570,7 @@ class LLMUser(HttpUser):
             resp.raise_for_status()
             resp = resp.json()
         except Exception as e:
-            raise ValueError(
-                "Argument --model or --provider was not specified and /v1/models failed"
-            ) from e
+            raise ValueError("Argument --model or --provider was not specified and /v1/models failed") from e
 
         models = resp["data"]
         assert len(models) > 0, "No models found in /v1/models"
@@ -590,52 +583,58 @@ class LLMUser(HttpUser):
                 break
         if self.provider is None:
             if not owned_by:
-                raise ValueError(
-                    f"Model {self.model} not found in /v1/models. Specify --provider explicitly"
-                )
+                raise ValueError(f"Model {self.model} not found in /v1/models. Specify --provider explicitly")
             if owned_by in PROVIDER_CLASS_MAP:
                 self.provider = owned_by
             else:
-                raise ValueError(
-                    f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}"
-                )
+                raise ValueError(f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}")
 
     def _on_start(self):
         self.client.headers["Content-Type"] = "application/json"
         if self.environment.parsed_options.api_key:
-            self.client.headers["Authorization"] = (
-                "Bearer " + self.environment.parsed_options.api_key
-            )
+            self.client.headers["Authorization"] = "Bearer " + self.environment.parsed_options.api_key
         if self.environment.parsed_options.header:
             for header in self.environment.parsed_options.header:
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
         self._guess_provider()
         print(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
-        self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](
-            self.model, self.environment.parsed_options
-        )
+        self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
 
         self.stream = self.environment.parsed_options.stream
         prompt_chars = self.environment.parsed_options.prompt_chars
         if self.environment.parsed_options.prompt_text:
-            self.input = _load_curl_like_data(
-                self.environment.parsed_options.prompt_text
-            )
+            self.input = _load_curl_like_data(self.environment.parsed_options.prompt_text)
         elif prompt_chars:
-            self.input = (
-                PROMPT_PREFIX_TOKEN * (prompt_chars // len(PROMPT_PREFIX_TOKEN) + 1)
-                + PROMPT_SUFFIX
-            )[:prompt_chars]
+            self.input = (PROMPT_PREFIX_TOKEN * (prompt_chars // len(PROMPT_PREFIX_TOKEN) + 1) + PROMPT_SUFFIX)[
+                :prompt_chars
+            ]
         else:
-            assert (
-                self.environment.parsed_options.prompt_tokens >= PROMPT_SUFFIX_TOKENS
-            ), f"Minimal prompt length is {PROMPT_SUFFIX_TOKENS}"
-            self.input = (
-                PROMPT_PREFIX_TOKEN
-                * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
-                + PROMPT_SUFFIX
-            )
+            # Ensure we have enough tokens to meet the desired prompt length
+            # If prompt_tokens < PROMPT_SUFFIX_TOKENS, just pad with prefix tokens to reach the desired length (skip the suffix)
+            if self.environment.parsed_options.prompt_tokens < PROMPT_SUFFIX_TOKENS:
+                self.input = PROMPT_PREFIX_TOKEN * self.environment.parsed_options.prompt_tokens
+            else:
+                # Normal case: prefix tokens + suffix
+                self.input = (
+                    PROMPT_PREFIX_TOKEN * (self.environment.parsed_options.prompt_tokens - PROMPT_SUFFIX_TOKENS)
+                    + PROMPT_SUFFIX
+                )
+
+        image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
+        self.prompt_images = None
+        if image_resolutions:
+            if isinstance(self.input, list) and any("images" in item for item in self.input):
+                raise AssertionError(
+                    "Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two."
+                )
+            if not self.environment.parsed_options.chat:
+                # Using regular /completions endpoint, each model has it's own image placeholder
+                # e.g., <|image|> for Phi, <|image_pad|> for Qwen, <image> for Llava
+                # So using /completions endpoint requires a bit more work to support this
+                raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
+            self.prompt_images = [self._create_base64_image(width, height) for width, height in image_resolutions]
+
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
             mean=self.environment.parsed_options.max_tokens,
@@ -654,15 +653,15 @@ class LLMUser(HttpUser):
             "temperature": self.temperature,
             "logprobs": self.environment.parsed_options.logprobs,
         }
+
+        if self.environment.parsed_options.top_k is not None:
+            logging_params["top_k"] = self.environment.parsed_options.top_k
+
         InitTracker.notify_init(self.environment, logging_params)
 
-        self.tokenizer = InitTracker.load_tokenizer(
-            self.environment.parsed_options.tokenizer
-        )
+        self.tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
         if self.tokenizer:
-            self.prompt_tokenizer_tokens = len(
-                self.tokenizer.encode(self._get_input()[0])
-            )
+            self.prompt_tokenizer_tokens = len(self.tokenizer.encode(self._get_input()[0]))
         else:
             self.prompt_tokenizer_tokens = None
 
@@ -677,14 +676,20 @@ class LLMUser(HttpUser):
             self.wait_time = pacer.wait_time_till_next
             self.wait()
         elif self.environment.parsed_options.burst:
-            self.wait_time = partial(
-                constant_pacing(self.environment.parsed_options.burst), self
-            )
+            self.wait_time = partial(constant_pacing(self.environment.parsed_options.burst), self)
         else:
             # introduce initial delay to avoid all users hitting the service at the same time
             time.sleep(random.random())
 
         self.first_done = False
+
+    def _create_base64_image(self, width, height):
+        """Create a random RGB image with the given dimensions and return as base64 data URI."""
+        img = Image.new("RGB", (width, height))
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG")
+        img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{img_str}"
 
     def _get_input(self):
         def _maybe_randomize(prompt):
@@ -692,24 +697,75 @@ class LLMUser(HttpUser):
                 return prompt
 
             # single letters are single tokens
-            num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(
-                PROMPT_PREFIX_TOKEN
-            )
-            return (
-                " ".join(
-                    chr(ord("a") + random.randint(0, 25))
-                    for _ in range(num_random_tokens)
+            num_random_tokens = (len(prompt) - len(PROMPT_SUFFIX)) // len(PROMPT_PREFIX_TOKEN)
+            
+            if num_random_tokens > 0:
+                # Normal case: prompt has pad tokens + suffix
+                return (
+                    " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_random_tokens))
+                    + " "
+                    + prompt[-len(PROMPT_SUFFIX) :]
                 )
-                + " "
-                + prompt[-len(PROMPT_SUFFIX) :]
-            )
+            else:
+                # Case where prompt is shorter than or equal to suffix length
+                # Just randomize the entire prompt - replace all tokens with random ones
+                num_tokens = len(prompt) // len(PROMPT_PREFIX_TOKEN)
+                return " ".join(chr(ord("a") + random.randint(0, 25)) for _ in range(num_tokens))
 
         if isinstance(self.input, str):
-            return _maybe_randomize(self.input), None
+            prompt = self.input
+            images = None
         else:
             item = self.input[random.randint(0, len(self.input) - 1)]
             assert "prompt" in item
-            return _maybe_randomize(item["prompt"]), item.get("images", None)
+            prompt = item["prompt"]
+            images = item.get("images", None)
+
+        prompt = _maybe_randomize(prompt)
+
+        if self.prompt_images:
+            images = self.prompt_images
+            prompt_images_positioning = self.environment.parsed_options.prompt_images_positioning
+            prompt = self.insert_image_placeholders(prompt, len(images), prompt_images_positioning)
+
+        return prompt, images
+
+    def insert_image_placeholders(self, prompt, num_images, prompt_images_positioning):
+        if num_images <= 0:
+            return prompt
+
+        prompt_length = len(prompt)
+        if prompt_length == 0:
+            return PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
+
+        if prompt_images_positioning == "space-evenly":
+            """
+            Insert <image> placeholders evenly throughout the prompt.
+            E.g., for 3 images, a prompt "abcdefgh" is changed to "ab<image>cd<image>ef<image>gh"
+
+            Images are spaced out evenly based on on character length.
+            This may result in a few extra tokens if the image tags are placed in the middle of tokens.
+            But shouldn't affect results meaningfully.
+            """
+            # we need num_images + 1 segments to place between <image> tags
+            segment_length = prompt_length / (num_images + 1)
+            result = ""
+            for i in range(num_images):
+                # Move a sliding window of segment_length across the prompt
+                # Truncating to ensure all segments are non-overlapping
+                # If segment_end is truncated, that character will be included in the next segment
+                segment_start = int(i * segment_length)
+                segment_end = int((i + 1) * segment_length)
+                result += prompt[segment_start:segment_end] + PROMPT_CHAT_IMAGE_PLACEHOLDER
+
+            # Final segment
+            result += prompt[int(num_images * segment_length) :]
+
+            return result
+        elif prompt_images_positioning == "end":
+            return prompt + PROMPT_CHAT_IMAGE_PLACEHOLDER * num_images
+        else:
+            raise ValueError(f"Invalid prompt images positioning: {prompt_images_positioning}")
 
     @task
     def generate_text(self):
@@ -746,9 +802,7 @@ class LLMUser(HttpUser):
                         t_first_token = now
                         break
                     if self.stream:
-                        assert chunk.startswith(
-                            b"data:"
-                        ), f"Unexpected chunk not starting with 'data': {chunk}"
+                        assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
                         chunk = chunk[len(b"data:") :]
                         if chunk.strip() == b"[DONE]":
                             done = True
@@ -756,9 +810,7 @@ class LLMUser(HttpUser):
                     data = orjson.loads(chunk)
                     out = self.provider_formatter.parse_output_json(data, prompt)
                     if out.usage_tokens:
-                        total_usage_tokens = (
-                            total_usage_tokens or 0
-                        ) + out.usage_tokens
+                        total_usage_tokens = (total_usage_tokens or 0) + out.usage_tokens
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
                     combined_text += out.text
@@ -768,9 +820,7 @@ class LLMUser(HttpUser):
                         t_first_token = now
 
                     if out.logprob_tokens:
-                        total_logprob_tokens = (
-                            total_logprob_tokens or 0
-                        ) + out.logprob_tokens
+                        total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
                 except Exception as e:
                     print(f"Failed to parse response: {chunk} with error {repr(e)}")
                     response.failure(e)
@@ -781,9 +831,7 @@ class LLMUser(HttpUser):
                 and (total_usage_tokens is not None)
                 and total_logprob_tokens != total_usage_tokens
             ):
-                print(
-                    f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}"
-                )
+                print(f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}")
             if total_logprob_tokens is not None:
                 num_tokens = total_logprob_tokens
             else:
@@ -810,21 +858,15 @@ class LLMUser(HttpUser):
                 print(combined_text)
                 print("---")
             if num_chars:
-                add_custom_metric(
-                    "latency_per_char", dur_generation / num_chars * 1000, num_chars
-                )
+                add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
             if self.stream:
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
                 if num_tokens != max_tokens:
-                    print(
-                        f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}"
-                    )
+                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
                 add_custom_metric("num_tokens", num_tokens)
-                add_custom_metric(
-                    "latency_per_token", dur_generation / num_tokens * 1000, num_tokens
-                )
+                add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
                 add_custom_metric(
                     "overall_latency_per_token",
                     dur_total / num_tokens * 1000,
@@ -845,6 +887,17 @@ class LLMUser(HttpUser):
             if not self.first_done:
                 self.first_done = True
                 InitTracker.notify_first_request()
+
+
+def parse_resolution(res_str):
+    """Parse a resolution string like '3084x1080' into a tuple of integers (width, height)."""
+    try:
+        width, height = map(int, res_str.split("x"))
+        return (width, height)
+    except (ValueError, AttributeError):
+        raise argparse.ArgumentTypeError(
+            f"Invalid resolution format: {res_str}. Expected format: WIDTHxHEIGHT (e.g. 1024x1024)"
+        )
 
 
 @events.init_command_line_parser.add_listener
@@ -901,6 +954,27 @@ def init_parser(parser):
         help="Include a few random numbers in the generated prompt to avoid caching",
     )
     parser.add_argument(
+        "--prompt-images-with-resolutions",
+        type=parse_resolution,
+        nargs="+",
+        default=[],
+        help="Images to add to the prompt for vision models, defined by their resolutions in format WIDTHxHEIGHT. "
+        'For example, "--prompt-images-with-resolutions 3084x1080 1024x1024" will insert 2 images '
+        "(3084 width x 1080 height and 1024 width x 1024 height) into the prompt. "
+        "Images will be spaced out evenly across the prompt."
+        "Only supported with --chat mode.",
+    )
+    parser.add_argument(
+        "--prompt-images-positioning",
+        type=str,
+        choices=["space-evenly", "end"],
+        default="space-evenly",
+        help="How to position the images in the prompt. "
+        "space-evenly: images are spaced out evenly across the prompt. E.g., 3 images in 'abcdefgh' is 'ab<image>cd<image>ef<image>gh'"
+        "end: images are added to the end of the prompt. E.g., 3 images in 'abcdefgh' is 'abcdefgh<image><image><image>'"
+        "Only relevant with --prompt-images-with-resolutions.",
+    )
+    parser.add_argument(
         "-o",
         "--max-tokens",
         env_var="MAX_TOKENS",
@@ -928,6 +1002,13 @@ def init_parser(parser):
         type=float,
         default=0.3,
         help="Specifies the width of the distribution. Specified value `alpha` is relative to `max-tokens`. For uniform distribution we'd sample from [max_tokens - max_tokens * alpha, max_tokens + max_tokens * alpha]. For normal distribution we'd sample from `N(max_tokens, max_tokens * alpha)`. Defaults to 0.3",
+    )
+    parser.add_argument(
+        "--top-k",
+        env_var="TOP_K",
+        type=int,
+        default=None,
+        help="Specifies the top-k sampling parameter.",
     )
     parser.add_argument(
         "--stream",
@@ -1012,6 +1093,7 @@ def init_parser(parser):
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
 
+
 @events.quitting.add_listener
 def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
@@ -1022,9 +1104,7 @@ def _(environment, **kw):
 
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
-        entries["concurrency"] = (
-            f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
-        )
+        entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
     else:
         entries["concurrency"] = InitTracker.users
     for metric_name in [
@@ -1034,22 +1114,20 @@ def _(environment, **kw):
         "total_latency",
         "prompt_tokens",  # might overwrite the static value based on server side tokenization
     ]:
-        entries[metric_name] = environment.stats.entries[
-            (metric_name, "METRIC")
-        ].avg_response_time
+        entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
     if not environment.parsed_options.stream:
         # if there's no streaming these metrics are meaningless
         entries["time_to_first_token"] = ""
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
-    percentile_to_report = [50, 90, 99, 99.9]
+    percentile_to_report = [50, 90, 95, 99, 99.9]
     percentile_metrics = ["time_to_first_token", "total_latency"]
     for percentile_metric in percentile_metrics:
         metrics = environment.stats.entries[percentile_metric, "METRIC"]
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
-            entries[name] = metrics.get_response_time_percentile(percentile/100)
+            entries[name] = metrics.get_response_time_percentile(percentile / 100)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
