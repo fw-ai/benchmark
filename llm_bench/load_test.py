@@ -391,8 +391,13 @@ class OpenAIProvider(BaseProvider):
             text = choice["text"]
 
         logprobs = choice.get("logprobs", None)
-        if logprobs and "tokens" in logprobs:
-            logprob_tokens = len(logprobs["tokens"])
+        if logprobs:
+            if "tokens" in logprobs:
+                logprob_tokens = len(logprobs["tokens"])
+            elif "content" in logprobs:
+                logprob_tokens = len(logprobs["content"])
+            else:
+                logprob_tokens = None
         else:
             logprob_tokens = None
 
