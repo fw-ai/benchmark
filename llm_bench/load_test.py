@@ -41,6 +41,8 @@ def add_custom_metric(name, value, length_value=0):
 
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
+TOKENIZER = transformers.AutoTokenizer.from_pretrained("/shared/amp-tab-v3-all-comb-no-pred-neg-0p20p-rel-qwen-chat-pred-3k-rqu9dr")
+
 
 class LimericsDataset:
     _PROMPT = "\n\nTranslate the limericks above to Spanish, then re-write limericks using different styles. Do it 10 times."
@@ -53,7 +55,7 @@ class LimericsDataset:
         num_tokens: int,
         common_tokens: int,
     ):
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -112,6 +114,18 @@ class JsonlDataset:
             for line in f:
                 yield json.loads(line), 0
 
+class TrafficDataset:
+    def __init__(self, path: str):
+        self.path = path
+
+    def __iter__(self):
+        return itertools.cycle(self._read_data())
+
+    def _read_data(self):
+        with open(self.path, "r") as f:
+            for line in f:
+                yield json.loads(line)["body"], 0
+
 
 class DatasetHolder:
     _instance = None
@@ -120,6 +134,8 @@ class DatasetHolder:
     def _create_dataset(cls, options: argparse.Namespace):
         if options.dataset.startswith("@"):
             return JsonlDataset(options.dataset[1:])
+        elif options.dataset.startswith("$"):
+            return TrafficDataset(options.dataset[1:])
         elif options.dataset == "limerics":
             assert (
                 options.tokenizer is not None
@@ -487,7 +503,8 @@ class OpenAIProvider(BaseProvider):
 
 
 class FireworksProvider(OpenAIProvider):
-    def format_payload(self, prompt, max_tokens, images):
+    def format_payload(self, prompt: str | dict, max_tokens, images):
+        if 
         data = super().format_payload(prompt, max_tokens, images)
         if not self.parsed_options.embeddings:
             data["min_tokens"] = max_tokens
@@ -807,13 +824,32 @@ class LLMUser(HttpUser):
     @task
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        prompt, prompt_usage_tokens, images = self._get_input()
-        data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+        # prompt, prompt_usage_tokens, images = self._get_input()
+        req, _ = next(self.dataset)
+
+        prompt = TOKENIZER.apply_chat_template(req["messages"], tokenize=True)
+        prompt_length = len(prompt)
+
+        req.pop("model", None)
+        req["temperature"] = 0
+        req["prompt_cache_max_len"] = int(prompt_length * 0.6)
+
+        req.pop("prediction", None)
+        req.pop("rewrite_speculation", None)
+        req.pop("adaptive_speculation", None)
+        req.pop("speculation_length_on_strong_match", None)
+        req.pop("speculation_min_length_on_strong_match", None)
+        req.pop("speculation_strong_match_threshold", None)
+        req.pop("speculation_stop_threshold", None)
+        req.pop("speculation_low_acceptance_threshold", None)
+        req.pop("speculation_backoff_multiplier", None)
+        # print(req.keys())
+
         t_start = time.perf_counter()
 
         with self.client.post(
             self.provider_formatter.get_url(),
-            data=json.dumps(data),
+            data=json.dumps(req),
             stream=True,
             catch_response=True,
         ) as response:
@@ -906,10 +942,10 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                if num_tokens != max_tokens:
-                    print(
-                        f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}"
-                    )
+                # if num_tokens != max_tokens:
+                #     print(
+                #         f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}"
+                #     )
                 add_custom_metric("num_tokens", num_tokens)
                 add_custom_metric(
                     "latency_per_token", dur_generation / num_tokens * 1000, num_tokens
