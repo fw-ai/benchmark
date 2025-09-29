@@ -114,7 +114,7 @@ class DatasetHolder:
     _instance = None
 
     @classmethod
-    def _create_dataset(cls, options: argparse.Namespace): 
+    def _create_dataset(cls, options: argparse.Namespace):
         if options.dataset.startswith("@"):
             return JsonlDataset(options.dataset[1:])
         elif options.dataset == "limerics":
@@ -384,7 +384,9 @@ class OpenAIProvider(BaseProvider):
         choice = data["choices"][0]
         if self.parsed_options.chat:
             if self.parsed_options.stream:
-                text = choice["delta"].get("content", "")
+                text = choice["delta"].get("reasoning_content", "") + choice[
+                    "delta"
+                ].get("content", "")
             else:
                 text = choice["message"]["content"]
         else:
