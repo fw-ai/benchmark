@@ -333,12 +333,21 @@ class BaseProvider(abc.ABC):
 
 class OpenAIProvider(BaseProvider):
     def get_url(self):
-        if self.parsed_options.chat:
+        if self.parsed_options.embeddings:
+            return "/v1/embeddings"
+        elif self.parsed_options.chat:
             return "/v1/chat/completions"
         else:
             return "/v1/completions"
 
     def format_payload(self, prompt, max_tokens, images):
+        if self.parsed_options.embeddings:
+            data = {
+                "model": self.model,
+                "input": prompt,
+            }
+            return data
+
         data = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -377,7 +386,14 @@ class OpenAIProvider(BaseProvider):
 
         return data
 
-    def parse_output_json(self, data):
+    def parse_output_json(self, data, prompt):
+        if self.parsed_options.embeddings:
+            return ChunkMetadata(
+                text="",
+                logprob_tokens=None,
+                usage_tokens=None,
+                prompt_usage_tokens=None,
+            )
         usage = data.get("usage", None)
 
         assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
@@ -409,7 +425,8 @@ class OpenAIProvider(BaseProvider):
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        data["min_tokens"] = max_tokens
+        if not self.parsed_options.embeddings:
+            data["min_tokens"] = max_tokens
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         return data
 
@@ -753,6 +770,9 @@ class LLMUser(HttpUser):
                         print(f"WARNING: Received more chunks after [DONE]: {chunk}")
                 try:
                     now = time.perf_counter()
+                    if self.provider_formatter.parsed_options.embeddings:
+                        t_first_token = now
+                        break
                     if self.stream:
                         assert chunk.startswith(
                             b"data:"
@@ -885,6 +905,12 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Use /v1/chat/completions API",
+    )
+    parser.add_argument(
+        "--embeddings",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use /v1/embeddings API",
     )
     parser.add_argument(
         "-p",
