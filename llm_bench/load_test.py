@@ -42,12 +42,11 @@ def add_custom_metric(name, value, length_value=0):
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 
-class LimericsDataset:
-    _PROMPT = "\n\nTranslate the limericks above to Spanish, then re-write limericks using different styles. Do it 10 times."
-
+class TranslationDataset:
     def __init__(
         self,
         path: str,
+        prompt: str,
         tokenizer_path: str,
         chat: bool,
         num_tokens: int,
@@ -65,8 +64,8 @@ class LimericsDataset:
                 self._all_limericks.append((lim, num_tokens))
 
         self._prefix = ""
-        self._suffix = self._PROMPT
-        self._prefix_suffix_tokens = len(self._tokenizer.encode(self._PROMPT))
+        self._suffix = prompt
+        self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt))
         while self._prefix_suffix_tokens < common_tokens:
             lim, num_tokens = self._all_limericks[
                 random.randint(0, len(self._all_limericks) - 1)
@@ -120,14 +119,27 @@ class DatasetHolder:
     def _create_dataset(cls, options: argparse.Namespace):
         if options.dataset.startswith("@"):
             return JsonlDataset(options.dataset[1:])
-        elif options.dataset == "limerics":
+        elif options.dataset in ["limerics", "code"]:
             assert (
                 options.tokenizer is not None
-            ), "--tokenizer is required for limerics dataset"
-            return LimericsDataset(
+            ), "--tokenizer is required for limerics or code dataset"
+            if options.dataset == "limerics":
+                if options.prompt is None:
+                    prompt = "Translate the limericks above to Spanish, then re-write limericks using 10 different styles."
+                else:
+                    prompt = options.prompt
+                dataset_file = "limericks.txt"
+            elif options.dataset == "code":
+                if options.prompt is None:
+                    prompt = "Translate the code above to C++."
+                else:
+                    prompt = options.prompt
+                dataset_file = "code.txt"
+            return TranslationDataset(
                 path=os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "limericks.txt"
+                    os.path.dirname(os.path.abspath(__file__)), dataset_file
                 ),
+                prompt="\n\n" + prompt,
                 tokenizer_path=options.tokenizer,
                 chat=options.chat,
                 num_tokens=options.prompt_tokens,
@@ -429,6 +441,8 @@ class OpenAIProvider(BaseProvider):
             data["top_k"] = self.parsed_options.top_k
         if self.parsed_options.logprobs is not None:
             data["logprobs"] = self.parsed_options.logprobs
+        if self.parsed_options.reasoning_effort is not None:
+            data["reasoning_effort"] = self.parsed_options.reasoning_effort
         if isinstance(prompt, str):
             if self.parsed_options.chat:
                 if images is None:
@@ -962,7 +976,7 @@ def init_parser(parser):
         "--dataset",
         env_var="DATASET",
         type=str,
-        help="Either 'limerics' or a path to a JSONL file",
+        help="Either 'limerics', 'code' or a path to a JSONL file",
         default="limerics",
     )
     parser.add_argument(
@@ -1145,7 +1159,17 @@ def init_parser(parser):
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
-
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        help="Prompt to use for the dataset. If not specified, a default prompt will be used.",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default=None,
+        help="Reasoning effort to use, model-dependent.",
+    )
 
 @events.quitting.add_listener
 def _(environment, **kw):
