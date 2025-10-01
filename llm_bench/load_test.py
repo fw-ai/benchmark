@@ -400,11 +400,10 @@ class OpenAIProvider(BaseProvider):
         choice = data["choices"][0]
         if self.parsed_options.chat:
             if self.parsed_options.stream:
-                text = (choice["delta"].get("reasoning", "") or "") + (choice["delta"].get("reasoning_content", "") or "") + (choice[
-                    "delta"
-                ].get("content", "") or "")
+                block = choice["delta"]
             else:
-                text = choice["message"]["content"]
+                block = choice["message"]
+            text = (block.get("reasoning", "") or "") + (block.get("reasoning_content", "") or "") + (block.get("content", "") or "")
         else:
             text = choice["text"]
 
@@ -758,6 +757,8 @@ class LLMUser(HttpUser):
             done = False
             total_usage_tokens = None
             total_logprob_tokens = None
+            spec_chunks = []
+            current_spec_chunk = 0
             try:
                 response.raise_for_status()
             except Exception as e:
@@ -790,6 +791,11 @@ class LLMUser(HttpUser):
                         continue
                     out = self.provider_formatter.parse_output_json(data)
                     if out.usage_tokens:
+                        if out.usage_tokens > (total_usage_tokens or 0):
+                            if current_spec_chunk > 0:
+                                spec_chunks.append(current_spec_chunk)
+                            current_spec_chunk = 0
+                        current_spec_chunk += 1
                         total_usage_tokens = out.usage_tokens
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
@@ -858,6 +864,9 @@ class LLMUser(HttpUser):
             prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
             if prompt_tokens:
                 add_custom_metric("prompt_tokens", prompt_tokens)
+            if spec_chunks:
+                print(f"@@@ Spec chunks: {spec_chunks}")
+                add_custom_metric("avg_acceptance_length", sum(spec_chunks) / len(spec_chunks))
 
             if not self.first_done:
                 self.first_done = True
@@ -1078,6 +1087,8 @@ def _(environment, **kw):
     for metric_name in [
         "time_to_first_token",
         "latency_per_token",
+        "overall_latency_per_token",
+        "avg_acceptance_length",
         "num_tokens",
         "total_latency",
         "prompt_tokens",  # might overwrite the static value based on server side tokenization
