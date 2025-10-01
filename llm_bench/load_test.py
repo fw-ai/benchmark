@@ -386,7 +386,7 @@ class OpenAIProvider(BaseProvider):
 
         return data
 
-    def parse_output_json(self, data, prompt):
+    def parse_output_json(self, data):
         if self.parsed_options.embeddings:
             return ChunkMetadata(
                 text="",
@@ -400,11 +400,10 @@ class OpenAIProvider(BaseProvider):
         choice = data["choices"][0]
         if self.parsed_options.chat:
             if self.parsed_options.stream:
-                text = choice["delta"].get("reasoning_content", "") + choice[
-                    "delta"
-                ].get("content", "")
+                block = choice["delta"]
             else:
-                text = choice["message"]["content"]
+                block = choice["message"]
+            text = (block.get("reasoning", "") or "") + (block.get("reasoning_content", "") or "") + (block.get("content", "") or "")
         else:
             text = choice["text"]
 
@@ -754,6 +753,7 @@ class LLMUser(HttpUser):
             catch_response=True,
         ) as response:
             combined_text = ""
+            done_empty_chunk = False
             done = False
             total_usage_tokens = None
             total_logprob_tokens = None
@@ -781,12 +781,15 @@ class LLMUser(HttpUser):
                         if chunk.strip() == b"[DONE]":
                             done = True
                             continue
+                    if done_empty_chunk:
+                        print(f"WARNING: Received more chunks after the trailing last chunk: {chunk}")
                     data = orjson.loads(chunk)
+                    if not data.get("choices"):
+                        done_empty_chunk = True
+                        continue
                     out = self.provider_formatter.parse_output_json(data)
                     if out.usage_tokens:
-                        total_usage_tokens = (
-                            total_usage_tokens or 0
-                        ) + out.usage_tokens
+                        total_usage_tokens = out.usage_tokens
                     if out.prompt_usage_tokens:
                         prompt_usage_tokens = out.prompt_usage_tokens
                     combined_text += out.text
@@ -1074,6 +1077,7 @@ def _(environment, **kw):
     for metric_name in [
         "time_to_first_token",
         "latency_per_token",
+        "overall_latency_per_token",
         "num_tokens",
         "total_latency",
         "prompt_tokens",  # might overwrite the static value based on server side tokenization
