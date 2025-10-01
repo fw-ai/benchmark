@@ -386,7 +386,7 @@ class OpenAIProvider(BaseProvider):
 
         return data
 
-    def parse_output_json(self, data, prompt):
+    def parse_output_json(self, data):
         if self.parsed_options.embeddings:
             return ChunkMetadata(
                 text="",
