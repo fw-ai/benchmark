@@ -18,6 +18,9 @@ import io
 import itertools
 from PIL import Image
 import transformers
+import re
+import gevent
+from locust.util.timespan import parse_timespan as _locust_parse_timespan
 
 try:
     import locust_plugins
@@ -247,6 +250,9 @@ class InitTracker:
     logging_params = None
     environment = None
     tokenizer = None
+    deferred_run_time_seconds = None
+    stop_scheduled = False
+    stats_reset_done = False
 
     @classmethod
     def notify_init(cls, environment, logging_params):
@@ -261,26 +267,26 @@ class InitTracker:
 
     @classmethod
     def notify_first_request(cls):
-        if (
-            cls.environment.parsed_options.qps is not None
-            and cls.first_request_done == 0
-        ):
-            # if in QPS mode, reset after first successful request comes back
-            cls.reset_stats()
         cls.first_request_done += 1
-        if (
-            cls.environment.parsed_options.qps is not None
-            and cls.first_request_done == 0
-            and cls.users == cls.first_request_done
-        ):
-            # if in fixed load mode, reset after all users issued one request (we're in a steady state)
-            cls.reset_stats()
 
     @classmethod
     def notify_spawning_complete(cls, user_count):
         cls.users = user_count
-        if cls.users == cls.first_request_done:
+        # Start steady-state measurement exactly when all users have spawned
+        if not cls.stats_reset_done:
             cls.reset_stats()
+            cls.stats_reset_done = True
+        # If -t/--run-time was provided, schedule test stop relative to spawn complete
+        if (
+            cls.deferred_run_time_seconds is not None
+            and not cls.stop_scheduled
+            and cls.environment is not None
+            and cls.environment.runner is not None
+        ):
+            delay = float(cls.deferred_run_time_seconds)
+            print(f"Scheduling stop {delay}s after spawning complete (deferred -t)")
+            gevent.spawn_later(delay, cls.environment.runner.quit)
+            cls.stop_scheduled = True
 
     @classmethod
     def reset_stats(cls):
@@ -304,6 +310,65 @@ class InitTracker:
 
 
 events.spawning_complete.add_listener(InitTracker.notify_spawning_complete)
+
+
+def _parse_run_time_to_seconds(run_time_value):
+    """Parse Locust -t/--run-time value into seconds (float). Supports both
+    already-parsed numeric values and human strings like '30s', '5m', '1h30m'.
+    """
+    if not run_time_value:
+        return None
+    # If Locust already parsed it to a number (seconds), just use it
+    if isinstance(run_time_value, (int, float)):
+        return float(run_time_value)
+    # Try Locust's own parser first
+    if _locust_parse_timespan is not None:
+        try:
+            return float(_locust_parse_timespan(run_time_value))
+        except Exception:
+            pass
+    # Fallback simple parser for strings like '1h30m15s'
+    s = str(run_time_value).strip().lower()
+    total = 0.0
+    for value, unit in re.findall(r"(\d+)\s*([smhd])", s):
+        n = float(value)
+        if unit == "s":
+            total += n
+        elif unit == "m":
+            total += n * 60
+        elif unit == "h":
+            total += n * 3600
+        elif unit == "d":
+            total += n * 86400
+    if total == 0.0:
+        raise ValueError(f"Unable to parse run time value: {run_time_value}")
+    return total
+
+
+@events.init.add_listener
+def _defer_run_time_to_after_spawn(environment, **_kwargs):
+    """Capture -t/--run-time and defer it to start counting after spawn completes.
+
+    We store the desired duration, null out the original option to prevent
+    Locust from scheduling an early stop, and then schedule our own stop in
+    InitTracker.notify_spawning_complete.
+    """
+    try:
+        run_time_value = getattr(environment.parsed_options, "run_time", None)
+    except Exception:
+        run_time_value = None
+    seconds = _parse_run_time_to_seconds(run_time_value) if run_time_value else None
+    if seconds:
+        # Disable Locust's default run_time handling by clearing it
+        try:
+            environment.parsed_options.run_time = None
+        except Exception:
+            pass
+        InitTracker.deferred_run_time_seconds = seconds
+        InitTracker.environment = environment
+        print(
+            f"Deferring -t/--run-time to start after spawning complete: {seconds}s"
+        )
 
 
 @dataclass
