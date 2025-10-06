@@ -63,8 +63,11 @@ class TranslationDataset:
         self._prefix = ""
         self._suffix = prompt
         self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt))
+        idx = 0
         while self._prefix_suffix_tokens < common_tokens:
-            lim, num_tokens = self._all_limericks[random.randint(0, len(self._all_limericks) - 1)]
+            lim, num_tokens = self._all_limericks[idx % len(self._all_limericks)]
+            idx += 1
+            #random.randint(0, len(self._all_limericks) - 1)]
             self._prefix += lim + "\n\n"
             self._prefix_suffix_tokens += num_tokens
 
@@ -79,9 +82,11 @@ class TranslationDataset:
     def __next__(self):
         prompt_tokens = self._prefix_suffix_tokens
         prompt = self._prefix
+        idx = 0
         while prompt_tokens < self._num_tokens:
-            lim, num_tokens = self._all_limericks[random.randint(0, len(self._all_limericks) - 1)]
-
+            #lim, num_tokens = self._all_limericks[random.randint(0, len(self._all_limericks) - 1)]
+            lim, num_tokens = self._all_limericks[idx % len(self._all_limericks)]
+            idx += 1
             prompt += lim + "\n\n"
             prompt_tokens += num_tokens
         prompt += self._suffix
