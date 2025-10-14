@@ -1191,7 +1191,9 @@ def _(environment, **kw):
     # Time spent since all users finished spawning (steady-state duration)
     if InitTracker.steady_start_time is not None:
         time_spent_s = time.perf_counter() - InitTracker.steady_start_time
-        entries["time_spent_s"] = time_spent_s
+        # Report time spent in minutes as requested
+        entries["time_spent_s"] = time_spent_s / 60.0
+        # Keep aggregate QPS based on seconds
         entries["aggregate_qps"] = (
             entries["num_requests"] / time_spent_s if time_spent_s > 0 else 0.0
         )
