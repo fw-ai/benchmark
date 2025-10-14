@@ -265,6 +265,7 @@ class InitTracker:
     deferred_run_time_seconds = None
     stop_scheduled = False
     stats_reset_done = False
+    steady_start_time = None
 
     @classmethod
     def notify_init(cls, environment, logging_params):
@@ -288,6 +289,7 @@ class InitTracker:
         if not cls.stats_reset_done:
             cls.reset_stats()
             cls.stats_reset_done = True
+            cls.steady_start_time = time.perf_counter()
         # If -t/--run-time was provided, schedule test stop relative to spawn complete
         if (
             cls.deferred_run_time_seconds is not None
@@ -1186,6 +1188,13 @@ def _(environment, **kw):
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
+    # Time spent since all users finished spawning (steady-state duration)
+    if InitTracker.steady_start_time is not None:
+        time_spent_s = time.perf_counter() - InitTracker.steady_start_time
+        entries["time_spent_s"] = time_spent_s
+        entries["aggregate_qps"] = (
+            entries["num_requests"] / time_spent_s if time_spent_s > 0 else 0.0
+        )
     percentile_to_report = [50, 90, 95, 99, 99.9]
     percentile_metrics = ["time_to_first_token", "total_latency"]
     for percentile_metric in percentile_metrics:
