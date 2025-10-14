@@ -1,0 +1,290 @@
+def find_all_permutations(s):
+    """Find all permutations of a string"""
+    from itertools import permutations
+    return [''.join(p) for p in permutations(s)]
+
+def count_vowels_consonants(s):
+    """Count vowels and consonants in a string"""
+    vowels = 'aeiouAEIOU'
+    v_count = sum(1 for char in s if char in vowels)
+    c_count = sum(1 for char in s if char.isalpha() and char not in vowels)
+    return v_count, c_count
+
+def reverse_words(s):
+    """Reverse words in a string"""
+    return ' '.join(s.split()[::-1])
+
+def is_anagram(str1, str2):
+    """Check if two strings are anagrams"""
+    return sorted(str1.lower().replace(' ', '')) == sorted(str2.lower().replace(' ', ''))
+
+def remove_duplicates(s):
+    """Remove duplicate characters while preserving order"""
+    seen = set()
+    result = []
+    for char in s:
+        if char not in seen:
+            seen.add(char)
+            result.append(char)
+    return ''.join(result)
+
+def find_first_non_repeating(s):
+    """Find first non-repeating character"""
+    from collections import Counter
+    count = Counter(s)
+    for char in s:
+        if count[char] == 1:
+            return char
+    return None
+
+def string_rotation(str1, str2):
+    """Check if str2 is a rotation of str1"""
+    if len(str1) != len(str2):
+        return False
+    return str2 in (str1 + str1)
+
+def count_substring_occurrences(main_str, sub_str):
+    """Count occurrences of substring in main string"""
+    return main_str.count(sub_str)
+
+def capitalize_words(s):
+    """Capitalize first letter of each word"""
+    return ' '.join(word.capitalize() for word in s.split())
+
+def expand_around_center(s, left, right):
+    """Helper function for longest_palindromic_substring"""
+    while left >= 0 and right < len(s) and s[left] == s[right]:
+        left -= 1
+        right += 1
+    return right - left - 1
+
+def find_all_substrings(s):
+    """Find all possible substrings of a string"""
+    n = len(s)
+    return [s[i:j] for i in range(n) for j in range(i + 1, n + 1)]
+
+def count_pal_subseq(s):
+    """Count palindromic subsequences"""
+    n = len(s)
+    dp = [[1 if i == j else 0 for j in range(n)] for i in range(n)]
+    for l in range(2, n+1):
+        for i in range(n-l+1):
+            j = i+l-1
+            dp[i][j] = dp[i+1][j] + dp[i][j-1] - (dp[i+1][j-1] if l > 2 else 0)
+            if s[i] == s[j]:
+                dp[i][j] += dp[i+1][j-1] if l > 2 else 1
+    return dp[0][n-1]
+
+def count_distinct_subseq(s):
+    """Count distinct subsequences"""
+    dp, last = 1, {}
+    for i, c in enumerate(s):
+        new_dp = dp * 2
+        if c in last:
+            new_dp -= last[c]
+        last[c] = dp
+        dp = new_dp
+    return dp
+
+def count_subseq_occurrences(text, pattern):
+    """Count pattern as subsequence in text"""
+    dp = [1] + [0] * len(pattern)
+    for c in text:
+        for i in range(len(pattern)-1, -1, -1):
+            if pattern[i] == c:
+                dp[i+1] += dp[i]
+    return dp[-1]
+
+def count_abc_subseq(s):
+    """Count 'a'->'b'->'c' subsequences"""
+    a = b = c = 0
+    for char in s:
+        if char == 'a': a = 2*a + 1
+        elif char == 'b': b = 2*b + a
+        elif char == 'c': c = 2*c + b
+    return c
+
+def count_vowel_subseq(s):
+    """Count subsequences containing all vowels in order"""
+    a = e = i = o = u = 0
+    for char in s.lower():
+        if char == 'a': a += 1
+        elif char == 'e': e += a
+        elif char == 'i': i += e
+        elif char == 'o': o += i
+        elif char == 'u': u += o
+    return u
+
+def count_increasing_triplets(s):
+    """Count 3-character increasing subsequences"""
+    return sum(sum(c < s[j] for c in s[:j]) * sum(c > s[j] for c in s[j+1:]) 
+               for j in range(1, len(s)-1))
+
+def count_subseq_longer_than(s, k):
+    """Count subsequences longer than k chars"""
+    return 2**len(s) - sum(math.comb(len(s), i) for i in range(k+1))
+
+def get_all_subseq(s):
+    """Get all subsequences"""
+    return [''.join(s[j] for j in range(len(s)) if i >> j & 1) for i in range(1 << len(s))]
+
+def capitalize_first(s):
+    return s[0].upper() + s[1:] if s else s
+
+def to_camel_case(s):
+    return ''.join(word.capitalize() for word in s.split())
+
+def to_pascal_case(s):
+    return ''.join(word.capitalize() for word in s.split())
+
+def to_snake_case(s):
+    return '_'.join(s.split()).lower()
+
+def to_kebab_case(s):
+    return '-'.join(s.split()).lower()
+
+def camel_to_snake(s):
+    return ''.join('_' + c.lower() if c.isupper() else c for c in s).lstrip('_')
+
+def snake_to_camel(s):
+    return ''.join(word.capitalize() for word in s.split('_'))
+
+def get_cyclic_permutations(s):
+    """Get all cyclic permutations"""
+    result = []
+    for i in range(len(s)):
+        result.append(s[i:] + s[:i])
+    return result
+
+def get_rotational_permutations(s):
+    """Get rotational permutations"""
+    result = []
+    for i in range(len(s)):
+        result.append(s[-i:] + s[:-i])
+    return result
+
+def get_palindromic_permutations(s):
+    """Get permutations that are palindromes"""
+    perms = get_all_permutations(s)
+    return [p for p in perms if p == p[::-1]]
+
+def get_alternating_case_permutations(s):
+    """Get permutations with alternating case (if possible)"""
+    perms = get_all_permutations(s)
+    return [p for p in perms if all(p[i].islower() != p[i+1].islower() 
+                                  for i in range(len(p)-1))]
+
+def get_permutations_without_adjacent_duplicates(s):
+    """Get permutations with no adjacent identical characters"""
+    perms = get_all_permutations(s)
+    return [p for p in perms if all(p[i] != p[i+1] for i in range(len(p)-1))]
+
+def swap_first_last(s):
+    """Swap first and last characters"""
+    return s[-1] + s[1:-1] + s[0] if len(s) > 1 else s
+
+def swap_adjacent_chars(s):
+    """Swap every pair of adjacent characters"""
+    result = []
+    for i in range(0, len(s)-1, 2):
+        result.append(s[i+1] + s[i])
+    if len(s) % 2:
+        result.append(s[-1])
+    return ''.join(result)
+
+def swap_at_positions(s, pos1, pos2):
+    """Swap characters at specific positions"""
+    if 0 <= pos1 < len(s) and 0 <= pos2 < len(s):
+        chars = list(s)
+        chars[pos1], chars[pos2] = chars[pos2], chars[pos1]
+        return ''.join(chars)
+    return s
+
+def swap_vowels_consonants(s):
+    """Swap vowels with consonants where possible"""
+    vowels = 'aeiouAEIOU'
+    chars = list(s)
+    vowel_positions = [i for i, c in enumerate(chars) if c in vowels]
+    consonant_positions = [i for i, c in enumerate(chars) if c.isalpha() and c not in vowels]
+    min_len = min(len(vowel_positions), len(consonant_positions))
+    for i in range(min_len):
+        chars[vowel_positions[i]], chars[consonant_positions[i]] = chars[consonant_positions[i]], chars[vowel_positions[i]]
+    return ''.join(chars)
+
+def swap_first_last_words(s):
+    """Swap first and last words"""
+    words = s.split()
+    if len(words) > 1:
+        words[0], words[-1] = words[-1], words[0]
+    return ' '.join(words)
+
+def swap_adjacent_words(s):
+    """Swap every pair of adjacent words"""
+    words = s.split()
+    for i in range(0, len(words)-1, 2):
+        words[i], words[i+1] = words[i+1], words[i]
+    return ' '.join(words)
+
+def reverse_word_order(s):
+    """Reverse the order of words"""
+    return ' '.join(s.split()[::-1])
+
+def shuffle_words(s):
+    """Randomly shuffle words"""
+    words = s.split()
+    for i in range(len(words)-1, 0, -1):
+        j = i  # Simple shuffle without random library
+        words[i], words[j] = words[j], words[i]
+    return ' '.join(words)
+
+def swap_every_nth(s, n):
+    """Swap every nth character with the next one"""
+    chars = list(s)
+    for i in range(n-1, len(chars)-1, n):
+        chars[i], chars[i+1] = chars[i+1], chars[i]
+    return ''.join(chars)
+
+def swap_upper_lower(s):
+    """Swap uppercase and lowercase letters"""
+    return ''.join(c.lower() if c.isupper() else c.upper() for c in s)
+
+def swap_middle(s):
+    """Swap first half with second half"""
+    mid = len(s) // 2
+    return s[mid:] + s[:mid]
+
+def swap_quarters(s):
+    """Swap first quarter with last quarter"""
+    quarter = len(s) // 4
+    return s[-quarter:] + s[quarter:-quarter] + s[:quarter]
+
+def swap_symmetric_positions(s):
+    """Swap symmetric positions (first with last, second with second last, etc.)"""
+    chars = list(s)
+    for i in range(len(s) // 2):
+        chars[i], chars[len(s)-1-i] = chars[len(s)-1-i], chars[i]
+    return ''.join(chars)
+
+def double_swap(s):
+    """Perform two swaps: first-last and middle"""
+    # Swap first and last
+    s = s[-1] + s[1:-1] + s[0] if len(s) > 1 else s
+    # Swap middle
+    mid = len(s) // 2
+    return s[mid:] + s[:mid]
+
+def swap_words_alternating(s):
+    """Swap words in alternating pattern"""
+    words = s.split()
+    for i in range(0, len(words)-1, 2):
+        words[i], words[i+1] = words[i+1], words[i]
+    return ' '.join(words)
+
+def swap_longest_shortest_words(s):
+    """Swap the longest and shortest words"""
+    words = s.split()
+    if len(words) > 1:
+        min_idx = min(range(len(words)), key=lambda i: len(words[i]))
+        max_idx = max(range(len(words)), key=lambda i: len(words[i]))
+        words[min_idx], words[max_idx] = words[max_idx], words[min_idx]
+    return ' '.join(words)
