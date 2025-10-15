@@ -115,8 +115,10 @@ class JsonlDataset:
                 yield json.loads(line), 0
 
 class TrafficDataset:
-    def __init__(self, path: str):
+    def __init__(self, path: str, tokenizer_path: str, prompt_cache_max_pct: float=0.6):
         self.path = path
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+        self.prompt_cache_max_pct = prompt_cache_max_pct
 
     def __iter__(self):
         return itertools.cycle(self._read_data())
@@ -124,6 +126,12 @@ class TrafficDataset:
     def _read_data(self):
         with open(self.path, "r") as f:
             for line in f:
+                req = json.loads(line)["body"]
+                prompt = self._tokenizer.apply_chat_template(req["messages"], tokenize=True)
+                prompt_length = len(prompt)
+                req.pop("model", None)
+                req["temperature"] = 0
+                req["prompt_cache_max_len"] = int(prompt_length * self.prompt_cache_max_pct)
                 yield json.loads(line)["body"], 0
 
 
@@ -135,7 +143,10 @@ class DatasetHolder:
         if options.dataset.startswith("@"):
             return JsonlDataset(options.dataset[1:])
         elif options.dataset.startswith("$"):
-            return TrafficDataset(options.dataset[1:])
+            return TrafficDataset(
+                options.dataset[1:], 
+                tokenizer_path=options.tokenizer
+            )
         elif options.dataset == "limerics":
             assert (
                 options.tokenizer is not None
@@ -504,11 +515,11 @@ class OpenAIProvider(BaseProvider):
 
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt: str | dict, max_tokens, images):
-        if 
         data = super().format_payload(prompt, max_tokens, images)
         if not self.parsed_options.embeddings:
             data["min_tokens"] = max_tokens
-        data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        if "prompt_cache_max_len" not in data:
+            data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         return data
 
 
@@ -766,7 +777,6 @@ class LLMUser(HttpUser):
 
     def _get_input(self):
         prompt, prompt_tokens = next(self.dataset)
-
         if self.prompt_images:
             images = self.prompt_images
             prompt_images_positioning = (
@@ -824,28 +834,26 @@ class LLMUser(HttpUser):
     @task
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        # prompt, prompt_usage_tokens, images = self._get_input()
+        prompt, prompt_usage_tokens, images = self._get_input()
+        data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+
         req, _ = next(self.dataset)
-
-        prompt = TOKENIZER.apply_chat_template(req["messages"], tokenize=True)
-        prompt_length = len(prompt)
-
-        req.pop("model", None)
-        req["temperature"] = 0
-        req["prompt_cache_max_len"] = int(prompt_length * 0.6)
-
-        req.pop("prediction", None)
-        req.pop("rewrite_speculation", None)
-        req.pop("adaptive_speculation", None)
-        req.pop("speculation_length_on_strong_match", None)
-        req.pop("speculation_min_length_on_strong_match", None)
-        req.pop("speculation_strong_match_threshold", None)
-        req.pop("speculation_stop_threshold", None)
-        req.pop("speculation_low_acceptance_threshold", None)
-        req.pop("speculation_backoff_multiplier", None)
-        # print(req.keys())
+ 
+        # req.pop("prediction", None)
+        # req.pop("rewrite_speculation", None)
+        # req.pop("adaptive_speculation", None)
+        # req.pop("speculation_length_on_strong_match", None)
+        # req.pop("speculation_min_length_on_strong_match", None)
+        # req.pop("speculation_strong_match_threshold", None)
+        # req.pop("speculation_stop_threshold", None)
+        # req.pop("speculation_low_acceptance_threshold", None)
+        # req.pop("speculation_backoff_multiplier", None)
 
         t_start = time.perf_counter()
+
+        print(self.client.headers)
+        print("URL", self.provider_formatter.get_url())
+        # print("DATA", req)
 
         with self.client.post(
             self.provider_formatter.get_url(),
