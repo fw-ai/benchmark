@@ -129,7 +129,6 @@ class TrafficDataset:
                 req = json.loads(line)["body"]
                 prompt = self._tokenizer.apply_chat_template(req["messages"], tokenize=True)
                 prompt_length = len(prompt)
-                req.pop("model", None)
                 req["temperature"] = 0
                 req["prompt_cache_max_len"] = int(prompt_length * self.prompt_cache_max_pct)
                 yield json.loads(line)["body"], 0
