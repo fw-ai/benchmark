@@ -841,6 +841,13 @@ class LLMUser(HttpUser):
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
         prompt, prompt_usage_tokens, images = self._get_input()
+        
+        if self.environment.parsed_options.show_prompt:
+            print("---")
+            print("PROMPT:")
+            print(prompt)
+            print("---")
+            
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
@@ -1133,6 +1140,12 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Print the result of each generation",
+    )
+    parser.add_argument(
+        "--show-prompt",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Print the prompt for each generation",
     )
     parser.add_argument(
         "-pcml",
