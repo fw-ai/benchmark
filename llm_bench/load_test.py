@@ -385,6 +385,17 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
         )
 
 
+@events.init.add_listener
+def _seed_random(environment, **_kwargs):
+    try:
+        seed = getattr(environment.parsed_options, "seed", None)
+    except Exception:
+        seed = None
+    if seed is not None:
+        random.seed(seed)
+        print(f"Random seed set to {seed}")
+
+
 @dataclass
 class ChunkMetadata:
     text: str
@@ -1130,6 +1141,13 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--seed",
+        env_var="SEED",
+        type=int,
+        default=None,
+        help="Seed for Python random() to make dataset construction deterministic.",
     )
     parser.add_argument(
         "--header",
