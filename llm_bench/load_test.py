@@ -51,9 +51,11 @@ class TranslationDataset:
         chat: bool,
         num_tokens: int,
         common_tokens: int,
+        deterministic: bool = False,
     ):
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
         self._num_tokens = num_tokens
+        self._deterministic = deterministic
 
         self._all_limericks = []
         with open(path, "r") as f:
@@ -66,12 +68,22 @@ class TranslationDataset:
         self._prefix = ""
         self._suffix = prompt
         self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt))
-        while self._prefix_suffix_tokens < common_tokens:
-            lim, num_tokens = self._all_limericks[
-                random.randint(0, len(self._all_limericks) - 1)
-            ]
-            self._prefix += lim + "\n\n"
-            self._prefix_suffix_tokens += num_tokens
+        
+        # For deterministic mode, use a fixed order for prefix generation
+        if deterministic:
+            limerick_index = 0
+            while self._prefix_suffix_tokens < common_tokens:
+                lim, num_tokens = self._all_limericks[limerick_index % len(self._all_limericks)]
+                self._prefix += lim + "\n\n"
+                self._prefix_suffix_tokens += num_tokens
+                limerick_index += 1
+        else:
+            while self._prefix_suffix_tokens < common_tokens:
+                lim, num_tokens = self._all_limericks[
+                    random.randint(0, len(self._all_limericks) - 1)
+                ]
+                self._prefix += lim + "\n\n"
+                self._prefix_suffix_tokens += num_tokens
 
         if chat:
             empty_tempalate_tokens = self._tokenizer.apply_chat_template(
@@ -84,15 +96,25 @@ class TranslationDataset:
     def __next__(self):
         prompt_tokens = self._prefix_suffix_tokens
         prompt = self._prefix
-        while prompt_tokens < self._num_tokens:
-            lim, num_tokens = self._all_limericks[
-                random.randint(0, len(self._all_limericks) - 1)
-            ]
-
-            prompt += lim + "\n\n"
-            prompt_tokens += num_tokens
+        
+        if self._deterministic:
+            # For deterministic mode, cycle through limericks in order
+            limerick_index = 0
+            while prompt_tokens < self._num_tokens:
+                lim, num_tokens = self._all_limericks[limerick_index % len(self._all_limericks)]
+                prompt += lim + "\n\n"
+                prompt_tokens += num_tokens
+                limerick_index += 1
+        else:
+            # Original random behavior
+            while prompt_tokens < self._num_tokens:
+                lim, num_tokens = self._all_limericks[
+                    random.randint(0, len(self._all_limericks) - 1)
+                ]
+                prompt += lim + "\n\n"
+                prompt_tokens += num_tokens
+                
         prompt += self._suffix
-
         return prompt, prompt_tokens
 
     def __iter__(self):
@@ -144,6 +166,7 @@ class DatasetHolder:
                 chat=options.chat,
                 num_tokens=options.prompt_tokens,
                 common_tokens=options.prompt_cache_max_len,
+                deterministic=options.deterministic,
             )
         else:
             raise ValueError(f"Unknown dataset: {options.dataset}")
@@ -1185,6 +1208,12 @@ def init_parser(parser):
         type=str,
         default=None,
         help="Reasoning effort to use, model-dependent.",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use deterministic prompt generation for prompt caching. When enabled, limericks are selected in a fixed order instead of randomly.",
     )
 
 @events.quitting.add_listener
