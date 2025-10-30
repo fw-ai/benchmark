@@ -411,6 +411,11 @@ class OpenAIProvider(BaseProvider):
                 "model": self.model,
                 "input": prompt,
             }
+            # Add embeddings-specific parameters
+            if self.parsed_options.return_logits is not None:
+                data["return_logits"] = self.parsed_options.return_logits
+            if self.parsed_options.normalize is not None:
+                data["normalize"] = self.parsed_options.normalize
             return data
 
         data = {
@@ -454,7 +459,7 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data):
         if self.parsed_options.embeddings:
             return ChunkMetadata(
-                text="",
+                text=data["data"][0]["embedding"],
                 logprob_tokens=None,
                 usage_tokens=None,
                 prompt_usage_tokens=None,
@@ -837,6 +842,9 @@ class LLMUser(HttpUser):
                     now = time.perf_counter()
                     if self.provider_formatter.parsed_options.embeddings:
                         t_first_token = now
+                        if self.environment.parsed_options.show_response:
+                            out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
+                            combined_text = out.text
                         break
                     if self.stream:
                         assert chunk.startswith(
@@ -919,9 +927,11 @@ class LLMUser(HttpUser):
                     dur_total / num_tokens * 1000,
                     num_tokens,
                 )
-            prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
-            if prompt_tokens:
-                add_custom_metric("prompt_tokens", prompt_tokens)
+
+            if not self.provider_formatter.parsed_options.embeddings:
+                prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
+                if prompt_tokens:
+                    add_custom_metric("prompt_tokens", prompt_tokens)
 
             if not self.first_done:
                 self.first_done = True
@@ -979,6 +989,19 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use /v1/embeddings API",
+    )
+    parser.add_argument(
+        "--return-logits",
+        type=int,
+        nargs="*",
+        default=None,
+        help="For embeddings: return per-token or per-class logits. Provide specific token/class indices, or empty list for all. Only works with certain models.",
+    )
+    parser.add_argument(
+        "--normalize",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="For embeddings: apply L2 normalization to activations when return_logits is None, or softmax to selected logits when return_logits is provided.",
     )
     parser.add_argument(
         "-p",

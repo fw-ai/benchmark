@@ -31,4 +31,4 @@ Metrics summary can be exported to CSV. This way multiple configuration can be s
 
 See [`llm_bench`](llm_bench) folder for detailed usage.
 
-See [`benchmark_suite.ipynb`](benchmark_suite.ipynb) for a detailed example of how to use the load test script and run different types of benchmark suites.
+See [`llm_bench/benchmark_suite.ipynb`](llm_bench/benchmark_suite.ipynb) for a detailed example of how to use the load test script and run different types of benchmark suites.

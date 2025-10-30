@@ -1,0 +1,7 @@
+pip==25.2
+locust==2.18.1
+orjson==3.9.10
+pillow==10.0.0
+gevent==23.9.1
+transformers==4.36.0
+locust-plugins==1.0.2
