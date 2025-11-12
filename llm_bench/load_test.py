@@ -307,9 +307,9 @@ class OpenAIProvider(BaseProvider):
         choice = data["choices"][0]
         if self.parsed_options.chat:
             if self.parsed_options.stream:
-                text = choice["delta"].get("content", "")
+                text = choice["delta"].get("content", "") or choice["delta"].get("reasoning_content", "")
             else:
-                text = choice["message"]["content"]
+                text = choice["message"]["content"] or choice["delta"].get("reasoning_content", "")
         else:
             text = choice["text"]
 
