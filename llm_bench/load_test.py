@@ -54,6 +54,7 @@ class TranslationDataset:
     ):
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
         self._num_tokens = num_tokens
+        random.seed(42)
 
         self._all_limericks = []
         with open(path, "r") as f:
@@ -80,6 +81,8 @@ class TranslationDataset:
                 add_generation_prompt=True,
             )
             self._prefix_suffix_tokens += len(empty_tempalate_tokens)
+
+        random.seed()
 
     def __next__(self):
         prompt_tokens = self._prefix_suffix_tokens
@@ -511,6 +514,7 @@ class FireworksProvider(OpenAIProvider):
         if not self.parsed_options.embeddings:
             data["min_tokens"] = max_tokens
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        data["min_tokens"] = max_tokens
         return data
 
 
