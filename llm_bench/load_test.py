@@ -542,7 +542,10 @@ class FireworksProvider(OpenAIProvider):
         if not self.parsed_options.embeddings:
             data["min_tokens"] = max_tokens
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
-        del data["model"]
+        if self.parsed_options.model:
+            data["model"] = self.parsed_options.model
+        else:
+            del data["model"]
         return data
 
 
