@@ -276,6 +276,7 @@ class OpenAIProvider(BaseProvider):
             "stream": self.parsed_options.stream,
             "temperature": self.parsed_options.temperature,
             "n": self.parsed_options.n,
+            "ignore_eos": True,
         }
         if self.parsed_options.chat:
             if images is None:
@@ -783,7 +784,7 @@ class LLMUser(HttpUser):
                         combined_text += out.text
 
                     # some providers (SGLang) send an empty chunk first skewing the TTFT
-                    if combined_text and t_first_token is None:
+                    if t_first_token is None:
                         t_first_token = now
 
 
@@ -844,6 +845,9 @@ class LLMUser(HttpUser):
                 add_custom_metric("throughput (out tok/s)", num_tokenizer_tokens/(dur_total))
                 
             add_custom_metric("total_latency", dur_total * 1000)
+
+            add_custom_metric("prompt_cache_max_len", self.environment.parsed_options.prompt_cache_max_len)
+
             
             if num_tokens:
                 if num_tokens != max_tokens:
@@ -1050,6 +1054,8 @@ def _(environment, **kw):
         )
     else:
         entries["concurrency"] = InitTracker.users
+    
+    entries["prompt_cache_max_len"] = environment.parsed_options.prompt_cache_max_len
     for metric_name in [
         "time_to_first_token",
         "latency_per_token",
