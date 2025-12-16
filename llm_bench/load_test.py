@@ -42,19 +42,20 @@ def add_custom_metric(name, value, length_value=0):
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 
-class LimericsDataset:
-    _PROMPT = "\n\nTranslate the limericks above to Spanish, then re-write limericks using different styles. Do it 10 times."
-
+class TranslationDataset:
     def __init__(
         self,
         path: str,
+        prompt: str,
         tokenizer_path: str,
         chat: bool,
         num_tokens: int,
         common_tokens: int,
+        deterministic: bool = False,
     ):
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
         self._num_tokens = num_tokens
+        self._deterministic = deterministic
 
         self._all_limericks = []
         with open(path, "r") as f:
@@ -65,14 +66,24 @@ class LimericsDataset:
                 self._all_limericks.append((lim, num_tokens))
 
         self._prefix = ""
-        self._suffix = self._PROMPT
-        self._prefix_suffix_tokens = len(self._tokenizer.encode(self._PROMPT))
-        while self._prefix_suffix_tokens < common_tokens:
-            lim, num_tokens = self._all_limericks[
-                random.randint(0, len(self._all_limericks) - 1)
-            ]
-            self._prefix += lim + "\n\n"
-            self._prefix_suffix_tokens += num_tokens
+        self._suffix = prompt
+        self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt))
+        
+        # For deterministic mode, use a fixed order for prefix generation
+        if deterministic:
+            limerick_index = 0
+            while self._prefix_suffix_tokens < common_tokens:
+                lim, num_tokens = self._all_limericks[limerick_index % len(self._all_limericks)]
+                self._prefix += lim + "\n\n"
+                self._prefix_suffix_tokens += num_tokens
+                limerick_index += 1
+        else:
+            while self._prefix_suffix_tokens < common_tokens:
+                lim, num_tokens = self._all_limericks[
+                    random.randint(0, len(self._all_limericks) - 1)
+                ]
+                self._prefix += lim + "\n\n"
+                self._prefix_suffix_tokens += num_tokens
 
         if chat:
             empty_tempalate_tokens = self._tokenizer.apply_chat_template(
@@ -85,15 +96,25 @@ class LimericsDataset:
     def __next__(self):
         prompt_tokens = self._prefix_suffix_tokens
         prompt = self._prefix
-        while prompt_tokens < self._num_tokens:
-            lim, num_tokens = self._all_limericks[
-                random.randint(0, len(self._all_limericks) - 1)
-            ]
-
-            prompt += lim + "\n\n"
-            prompt_tokens += num_tokens
+        
+        if self._deterministic:
+            # For deterministic mode, cycle through limericks in order
+            limerick_index = 0
+            while prompt_tokens < self._num_tokens:
+                lim, num_tokens = self._all_limericks[limerick_index % len(self._all_limericks)]
+                prompt += lim + "\n\n"
+                prompt_tokens += num_tokens
+                limerick_index += 1
+        else:
+            # Original random behavior
+            while prompt_tokens < self._num_tokens:
+                lim, num_tokens = self._all_limericks[
+                    random.randint(0, len(self._all_limericks) - 1)
+                ]
+                prompt += lim + "\n\n"
+                prompt_tokens += num_tokens
+                
         prompt += self._suffix
-
         return prompt, prompt_tokens
 
     def __iter__(self):
@@ -120,18 +141,32 @@ class DatasetHolder:
     def _create_dataset(cls, options: argparse.Namespace):
         if options.dataset.startswith("@"):
             return JsonlDataset(options.dataset[1:])
-        elif options.dataset == "limerics":
+        elif options.dataset in ["limerics", "code"]:
             assert (
                 options.tokenizer is not None
-            ), "--tokenizer is required for limerics dataset"
-            return LimericsDataset(
+            ), "--tokenizer is required for limerics or code dataset"
+            if options.dataset == "limerics":
+                if options.prompt is None:
+                    prompt = "Translate the limericks above to Spanish, then re-write limericks using 10 different styles."
+                else:
+                    prompt = options.prompt
+                dataset_file = "limericks.txt"
+            elif options.dataset == "code":
+                if options.prompt is None:
+                    prompt = "Translate the code above to C++."
+                else:
+                    prompt = options.prompt
+                dataset_file = "code.txt"
+            return TranslationDataset(
                 path=os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "limericks.txt"
+                    os.path.dirname(os.path.abspath(__file__)), dataset_file
                 ),
+                prompt="\n\n" + prompt,
                 tokenizer_path=options.tokenizer,
                 chat=options.chat,
                 num_tokens=options.prompt_tokens,
                 common_tokens=options.prompt_cache_max_len,
+                deterministic=options.deterministic,
             )
         else:
             raise ValueError(f"Unknown dataset: {options.dataset}")
@@ -253,6 +288,7 @@ class InitTracker:
     deferred_run_time_seconds = None
     stop_scheduled = False
     stats_reset_done = False
+    steady_start_time = None
 
     @classmethod
     def notify_init(cls, environment, logging_params):
@@ -276,6 +312,7 @@ class InitTracker:
         if not cls.stats_reset_done:
             cls.reset_stats()
             cls.stats_reset_done = True
+            cls.steady_start_time = time.perf_counter()
         # If -t/--run-time was provided, schedule test stop relative to spawn complete
         if (
             cls.deferred_run_time_seconds is not None
@@ -371,6 +408,17 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
         )
 
 
+@events.init.add_listener
+def _seed_random(environment, **_kwargs):
+    try:
+        seed = getattr(environment.parsed_options, "seed", None)
+    except Exception:
+        seed = None
+    if seed is not None:
+        random.seed(seed)
+        print(f"Random seed set to {seed}")
+
+
 @dataclass
 class ChunkMetadata:
     text: str
@@ -429,6 +477,8 @@ class OpenAIProvider(BaseProvider):
             data["top_k"] = self.parsed_options.top_k
         if self.parsed_options.logprobs is not None:
             data["logprobs"] = self.parsed_options.logprobs
+        if self.parsed_options.reasoning_effort is not None:
+            data["reasoning_effort"] = self.parsed_options.reasoning_effort
         if isinstance(prompt, str):
             if self.parsed_options.chat:
                 if images is None:
@@ -497,6 +547,10 @@ class FireworksProvider(OpenAIProvider):
         if not self.parsed_options.embeddings:
             data["min_tokens"] = max_tokens
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        if self.parsed_options.model:
+            data["model"] = self.parsed_options.model
+        else:
+            del data["model"]
         return data
 
 
@@ -506,6 +560,10 @@ class VllmProvider(OpenAIProvider):
         data["ignore_eos"] = True
         return data
 
+class GeminiProvider(OpenAIProvider):
+    def format_payload(self, prompt, max_tokens, images):
+        data = super().format_payload(prompt, max_tokens, images)
+        return data
 
 class TogetherProvider(OpenAIProvider):
     def get_url(self):
@@ -577,6 +635,7 @@ PROVIDER_CLASS_MAP = {
     "openai": OpenAIProvider,
     "together": TogetherProvider,
     "tgi": TgiProvider,
+    "gemini": GeminiProvider,
 }
 
 
@@ -813,6 +872,13 @@ class LLMUser(HttpUser):
     def generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
         prompt, prompt_usage_tokens, images = self._get_input()
+        
+        if self.environment.parsed_options.show_prompt:
+            print("---")
+            print("PROMPT:")
+            print(prompt)
+            print("---")
+            
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
 
@@ -962,7 +1028,7 @@ def init_parser(parser):
         "--dataset",
         env_var="DATASET",
         type=str,
-        help="Either 'limerics' or a path to a JSONL file",
+        help="Either 'limerics', 'code' or a path to a JSONL file",
         default="limerics",
     )
     parser.add_argument(
@@ -1125,12 +1191,25 @@ def init_parser(parser):
         help="Print the result of each generation",
     )
     parser.add_argument(
+        "--show-prompt",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Print the prompt for each generation",
+    )
+    parser.add_argument(
         "-pcml",
         "--prompt-cache-max-len",
         env_var="PROMPT_CACHE_MAX_LEN",
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--seed",
+        env_var="SEED",
+        type=int,
+        default=None,
+        help="Seed for Python random() to make dataset construction deterministic.",
     )
     parser.add_argument(
         "--header",
@@ -1145,7 +1224,23 @@ def init_parser(parser):
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
-
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        help="Prompt to use for the dataset. If not specified, a default prompt will be used.",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default=None,
+        help="Reasoning effort to use, model-dependent.",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use deterministic prompt generation for prompt caching. When enabled, limericks are selected in a fixed order instead of randomly.",
+    )
 
 @events.quitting.add_listener
 def _(environment, **kw):
@@ -1179,6 +1274,15 @@ def _(environment, **kw):
         entries["latency_per_token"] = ""
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
+    # Time spent since all users finished spawning (steady-state duration)
+    if InitTracker.steady_start_time is not None:
+        time_spent_s = time.perf_counter() - InitTracker.steady_start_time
+        # Report time spent in minutes as requested
+        entries["time_spent_s"] = time_spent_s / 60.0
+        # Keep aggregate QPS based on seconds
+        entries["aggregate_qps"] = (
+            entries["num_requests"] / time_spent_s if time_spent_s > 0 else 0.0
+        )
     percentile_to_report = [50, 90, 95, 99, 99.9]
     percentile_metrics = ["time_to_first_token", "total_latency"]
     for percentile_metric in percentile_metrics:
