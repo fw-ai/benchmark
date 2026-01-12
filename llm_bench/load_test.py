@@ -9,6 +9,7 @@ import sys
 import traceback
 from typing import Optional
 from locust import HttpUser, task, events, constant_pacing
+from urllib3 import PoolManager
 import copy
 import json
 import time
@@ -600,6 +601,7 @@ def _load_curl_like_data(text):
 
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
+    pool_manager = PoolManager(maxsize=50, block=True)
 
     def on_start(self):
         try:
@@ -1145,6 +1147,15 @@ def init_parser(parser):
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
     )
+    #DEBUG
+    import logging
+    from http.client import HTTPConnection
+    logging.basicConfig()
+    logging.getLogger().setLevel(logging.DEBUG)
+    requests_log = logging.getLogger("requests.packages.urllib3")
+    requests_log.setLevel(logging.DEBUG)
+    requests_log.propagate = True
+    #DEBUG
 
 
 @events.quitting.add_listener
