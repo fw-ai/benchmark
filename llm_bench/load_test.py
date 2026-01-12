@@ -67,12 +67,14 @@ class LimericsDataset:
         self._prefix = ""
         self._suffix = self._PROMPT
         self._prefix_suffix_tokens = len(self._tokenizer.encode(self._PROMPT))
+        # Use deterministic selection (sequential iteration) to ensure all workers
+        # get the same prefix for the same common_tokens value
+        idx = 0
         while self._prefix_suffix_tokens < common_tokens:
-            lim, num_tokens = self._all_limericks[
-                random.randint(0, len(self._all_limericks) - 1)
-            ]
+            lim, num_tokens = self._all_limericks[idx % len(self._all_limericks)]
             self._prefix += lim + "\n\n"
             self._prefix_suffix_tokens += num_tokens
+            idx += 1
 
         if chat:
             empty_tempalate_tokens = self._tokenizer.apply_chat_template(
