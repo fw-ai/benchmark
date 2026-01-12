@@ -101,16 +101,40 @@ class LimericsDataset:
 
 
 class JsonlDataset:
-    def __init__(self, path: str):
+    def __init__(
+        self,
+        path: str,
+        shuffle_seed: Optional[int] = None,
+        dataset_limit: Optional[int] = None,
+    ):
         self.path = path
+        self.shuffle_seed = shuffle_seed
+        self.dataset_limit = dataset_limit
 
     def __iter__(self):
         return itertools.cycle(self._read_data())
 
     def _read_data(self):
+        # Read all data into a list first (needed for shuffling and limiting)
+        data = []
         with open(self.path, "r") as f:
             for line in f:
-                yield json.loads(line), 0
+                data.append((json.loads(line), 0))
+
+        # Shuffle if seed is provided
+        if self.shuffle_seed is not None:
+            rng = random.Random(self.shuffle_seed)
+            rng.shuffle(data)
+            print(f"Shuffled dataset with seed {self.shuffle_seed}")
+
+        # Limit dataset size if specified
+        if self.dataset_limit is not None:
+            data = data[: self.dataset_limit]
+            print(f"Limited dataset to first {len(data)} items")
+
+        # Yield all items
+        for item in data:
+            yield item
 
 
 class DatasetHolder:
@@ -119,7 +143,11 @@ class DatasetHolder:
     @classmethod
     def _create_dataset(cls, options: argparse.Namespace):
         if options.dataset.startswith("@"):
-            return JsonlDataset(options.dataset[1:])
+            return JsonlDataset(
+                options.dataset[1:],
+                shuffle_seed=getattr(options, "dataset_shuffle_seed", None),
+                dataset_limit=getattr(options, "dataset_limit", None),
+            )
         elif options.dataset == "limerics":
             assert (
                 options.tokenizer is not None
@@ -251,7 +279,10 @@ class InitTracker:
     environment = None
     tokenizer = None
     deferred_run_time_seconds = None
+    deferred_max_requests = None
+    request_count = 0
     stop_scheduled = False
+    max_requests_stop_scheduled = False
     stats_reset_done = False
 
     @classmethod
@@ -268,6 +299,78 @@ class InitTracker:
     @classmethod
     def notify_first_request(cls):
         cls.first_request_done += 1
+
+    @classmethod
+    def notify_request_complete(cls):
+        """Notify that a request has completed and check if we should stop."""
+        if cls.deferred_max_requests is None:
+            return
+        cls.request_count += 1
+        print(f"Request {cls.request_count}/{cls.deferred_max_requests} completed")
+        if cls.request_count >= cls.deferred_max_requests:
+            print(
+                f"DEBUG: request_count={cls.request_count}, max={cls.deferred_max_requests}, stop_scheduled={cls.stop_scheduled}"
+            )
+            # max_requests should take precedence, so we stop even if stop_scheduled is True
+            # (it might have been set by run_time, but max_requests limit was reached first)
+            if cls.environment is None:
+                print("WARNING: environment is None, cannot stop")
+                return
+            if cls.environment.runner is None:
+                print("WARNING: runner is None, cannot stop")
+                return
+            print(
+                f"Reached max requests limit ({cls.deferred_max_requests}), stopping test"
+            )
+            cls.stop_scheduled = True
+            # Use a small delay to ensure the current request completes
+            print(f"DEBUG: Scheduling runner.quit() in 0.1s")
+            # Use a partial to ensure proper closure
+            gevent.spawn_later(0.1, cls._do_quit)
+
+    @classmethod
+    def _do_quit(cls):
+        """Actually stop the runner."""
+        print("DEBUG: Executing runner stop")
+        if not cls.environment:
+            print("WARNING: environment is None, cannot stop")
+            return
+        if not cls.environment.runner:
+            print("WARNING: runner is None, cannot stop")
+            return
+
+        runner = cls.environment.runner
+        # Try multiple methods to stop Locust
+        try:
+            # Method 1: Set should_stop flag if it exists
+            if hasattr(runner, "should_stop"):
+                runner.should_stop = True
+                print("DEBUG: Set runner.should_stop = True")
+        except Exception as e:
+            print(f"DEBUG: Failed to set should_stop: {e}")
+
+        try:
+            # Method 2: Call stop() if it exists
+            if hasattr(runner, "stop"):
+                runner.stop()
+                print("DEBUG: Called runner.stop()")
+        except Exception as e:
+            print(f"DEBUG: Failed to call stop(): {e}")
+
+        try:
+            # Method 3: Call quit() (original method, same as run_time)
+            runner.quit()
+            print("DEBUG: Called runner.quit()")
+        except Exception as e:
+            print(f"DEBUG: Failed to call quit(): {e}")
+
+        # Method 4: Try to kill the greenlet if it exists
+        try:
+            if hasattr(runner, "greenlet") and runner.greenlet:
+                runner.greenlet.kill()
+                print("DEBUG: Killed runner.greenlet")
+        except Exception as e:
+            print(f"DEBUG: Failed to kill greenlet: {e}")
 
     @classmethod
     def notify_spawning_complete(cls, user_count):
@@ -347,11 +450,13 @@ def _parse_run_time_to_seconds(run_time_value):
 
 @events.init.add_listener
 def _defer_run_time_to_after_spawn(environment, **_kwargs):
-    """Capture -t/--run-time and defer it to start counting after spawn completes.
+    """Capture -t/--run-time and --max-requests and defer them appropriately.
 
-    We store the desired duration, null out the original option to prevent
+    For run-time: we store the desired duration, null out the original option to prevent
     Locust from scheduling an early stop, and then schedule our own stop in
     InitTracker.notify_spawning_complete.
+
+    For max-requests: we store the limit and check it after each request completes.
     """
     try:
         run_time_value = getattr(environment.parsed_options, "run_time", None)
@@ -366,9 +471,17 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
             pass
         InitTracker.deferred_run_time_seconds = seconds
         InitTracker.environment = environment
-        print(
-            f"Deferring -t/--run-time to start after spawning complete: {seconds}s"
-        )
+        print(f"Deferring -t/--run-time to start after spawning complete: {seconds}s")
+
+    # Capture max_requests if specified
+    try:
+        max_requests = getattr(environment.parsed_options, "max_requests", None)
+    except Exception:
+        max_requests = None
+    if max_requests is not None:
+        InitTracker.deferred_max_requests = max_requests
+        InitTracker.environment = environment
+        print(f"Will stop after {max_requests} requests complete")
 
 
 @dataclass
@@ -473,7 +586,11 @@ class OpenAIProvider(BaseProvider):
                 block = choice["delta"]
             else:
                 block = choice["message"]
-            text = (block.get("reasoning", "") or "") + (block.get("reasoning_content", "") or "") + (block.get("content", "") or "")
+            text = (
+                (block.get("reasoning", "") or "")
+                + (block.get("reasoning_content", "") or "")
+                + (block.get("content", "") or "")
+            )
         else:
             text = choice["text"]
 
@@ -843,7 +960,9 @@ class LLMUser(HttpUser):
                     if self.provider_formatter.parsed_options.embeddings:
                         t_first_token = now
                         if self.environment.parsed_options.show_response:
-                            out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
+                            out = self.provider_formatter.parse_output_json(
+                                orjson.loads(chunk)
+                            )
                             combined_text = out.text
                         break
                     if self.stream:
@@ -855,7 +974,9 @@ class LLMUser(HttpUser):
                             done = True
                             continue
                     if done_empty_chunk:
-                        print(f"WARNING: Received more chunks after the trailing last chunk: {chunk}")
+                        print(
+                            f"WARNING: Received more chunks after the trailing last chunk: {chunk}"
+                        )
                     data = orjson.loads(chunk)
                     if not data.get("choices"):
                         done_empty_chunk = True
@@ -879,7 +1000,10 @@ class LLMUser(HttpUser):
                     print(f"Failed to parse response: {chunk} with error {repr(e)}")
                     response.failure(e)
                     return
-            assert t_first_token is not None, "empty response received"
+            if t_first_token is None:
+                response.failure(Exception("empty response received"))
+                return
+
             if (
                 (total_logprob_tokens is not None)
                 and (total_usage_tokens is not None)
@@ -933,9 +1057,15 @@ class LLMUser(HttpUser):
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
 
+            # Mark response as success (required when using catch_response=True)
+            response.success()
+
             if not self.first_done:
                 self.first_done = True
                 InitTracker.notify_first_request()
+
+            # Notify request completion and check if we should stop
+            InitTracker.notify_request_complete()
 
 
 def parse_resolution(res_str):
@@ -964,6 +1094,18 @@ def init_parser(parser):
         type=str,
         help="Either 'limerics' or a path to a JSONL file",
         default="limerics",
+    )
+    parser.add_argument(
+        "--dataset-shuffle-seed",
+        type=int,
+        default=None,
+        help="Random seed for shuffling the dataset. If provided, the dataset will be shuffled with this seed before use. Useful for reproducible sampling.",
+    )
+    parser.add_argument(
+        "--dataset-limit",
+        type=int,
+        default=None,
+        help="Limit the dataset to the first N items after shuffling (if shuffle seed is provided). Useful for sampling a subset of a large dataset.",
     )
     parser.add_argument(
         "-m",
@@ -1144,6 +1286,13 @@ def init_parser(parser):
         default=1,
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
+    )
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Stop the test after the specified number of successful requests complete. "
+        "Useful for running a fixed number of requests regardless of time or dataset size.",
     )
 
 
