@@ -542,6 +542,8 @@ class OpenAIProvider(BaseProvider):
             data["top_k"] = self.parsed_options.top_k
         if self.parsed_options.logprobs is not None:
             data["logprobs"] = self.parsed_options.logprobs
+        if self.parsed_options.reasoning_effort is not None:
+            data["reasoning_effort"] = self.parsed_options.reasoning_effort
         if isinstance(prompt, str):
             if self.parsed_options.chat:
                 if images is None:
@@ -566,6 +568,17 @@ class OpenAIProvider(BaseProvider):
             assert isinstance(prompt, dict), "prompt must be a dict"
             for k, v in prompt.items():
                 data[k] = v
+
+        # Clear last assistant message if requested
+        if (
+            self.parsed_options.clear_assistant
+            and "messages" in data
+            and isinstance(data["messages"], list)
+            and len(data["messages"]) > 0
+        ):
+            # Empty the last message content if it's from assistant
+            if data["messages"][-1].get("role") == "assistant":
+                data["messages"][-1]["content"] = ""
 
         return data
 
@@ -611,8 +624,6 @@ class OpenAIProvider(BaseProvider):
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        if not self.parsed_options.embeddings:
-            data["min_tokens"] = max_tokens
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         return data
 
@@ -931,6 +942,10 @@ class LLMUser(HttpUser):
         max_tokens = self.max_tokens_sampler.sample()
         prompt, prompt_usage_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+        if self.environment.parsed_options.show_request:
+            print("--- Request payload ---")
+            print(json.dumps(data, indent=2))
+            print("---")
         t_start = time.perf_counter()
 
         with self.client.post(
@@ -1267,6 +1282,12 @@ def init_parser(parser):
         help="Print the result of each generation",
     )
     parser.add_argument(
+        "--show-request",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Print the request payload for each request",
+    )
+    parser.add_argument(
         "-pcml",
         "--prompt-cache-max-len",
         env_var="PROMPT_CACHE_MAX_LEN",
@@ -1293,6 +1314,28 @@ def init_parser(parser):
         default=None,
         help="Stop the test after the specified number of successful requests complete. "
         "Useful for running a fixed number of requests regardless of time or dataset size.",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default=None,
+        help="Set the reasoning_effort parameter for the API request (e.g., 'none', 'low', 'medium', 'high'). "
+        "If not specified and using a JSONL dataset, will use the value from the dataset if present.",
+    )
+    parser.add_argument(
+        "--min-tokens",
+        type=int,
+        default=None,
+        help="Set the min_tokens parameter for the API request. "
+        "By default, min_tokens is not set (allowing early stopping). "
+        "Setting min_tokens = max_tokens can cause repetition when the model runs out of content.",
+    )
+    parser.add_argument(
+        "--clear-assistant",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If the last message in the messages array is from the assistant role, remove it. "
+        "This allows the model to generate new content instead of continuing from existing assistant content.",
     )
 
 
