@@ -538,9 +538,9 @@ class OpenAIProvider(BaseProvider):
             and isinstance(data["messages"], list)
             and len(data["messages"]) > 0
         ):
-            # Empty the last message content if it's from assistant
+            # Remove the last message if it's from assistant
             if data["messages"][-1].get("role") == "assistant":
-                data["messages"][-1]["content"] = ""
+                data["messages"].pop()
 
         return data
 
