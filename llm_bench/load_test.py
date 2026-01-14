@@ -309,29 +309,15 @@ class InitTracker:
         print(f"Request {cls.request_count}/{cls.deferred_max_requests} completed")
         if cls.request_count >= cls.deferred_max_requests:
             print(
-                f"DEBUG: request_count={cls.request_count}, max={cls.deferred_max_requests}, stop_scheduled={cls.stop_scheduled}"
-            )
-            # max_requests should take precedence, so we stop even if stop_scheduled is True
-            # (it might have been set by run_time, but max_requests limit was reached first)
-            if cls.environment is None:
-                print("WARNING: environment is None, cannot stop")
-                return
-            if cls.environment.runner is None:
-                print("WARNING: runner is None, cannot stop")
-                return
-            print(
                 f"Reached max requests limit ({cls.deferred_max_requests}), stopping test"
             )
             cls.stop_scheduled = True
             # Use a small delay to ensure the current request completes
-            print(f"DEBUG: Scheduling runner.quit() in 0.1s")
-            # Use a partial to ensure proper closure
             gevent.spawn_later(0.1, cls._do_quit)
 
     @classmethod
     def _do_quit(cls):
         """Actually stop the runner."""
-        print("DEBUG: Executing runner stop")
         if not cls.environment:
             print("WARNING: environment is None, cannot stop")
             return
@@ -340,37 +326,13 @@ class InitTracker:
             return
 
         runner = cls.environment.runner
-        # Try multiple methods to stop Locust
         try:
-            # Method 1: Set should_stop flag if it exists
-            if hasattr(runner, "should_stop"):
-                runner.should_stop = True
-                print("DEBUG: Set runner.should_stop = True")
-        except Exception as e:
-            print(f"DEBUG: Failed to set should_stop: {e}")
-
-        try:
-            # Method 2: Call stop() if it exists
             if hasattr(runner, "stop"):
                 runner.stop()
-                print("DEBUG: Called runner.stop()")
-        except Exception as e:
-            print(f"DEBUG: Failed to call stop(): {e}")
-
-        try:
-            # Method 3: Call quit() (original method, same as run_time)
             runner.quit()
-            print("DEBUG: Called runner.quit()")
         except Exception as e:
-            print(f"DEBUG: Failed to call quit(): {e}")
+            print(f"Failed to stop runner: {e}")
 
-        # Method 4: Try to kill the greenlet if it exists
-        try:
-            if hasattr(runner, "greenlet") and runner.greenlet:
-                runner.greenlet.kill()
-                print("DEBUG: Killed runner.greenlet")
-        except Exception as e:
-            print(f"DEBUG: Failed to kill greenlet: {e}")
 
     @classmethod
     def notify_spawning_complete(cls, user_count):
