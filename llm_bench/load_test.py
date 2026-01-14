@@ -1285,14 +1285,6 @@ def init_parser(parser):
         "If not specified and using a JSONL dataset, will use the value from the dataset if present.",
     )
     parser.add_argument(
-        "--min-tokens",
-        type=int,
-        default=None,
-        help="Set the min_tokens parameter for the API request. "
-        "By default, min_tokens is not set (allowing early stopping). "
-        "Setting min_tokens = max_tokens can cause repetition when the model runs out of content.",
-    )
-    parser.add_argument(
         "--clear-assistant",
         action=argparse.BooleanOptionalAction,
         default=False,
