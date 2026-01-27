@@ -476,14 +476,16 @@ class BaseProvider(abc.ABC):
     @abc.abstractmethod
     def parse_output_json(self, json): ...
 
-    def post_response_hook(self, headers, num_tokens):
+    def post_response_hook(self, headers, num_tokens, perf_metrics=None):
         """Hook for provider-specific post-response processing.
 
-        Override this method to extract and emit custom metrics from response headers.
+        Override this method to extract and emit custom metrics from response headers
+        or perf_metrics (for streaming responses).
 
         Args:
             headers: Response headers dict
             num_tokens: Number of tokens generated in this response
+            perf_metrics: Optional dict of performance metrics from response body (streaming)
         """
         pass
 
@@ -604,10 +606,15 @@ class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        # Enable perf_metrics_in_response to get speculation stats in streaming responses
+        data["perf_metrics_in_response"] = True
         return data
 
-    def post_response_hook(self, headers, num_tokens):
-        """Process Fireworks-specific response headers for speculation hit rate tracking.
+    def post_response_hook(self, headers, num_tokens, perf_metrics=None):
+        """Process Fireworks-specific response for speculation hit rate tracking.
+
+        For streaming responses, speculation stats come from perf_metrics in the response body.
+        For non-streaming responses, they come from headers.
 
         Only records speculation hit rates for generations with >= 30 tokens to ensure
         meaningful statistics.
@@ -616,14 +623,21 @@ class FireworksProvider(OpenAIProvider):
         if num_tokens is None or num_tokens < 30:
             return
 
-        # Debug: print all headers when --show-response is enabled
-        if self.parsed_options.show_response:
-            print(f"DEBUG: Response headers: {dict(headers)}")
+        # Try to get speculation acceptance from perf_metrics first (streaming),
+        # then fall back to headers (non-streaming)
+        speculation_hit_rates = None
+        if perf_metrics:
+            speculation_hit_rates = perf_metrics.get("speculation-acceptance")
+            if self.parsed_options.show_response:
+                print(f"DEBUG: perf_metrics: {perf_metrics}")
+        if not speculation_hit_rates:
+            speculation_hit_rates = headers.get("fireworks-speculation-acceptance")
+            if self.parsed_options.show_response:
+                print(f"DEBUG: Response headers: {dict(headers)}")
 
-        speculation_hit_rates = headers.get("fireworks-speculation-acceptance")
         if not speculation_hit_rates:
             if self.parsed_options.show_response:
-                print("DEBUG: fireworks-speculation-acceptance header not found")
+                print("DEBUG: speculation-acceptance not found in perf_metrics or headers")
             return
 
         try:
@@ -974,6 +988,7 @@ class LLMUser(HttpUser):
             done = False
             total_usage_tokens = None
             total_logprob_tokens = None
+            perf_metrics = None  # Capture perf_metrics from response body (streaming)
             try:
                 response.raise_for_status()
             except Exception as e:
@@ -1008,6 +1023,9 @@ class LLMUser(HttpUser):
                             f"WARNING: Received more chunks after the trailing last chunk: {chunk}"
                         )
                     data = orjson.loads(chunk)
+                    # Capture perf_metrics if present (usually in final usage chunk)
+                    if data.get("perf_metrics"):
+                        perf_metrics = data["perf_metrics"]
                     if not data.get("choices"):
                         done_empty_chunk = True
                         continue
@@ -1088,7 +1106,7 @@ class LLMUser(HttpUser):
                     add_custom_metric("prompt_tokens", prompt_tokens)
 
             # Allow provider to process response (e.g., for custom metrics)
-            self.provider_formatter.post_response_hook(response.headers, num_tokens)
+            self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
 
             # Mark response as success (required when using catch_response=True)
             response.success()
