@@ -472,6 +472,13 @@ class BaseProvider(abc.ABC):
     @abc.abstractmethod
     def parse_output_json(self, json): ...
 
+    def process_response_headers(self, headers):
+        """Hook for provider-specific response header processing.
+
+        Override this method to extract and emit custom metrics from response headers.
+        """
+        pass
+
 
 class OpenAIProvider(BaseProvider):
     def get_url(self):
@@ -590,6 +597,28 @@ class FireworksProvider(OpenAIProvider):
         data = super().format_payload(prompt, max_tokens, images)
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         return data
+
+    def process_response_headers(self, headers):
+        """Process Fireworks-specific response headers for speculation hit rate tracking."""
+        speculation_hit_rates = headers.get("fireworks-speculation-acceptance")
+        if not speculation_hit_rates:
+            return
+
+        try:
+            positions = speculation_hit_rates.split(",")
+            for position in positions:
+                position, hit_rate_frac = position.split(":")
+                hits, total = map(int, hit_rate_frac.split("/"))
+                if total > 0:
+                    hit_rate = hits / total
+                    add_custom_metric(
+                        f"speculation_hit_rate_position_{position}",
+                        hit_rate * 100,
+                    )
+        except Exception as e:
+            print(
+                f"WARNING: Failed to parse speculation hit rates '{speculation_hit_rates}': {e}"
+            )
 
 
 class VllmProvider(OpenAIProvider):
@@ -1035,6 +1064,9 @@ class LLMUser(HttpUser):
                 prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
+
+            # Allow provider to process response headers (e.g., for custom metrics)
+            self.provider_formatter.process_response_headers(response.headers)
 
             # Mark response as success (required when using catch_response=True)
             response.success()
