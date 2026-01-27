@@ -66,8 +66,8 @@ class TranslationDataset:
                 self._all_limericks.append((lim, num_tokens))
 
         self._prefix = ""
-        self._suffix = self._PROMPT
-        self._prefix_suffix_tokens = len(self._tokenizer.encode(self._PROMPT))
+        self._suffix = prompt
+        self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt))
         # Use deterministic selection (sequential iteration) to ensure all workers
         # get the same prefix for the same common_tokens value
         idx = 0
@@ -227,6 +227,89 @@ class FixedQPSPacer:
         return t - now
 
 
+class RampingPacer:
+    """
+    A pacer that gradually increases concurrent requests from min_users to max_users.
+
+    Tracks the number of in-flight requests and controls concurrency by making
+    users wait when above the target. Starts at min_users concurrent requests,
+    runs for warmup_time seconds, then increases by pct percent every second
+    until max_users is reached.
+    """
+
+    _instance = None
+
+    def __init__(self, min_users, max_users, pct, warmup_time=30, max_spawn_rate=1):
+        self.min_users = min_users
+        self.max_users = max_users
+        self.pct = pct
+        self.warmup_time = warmup_time
+        self.max_spawn_rate = max_spawn_rate
+        self.start_time = time.time()
+        self._logged_target = min_users
+        self._warmup_complete = False
+        self._active_requests = 0  # Track number of concurrent requests
+
+    def _get_target_users(self):
+        now = time.time()
+        elapsed = now - self.start_time
+
+        # During initial warmup period, stay at min_users
+        if elapsed < self.warmup_time:
+            return self.min_users
+
+        # After warmup, increase users by pct every second
+        if not self._warmup_complete:
+            self._warmup_complete = True
+            print(f"RampingPacer: warmup complete, starting to increase concurrency from {self.min_users}")
+
+        # Calculate target users based on time since warmup ended
+        seconds_since_warmup = now - (self.start_time + self.warmup_time)
+        # Compound growth: users = min_users * (1 + pct/100)^seconds
+        multiplier = (1 + self.pct / 100) ** seconds_since_warmup
+        target = self.min_users * multiplier
+
+        # Cap ramp-up rate at max_spawn_rate users per second
+        max_linear_target = self.min_users + seconds_since_warmup * self.max_spawn_rate
+        target = min(target, max_linear_target)
+
+        # Cap at max_users
+        if target >= self.max_users:
+            target = self.max_users
+
+        # Log target changes
+        if abs(target - self._logged_target) >= 0.5:
+            print(f"RampingPacer: target concurrency now at {target:.1f}, active: {self._active_requests}")
+            self._logged_target = target
+
+        return target
+
+    def request_start(self):
+        """Called when a request is about to start. Increments active count."""
+        self._active_requests += 1
+
+    def request_end(self):
+        """Called when a request completes. Decrements active count."""
+        self._active_requests -= 1
+
+    @classmethod
+    def instance(cls, min_users, max_users, pct, warmup_time=30, max_spawn_rate=1):
+        if cls._instance is None:
+            cls._instance = cls(min_users, max_users, pct, warmup_time, max_spawn_rate)
+        else:
+            assert cls._instance.min_users == min_users
+            assert cls._instance.max_users == max_users
+            assert cls._instance.pct == pct
+            assert cls._instance.warmup_time == warmup_time
+            assert cls._instance.max_spawn_rate == max_spawn_rate
+        return cls._instance
+
+    def can_start(self):
+        """Returns True if we're below target concurrency and can start a new request."""
+        target = self._get_target_users()
+        return self._active_requests < target
+
+
 class LengthSampler:
     def __init__(self, distribution: str, mean: int, cap: Optional[int], alpha: float):
         self.distribution = distribution
@@ -356,8 +439,9 @@ class InitTracker:
 
     @classmethod
     def reset_stats(cls):
-        assert cls.environment.runner, "only local mode is supported"
-        print("Resetting stats after traffic reach a steady state")
+        if cls.environment is None or cls.environment.runner is None:
+            return
+        print("Resetting stats after traffic reached a steady state")
         cls.environment.events.reset_stats.fire()
         cls.environment.runner.stats.reset_all()
 
@@ -817,6 +901,7 @@ class LLMUser(HttpUser):
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
 
         self.stream = self.environment.parsed_options.stream
+        self.ramping_pacer = None  # Will be set if --ramping-time is used
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         self.prompt_images = None
@@ -862,6 +947,26 @@ class LLMUser(HttpUser):
             # it will be called by Locust after each task
             self.wait_time = pacer.wait_time_till_next
             self.wait()
+        elif self.environment.parsed_options.ramping_time is not None:
+            if self.environment.parsed_options.burst:
+                raise ValueError("Burst and ramping modes are mutually exclusive")
+            max_users = self.environment.parsed_options.num_users
+            if max_users is None:
+                raise ValueError("--ramping-time requires -u/--users to be specified")
+            min_users = 1.0
+            ramping_time = self.environment.parsed_options.ramping_time
+            # Compute pct such that: max_users = min_users * (1 + pct/100)^ramping_time
+            # pct = 100 * ((max_users/min_users)^(1/ramping_time) - 1)
+            ramping_pct = 100 * ((max_users / min_users) ** (1 / ramping_time) - 1)
+            self.ramping_pacer = RampingPacer.instance(
+                min_users,
+                max_users,
+                ramping_pct,
+                self.environment.parsed_options.ramping_warmup_time,
+            )
+            # Use custom wait that blocks until below target concurrency
+            self.wait_time = lambda: 0
+            self._wait_for_ramping_capacity()
         elif self.environment.parsed_options.burst:
             self.wait_time = partial(constant_pacing(self.environment.parsed_options.burst), self)
         else:
@@ -892,6 +997,11 @@ class LLMUser(HttpUser):
             images = None
 
         return prompt, prompt_tokens, images
+
+    def _wait_for_ramping_capacity(self):
+        """Block until ramping pacer allows a new request (below target concurrency)."""
+        while not self.ramping_pacer.can_start():
+            gevent.sleep(0.1)
 
     def insert_image_placeholders(self, prompt, num_images, prompt_images_positioning):
         if num_images <= 0:
@@ -932,6 +1042,17 @@ class LLMUser(HttpUser):
 
     @task
     def generate_text(self):
+        # Wait for capacity and track concurrent requests for ramping pacer
+        if self.ramping_pacer:
+            self._wait_for_ramping_capacity()
+            self.ramping_pacer.request_start()
+        try:
+            self._do_generate_text()
+        finally:
+            if self.ramping_pacer:
+                self.ramping_pacer.request_end()
+
+    def _do_generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
         prompt, prompt_usage_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
@@ -1258,6 +1379,19 @@ def init_parser(parser):
         type=float,
         default=None,
         help="Makes requests to arrive in bursts every specified number of seconds. Note that burst duration has to be longer than maximum time of the response. Size of the burst is controlled by --users. The spawn rate -r is best set to a high value",
+    )
+    parser.add_argument(
+        "--ramping-time",
+        type=float,
+        default=None,
+        help="Enables ramping mode. Time in seconds to ramp from 1 user to -u/--users. "
+        "Example: -u 50 --ramping-time 60 ramps from 1 to 50 users over 60 seconds.",
+    )
+    parser.add_argument(
+        "--ramping-warmup-time",
+        type=float,
+        default=30.0,
+        help="Time in seconds to hold at 1 user before starting to ramp up. Default 30 seconds.",
     )
     parser.add_argument(
         "--show-response",
