@@ -616,8 +616,14 @@ class FireworksProvider(OpenAIProvider):
         if num_tokens is None or num_tokens < 30:
             return
 
+        # Debug: print all headers when --show-response is enabled
+        if self.parsed_options.show_response:
+            print(f"DEBUG: Response headers: {dict(headers)}")
+
         speculation_hit_rates = headers.get("fireworks-speculation-acceptance")
         if not speculation_hit_rates:
+            if self.parsed_options.show_response:
+                print("DEBUG: fireworks-speculation-acceptance header not found")
             return
 
         try:
