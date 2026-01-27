@@ -53,7 +53,9 @@ class LimericsDataset:
         num_tokens: int,
         common_tokens: int,
     ):
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(
+            tokenizer_path, trust_remote_code=True
+        )
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -370,7 +372,9 @@ class InitTracker:
             return cls.tokenizer
         import transformers
 
-        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(dir)
+        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            dir, trust_remote_code=True
+        )
         cls.tokenizer.add_bos_token = False
         cls.tokenizer.add_eos_token = False
         return cls.tokenizer
@@ -471,6 +475,19 @@ class BaseProvider(abc.ABC):
 
     @abc.abstractmethod
     def parse_output_json(self, json): ...
+
+    def post_response_hook(self, headers, num_tokens, perf_metrics=None):
+        """Hook for provider-specific post-response processing.
+
+        Override this method to extract and emit custom metrics from response headers
+        or perf_metrics (for streaming responses).
+
+        Args:
+            headers: Response headers dict
+            num_tokens: Number of tokens generated in this response
+            perf_metrics: Optional dict of performance metrics from response body (streaming)
+        """
+        pass
 
 
 class OpenAIProvider(BaseProvider):
@@ -589,7 +606,55 @@ class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        # Enable perf_metrics_in_response to get speculation stats in streaming responses
+        data["perf_metrics_in_response"] = True
         return data
+
+    def post_response_hook(self, headers, num_tokens, perf_metrics=None):
+        """Process Fireworks-specific response for speculation hit rate tracking.
+
+        For streaming responses, speculation stats come from perf_metrics in the response body.
+        For non-streaming responses, they come from headers.
+
+        Only records speculation hit rates for generations with >= 30 tokens to ensure
+        meaningful statistics.
+        """
+        # Only track speculation hit rates for sufficiently long generations
+        if num_tokens is None or num_tokens < 30:
+            return
+
+        # Try to get speculation acceptance from perf_metrics first (streaming),
+        # then fall back to headers (non-streaming)
+        speculation_hit_rates = None
+        if perf_metrics:
+            speculation_hit_rates = perf_metrics.get("speculation-acceptance")
+            if self.parsed_options.show_response:
+                print(f"DEBUG: perf_metrics: {perf_metrics}")
+        if not speculation_hit_rates:
+            speculation_hit_rates = headers.get("fireworks-speculation-acceptance")
+            if self.parsed_options.show_response:
+                print(f"DEBUG: Response headers: {dict(headers)}")
+
+        if not speculation_hit_rates:
+            if self.parsed_options.show_response:
+                print("DEBUG: speculation-acceptance not found in perf_metrics or headers")
+            return
+
+        try:
+            positions = speculation_hit_rates.split(",")
+            for position in positions:
+                position, hit_rate_frac = position.split(":")
+                hits, total = map(int, hit_rate_frac.split("/"))
+                if total > 0:
+                    hit_rate = hits / total
+                    add_custom_metric(
+                        f"speculation_hit_rate_position_{position}",
+                        hit_rate * 100,
+                    )
+        except Exception as e:
+            print(
+                f"WARNING: Failed to parse speculation hit rates '{speculation_hit_rates}': {e}"
+            )
 
 
 class VllmProvider(OpenAIProvider):
@@ -923,6 +988,7 @@ class LLMUser(HttpUser):
             done = False
             total_usage_tokens = None
             total_logprob_tokens = None
+            perf_metrics = None  # Capture perf_metrics from response body (streaming)
             try:
                 response.raise_for_status()
             except Exception as e:
@@ -957,6 +1023,9 @@ class LLMUser(HttpUser):
                             f"WARNING: Received more chunks after the trailing last chunk: {chunk}"
                         )
                     data = orjson.loads(chunk)
+                    # Capture perf_metrics if present (usually in final usage chunk)
+                    if data.get("perf_metrics"):
+                        perf_metrics = data["perf_metrics"]
                     if not data.get("choices"):
                         done_empty_chunk = True
                         continue
@@ -1035,6 +1104,9 @@ class LLMUser(HttpUser):
                 prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
+
+            # Allow provider to process response (e.g., for custom metrics)
+            self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
 
             # Mark response as success (required when using catch_response=True)
             response.success()
