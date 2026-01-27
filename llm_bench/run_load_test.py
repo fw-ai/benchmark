@@ -12,5 +12,5 @@ for user in users:
             url = "http://localhost:8000/v1"
 
             os.system(
-                f"locust -t 30sec -u {user} -r {user} -o {output_tok} -H {url} -p {input_tok} --api-key {token} --model={model_name} --prompt-randomize --chat --stream --provider openai --temperature 0.2 --summary summary-test.txt"
+                f"locust -t 30sec -u {user} -r {user} -o {output_tok} -H {url} -p {input_tok} --api-key {token} --model={model_name} --prompt-randomize --chat --stream --provider openai --process 8 --temperature 0.2 --summary summary-test.txt"
             )
