@@ -53,7 +53,9 @@ class LimericsDataset:
         num_tokens: int,
         common_tokens: int,
     ):
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(
+            tokenizer_path, trust_remote_code=True
+        )
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -370,7 +372,9 @@ class InitTracker:
             return cls.tokenizer
         import transformers
 
-        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(dir)
+        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            dir, trust_remote_code=True
+        )
         cls.tokenizer.add_bos_token = False
         cls.tokenizer.add_eos_token = False
         return cls.tokenizer
@@ -472,10 +476,14 @@ class BaseProvider(abc.ABC):
     @abc.abstractmethod
     def parse_output_json(self, json): ...
 
-    def process_response_headers(self, headers):
-        """Hook for provider-specific response header processing.
+    def post_response_hook(self, headers, num_tokens):
+        """Hook for provider-specific post-response processing.
 
         Override this method to extract and emit custom metrics from response headers.
+
+        Args:
+            headers: Response headers dict
+            num_tokens: Number of tokens generated in this response
         """
         pass
 
@@ -598,8 +606,16 @@ class FireworksProvider(OpenAIProvider):
         data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         return data
 
-    def process_response_headers(self, headers):
-        """Process Fireworks-specific response headers for speculation hit rate tracking."""
+    def post_response_hook(self, headers, num_tokens):
+        """Process Fireworks-specific response headers for speculation hit rate tracking.
+
+        Only records speculation hit rates for generations with >= 30 tokens to ensure
+        meaningful statistics.
+        """
+        # Only track speculation hit rates for sufficiently long generations
+        if num_tokens is None or num_tokens < 30:
+            return
+
         speculation_hit_rates = headers.get("fireworks-speculation-acceptance")
         if not speculation_hit_rates:
             return
@@ -1065,8 +1081,8 @@ class LLMUser(HttpUser):
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
 
-            # Allow provider to process response headers (e.g., for custom metrics)
-            self.provider_formatter.process_response_headers(response.headers)
+            # Allow provider to process response (e.g., for custom metrics)
+            self.provider_formatter.post_response_hook(response.headers, num_tokens)
 
             # Mark response as success (required when using catch_response=True)
             response.success()
