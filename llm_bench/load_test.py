@@ -52,9 +52,7 @@ class TranslationDataset:
         num_tokens: int,
         common_tokens: int,
     ):
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(
-            tokenizer_path, trust_remote_code=True
-        )
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -325,13 +323,16 @@ class LengthSampler:
                 mx = min(mx, self.cap)
             self.sample_func = lambda: random.randint(max(1, self.mean - int(self.alpha * self.mean)), mx)
         elif self.distribution == "constant":
-            self.sample_func = lambda: self.mean
+            self.sample_func = None
         elif self.distribution == "normal":
             self.sample_func = lambda: int(random.gauss(self.mean, self.mean * self.alpha))
         else:
             raise ValueError(f"Unknown distribution {self.distribution}")
 
     def sample(self) -> int:
+        if self.distribution == "constant":
+            return self.mean
+
         for _ in range(1000):
             sample = self.sample_func()
             if sample <= 0:
@@ -453,9 +454,7 @@ class InitTracker:
             return cls.tokenizer
         import transformers
 
-        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            dir, trust_remote_code=True
-        )
+        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(dir, trust_remote_code=True)
         cls.tokenizer.add_bos_token = False
         cls.tokenizer.add_eos_token = False
         return cls.tokenizer
@@ -731,9 +730,7 @@ class FireworksProvider(OpenAIProvider):
                         hit_rate * 100,
                     )
         except Exception as e:
-            print(
-                f"WARNING: Failed to parse speculation hit rates '{speculation_hit_rates}': {e}"
-            )
+            print(f"WARNING: Failed to parse speculation hit rates '{speculation_hit_rates}': {e}")
 
 
 class VllmProvider(OpenAIProvider):
