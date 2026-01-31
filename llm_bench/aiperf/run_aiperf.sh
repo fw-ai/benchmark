@@ -11,6 +11,8 @@ STREAMING=""
 CONCURRENCY=""
 REQUEST_COUNT=""
 TOKENIZER=""
+SEQUENCE_DISTRIBUTION=""
+EXTRA_INPUTS=""
 EXTRA_ARGS=()
 
 # Parse arguments
@@ -36,6 +38,8 @@ while [[ $# -gt 0 ]]; do
             CONCURRENCY=$(jq -r ".[\"$PRESET\"].concurrency // empty" "$PRESET_FILE")
             REQUEST_COUNT=$(jq -r ".[\"$PRESET\"][\"request-count\"] // empty" "$PRESET_FILE")
             TOKENIZER=$(jq -r ".[\"$PRESET\"].tokenizer // empty" "$PRESET_FILE")
+            SEQUENCE_DISTRIBUTION=$(jq -r ".[\"$PRESET\"][\"sequence-distribution\"] // empty" "$PRESET_FILE")
+            EXTRA_INPUTS=$(jq -r ".[\"$PRESET\"][\"extra-inputs\"] // empty" "$PRESET_FILE")
             shift 2
             ;;
         --model)
@@ -68,6 +72,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --tokenizer)
             TOKENIZER="$2"
+            shift 2
+            ;;
+        --sequence-distribution)
+            SEQUENCE_DISTRIBUTION="$2"
+            shift 2
+            ;;
+        --extra-inputs)
+            EXTRA_INPUTS="$2"
             shift 2
             ;;
         *)
@@ -109,6 +121,14 @@ fi
 
 if [[ -n "$TOKENIZER" ]]; then
     CMD+=(--tokenizer "$TOKENIZER")
+fi
+
+if [[ -n "$SEQUENCE_DISTRIBUTION" ]]; then
+    CMD+=(--sequence-distribution "$SEQUENCE_DISTRIBUTION")
+fi
+
+if [[ -n "$EXTRA_INPUTS" ]]; then
+    CMD+=(--extra-inputs "$EXTRA_INPUTS")
 fi
 
 # Add extra arguments
