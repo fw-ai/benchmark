@@ -26,7 +26,7 @@
     "url": "https://api.fireworks.ai/inference",
     "endpoint-type": "completions",
     "streaming": false,
-    "concurrency": 8,
+    "concurrency": 16,
     "request-count": 1000,
     "sequence-distribution": "3000|300,100|10:100",
     "extra-inputs": "prompt_cache_max_len:0"
