@@ -8,7 +8,7 @@ MODEL=""
 URL=""
 ENDPOINT_TYPE=""
 STREAMING=""
-CONCURRENCY=""
+CONCURRENCY_LIST=()
 REQUEST_COUNT=""
 TOKENIZER=""
 SEQUENCE_DISTRIBUTION=""
@@ -38,7 +38,16 @@ while [[ $# -gt 0 ]]; do
             URL=$(jq -r ".[\"$PRESET\"].url // empty" "$PRESET_FILE")
             ENDPOINT_TYPE=$(jq -r ".[\"$PRESET\"][\"endpoint-type\"] // empty" "$PRESET_FILE")
             STREAMING=$(jq -r ".[\"$PRESET\"].streaming // empty" "$PRESET_FILE")
-            CONCURRENCY=$(jq -r ".[\"$PRESET\"].concurrency // empty" "$PRESET_FILE")
+            # Load concurrency as array (supports both array and single value)
+            CONCURRENCY_JSON=$(jq -r ".[\"$PRESET\"].concurrency" "$PRESET_FILE")
+            if [[ $(echo "$CONCURRENCY_JSON" | jq -r 'type') == "array" ]]; then
+                CONCURRENCY_LIST=()
+                while IFS= read -r val; do
+                    CONCURRENCY_LIST+=("$val")
+                done < <(echo "$CONCURRENCY_JSON" | jq -r '.[]')
+            else
+                CONCURRENCY_LIST=("$CONCURRENCY_JSON")
+            fi
             REQUEST_COUNT=$(jq -r ".[\"$PRESET\"][\"request-count\"] // empty" "$PRESET_FILE")
             TOKENIZER=$(jq -r ".[\"$PRESET\"].tokenizer // empty" "$PRESET_FILE")
             SEQUENCE_DISTRIBUTION=$(jq -r ".[\"$PRESET\"][\"sequence-distribution\"] // empty" "$PRESET_FILE")
@@ -64,10 +73,6 @@ while [[ $# -gt 0 ]]; do
         --no-streaming)
             STREAMING="false"
             shift
-            ;;
-        --concurrency)
-            CONCURRENCY="$2"
-            shift 2
             ;;
         --request-count)
             REQUEST_COUNT="$2"
@@ -115,54 +120,65 @@ if [[ -z "$URL" ]]; then
     exit 1
 fi
 
-# Build command
-CMD=(aiperf profile --model "$MODEL" --url "$URL")
-
-if [[ -n "$ENDPOINT_TYPE" ]]; then
-    CMD+=(--endpoint-type "$ENDPOINT_TYPE")
+# Default to concurrency of 1 if not specified
+if [[ ${#CONCURRENCY_LIST[@]} -eq 0 ]]; then
+    CONCURRENCY_LIST=(1)
 fi
 
-if [[ "$STREAMING" == "true" ]]; then
-    CMD+=(--streaming)
-fi
+# Iterate over concurrency values
+for CONCURRENCY in "${CONCURRENCY_LIST[@]}"; do
+    echo ""
+    echo "=========================================="
+    echo "Running with concurrency: $CONCURRENCY"
+    echo "=========================================="
 
-if [[ -n "$CONCURRENCY" ]]; then
+    # Build command
+    CMD=(aiperf profile --model "$MODEL" --url "$URL")
+
+    if [[ -n "$ENDPOINT_TYPE" ]]; then
+        CMD+=(--endpoint-type "$ENDPOINT_TYPE")
+    fi
+
+    if [[ "$STREAMING" == "true" ]]; then
+        CMD+=(--streaming)
+    fi
+
     CMD+=(--concurrency "$CONCURRENCY")
-fi
 
-if [[ -n "$REQUEST_COUNT" ]]; then
-    CMD+=(--request-count "$REQUEST_COUNT")
-fi
+    if [[ -n "$REQUEST_COUNT" ]]; then
+        CMD+=(--request-count "$REQUEST_COUNT")
+    fi
 
-if [[ -n "$TOKENIZER" ]]; then
-    CMD+=(--tokenizer "$TOKENIZER")
-fi
+    if [[ -n "$TOKENIZER" ]]; then
+        CMD+=(--tokenizer "$TOKENIZER")
+    fi
 
-if [[ -n "$SEQUENCE_DISTRIBUTION" ]]; then
-    CMD+=(--sequence-distribution "$SEQUENCE_DISTRIBUTION")
-fi
+    if [[ -n "$SEQUENCE_DISTRIBUTION" ]]; then
+        CMD+=(--sequence-distribution "$SEQUENCE_DISTRIBUTION")
+    fi
 
-if [[ -n "$EXTRA_INPUTS" ]]; then
-    CMD+=(--extra-inputs "$EXTRA_INPUTS")
-fi
+    if [[ -n "$EXTRA_INPUTS" ]]; then
+        CMD+=(--extra-inputs "$EXTRA_INPUTS")
+    fi
 
-if [[ -n "$API_KEY" ]]; then
-    CMD+=(--api-key "$API_KEY")
-fi
+    if [[ -n "$API_KEY" ]]; then
+        CMD+=(--api-key "$API_KEY")
+    fi
 
-if [[ "$NO_GPU_TELEMETRY" == "true" ]]; then
-    CMD+=(--no-gpu-telemetry)
-fi
+    if [[ "$NO_GPU_TELEMETRY" == "true" ]]; then
+        CMD+=(--no-gpu-telemetry)
+    fi
 
-if [[ "$NO_SERVER_METRICS" == "true" ]]; then
-    CMD+=(--no-server-metrics)
-fi
+    if [[ "$NO_SERVER_METRICS" == "true" ]]; then
+        CMD+=(--no-server-metrics)
+    fi
 
-# Add extra arguments
-if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
-    CMD+=("${EXTRA_ARGS[@]}")
-fi
+    # Add extra arguments
+    if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+        CMD+=("${EXTRA_ARGS[@]}")
+    fi
 
-# Run command
-echo "Running command: ${CMD[@]}"
-"${CMD[@]}"
+    # Run command
+    echo "Running command: ${CMD[@]}"
+    "${CMD[@]}"
+done

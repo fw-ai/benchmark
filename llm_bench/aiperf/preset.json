@@ -5,7 +5,7 @@
     "url": "http://localhost:11434",
     "endpoint-type": "chat",
     "streaming": true,
-    "concurrency": 1,
+    "concurrency": [1],
     "request-count": 10,
     "sequence-distribution": "512|50,100|10:100"
   },
@@ -15,7 +15,7 @@
     "url": "http://localhost",
     "endpoint-type": "completions",
     "streaming": false,
-    "concurrency": 8,
+    "concurrency": [4, 8, 16, 32, 64, 128],
     "request-count": 1000,
     "sequence-distribution": "3000|300,100|10:100",
     "extra-inputs": "prompt_cache_max_len:0"
@@ -26,7 +26,7 @@
     "url": "https://api.fireworks.ai/inference",
     "endpoint-type": "completions",
     "streaming": false,
-    "concurrency": 16,
+    "concurrency": [4, 8, 16, 32, 64, 128],
     "request-count": 1000,
     "sequence-distribution": "3000|300,100|10:100",
     "extra-inputs": "prompt_cache_max_len:0"
@@ -37,7 +37,7 @@
     "url": "http://localhost",
     "endpoint-type": "completions",
     "streaming": false,
-    "concurrency": 32,
+    "concurrency": [4, 8, 16, 32, 64, 128],
     "request-count": 1000,
     "sequence-distribution": "3000|300,100|10:100",
     "extra-inputs": "ignore_eos:true"
