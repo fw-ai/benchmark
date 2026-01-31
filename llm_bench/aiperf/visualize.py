@@ -3,9 +3,14 @@
 Visualize aiperf benchmark results from profile_export_aiperf.json files.
 
 Usage:
+    # Single prefix
     python visualize.py --prefix accounts_pyroworks --label "Pyroworks QWen3"
+    
+    # Multiple prefixes for comparison
+    python visualize.py --prefix fw_pyroworks trtllm_pyroworks --label "Fireworks" "TRT-LLM"
+    
+    # With percentiles
     python visualize.py --prefix accounts_pyroworks --label "Pyroworks" --percentile p50 p95 p99
-    python visualize.py --artifacts-dir ./artifacts --prefix qwen3 --label "QWen3"
 """
 
 import argparse
@@ -81,11 +86,23 @@ PERCENTILE_MARKERS = {
 DEFAULT_COLOR = '#1f77b4'  # blue
 DEFAULT_MARKER = 'o'
 
+# Colors for multiple prefixes
+PREFIX_COLORS = [
+    '#1f77b4',  # blue
+    '#ff7f0e',  # orange
+    '#2ca02c',  # green
+    '#d62728',  # red
+    '#9467bd',  # purple
+    '#8c564b',  # brown
+    '#e377c2',  # pink
+    '#7f7f7f',  # gray
+]
 
-def get_percentile_style(percentile: str) -> Dict[str, str]:
+
+def get_percentile_style(percentile: str, color_idx: int = 0) -> Dict[str, str]:
     """Get consistent color and marker for a percentile."""
     return {
-        'color': DEFAULT_COLOR,
+        'color': PREFIX_COLORS[color_idx % len(PREFIX_COLORS)],
         'marker': PERCENTILE_MARKERS.get(percentile, DEFAULT_MARKER)
     }
 
@@ -114,51 +131,104 @@ def get_metric_unit(data: List[Dict[str, Any]], metric: str) -> str:
 
 
 def plot_metric(
-    data: List[Dict[str, Any]],
-    label: str,
+    datasets: List[List[Dict[str, Any]]],
+    labels: List[str],
     metric: str,
     percentiles: List[str],
     output_file: Optional[str] = None,
     show_plot: bool = True
 ):
-    """Plot metric percentiles across concurrency levels."""
+    """Plot metric percentiles across concurrency levels for multiple datasets."""
     if HAS_SEABORN:
         sns.set_style("whitegrid")
     plt.style.use('ggplot')
     
     fig, ax = plt.subplots(figsize=(12, 6))
     
-    concurrencies = [d['_concurrency'] for d in data]
-    
-    # Get metric display name and unit
+    # Get metric display name and unit from first dataset
     metric_name = get_metric_display_name(metric)
-    metric_unit = get_metric_unit(data, metric)
+    metric_unit = get_metric_unit(datasets[0], metric) if datasets else ''
     
-    # Plot each percentile with consistent colors
-    for percentile in percentiles:
-        values = []
-        for d in data:
-            metric_data = d.get(metric, {})
-            value = metric_data.get(percentile, metric_data.get('avg', 0))
-            values.append(value)
+    # Determine primary metric (last percentile in the list)
+    primary_percentile = percentiles[-1] if percentiles else None
+    
+    # Collect all concurrencies for x-axis
+    all_concurrencies = set()
+    for data in datasets:
+        all_concurrencies.update([d['_concurrency'] for d in data])
+    all_concurrencies = sorted(all_concurrencies)
+    
+    # Plot each dataset with different colors
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        concurrencies = [d['_concurrency'] for d in data]
         
-        style = get_percentile_style(percentile)
-        linestyle = ':' if percentile == 'p50' else '-'
-        ax.plot(concurrencies, values, marker=style['marker'], linewidth=2, markersize=8,
-                label=f'{percentile.upper()}', color=style['color'], linestyle=linestyle)
+        # Plot each percentile
+        for percentile in percentiles:
+            values = []
+            for d in data:
+                metric_data = d.get(metric, {})
+                value = metric_data.get(percentile, metric_data.get('avg', 0))
+                values.append(value)
+            
+            style = get_percentile_style(percentile, data_idx)
+            linestyle = ':' if percentile == 'p50' else '-'
+            
+            # Include label in legend only for multi-dataset or single percentile
+            if len(datasets) > 1:
+                plot_label = f'{label} {percentile.upper()}'
+            else:
+                plot_label = f'{percentile.upper()}'
+            
+            ax.plot(concurrencies, values, marker=style['marker'], linewidth=2, markersize=8,
+                    label=plot_label, color=style['color'], linestyle=linestyle)
+            
+            # Add value annotations for primary metric
+            if percentile == primary_percentile:
+                # Offset annotations vertically based on dataset index to avoid overlap
+                y_offset = 10 + (data_idx * 15)  # Stagger by 15 points per dataset
+                for x, y in zip(concurrencies, values):
+                    ax.annotate(f'{y:.0f}', (x, y), textcoords='offset points', 
+                               xytext=(0, y_offset), ha='center', fontsize=9, fontweight='bold',
+                               color=style['color'])
     
     ax.set_xlabel('Concurrency', fontsize=12)
     ylabel = f'{metric_name} ({metric_unit})' if metric_unit else metric_name
     ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(f'{metric_name} vs Concurrency\n{label}', fontsize=14)
+    
+    # Title based on number of datasets
+    if len(labels) == 1:
+        ax.set_title(f'{metric_name} vs Concurrency\n{labels[0]}', fontsize=14)
+    else:
+        ax.set_title(f'{metric_name} vs Concurrency\nComparison: {", ".join(labels)}', fontsize=14)
+    
     ax.legend(loc='upper left', fontsize=10)
     ax.grid(True, alpha=0.3)
     
     # Set x-axis to show all concurrency values
-    ax.set_xticks(concurrencies)
-    ax.set_xticklabels(concurrencies)
+    ax.set_xticks(all_concurrencies)
+    ax.set_xticklabels(all_concurrencies)
     
-    plt.tight_layout()
+    # Build info text for each prefix
+    info_lines = []
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        color = PREFIX_COLORS[data_idx % len(PREFIX_COLORS)]
+        avg_input = np.mean([d.get('input_sequence_length', {}).get('avg', 0) for d in data])
+        avg_output = np.mean([d.get('output_sequence_length', {}).get('avg', 0) for d in data])
+        avg_requests = np.mean([d.get('request_count', {}).get('avg', 0) for d in data])
+        avg_failed = np.mean([len(d.get('error_summary', [])) for d in data])
+        
+        if len(datasets) > 1:
+            info_lines.append(f'[{label}]')
+        info_lines.append(f'In: {avg_input:.0f} / Out: {avg_output:.0f} tok')
+        info_lines.append(f'Req: {avg_requests:.0f} / Fail: {avg_failed:.0f}')
+        if data_idx < len(datasets) - 1:
+            info_lines.append('─────────────')
+    
+    info_text = '\n'.join(info_lines)
+    ax.text(1.02, 0.5, info_text, transform=ax.transAxes, fontsize=9,
+            verticalalignment='center', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout(rect=[0, 0, 0.85, 1])  # Make room for the text box
     
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
@@ -172,50 +242,88 @@ def plot_metric(
 
 # Keep for backward compatibility
 def plot_request_latency(
-    data: List[Dict[str, Any]],
-    label: str,
+    datasets: List[List[Dict[str, Any]]],
+    labels: List[str],
     percentiles: List[str],
     output_file: Optional[str] = None,
     show_plot: bool = True
 ):
     """Plot request latency percentiles across concurrency levels."""
-    plot_metric(data, label, 'request_latency', percentiles, output_file, show_plot)
+    plot_metric(datasets, labels, 'request_latency', percentiles, output_file, show_plot)
 
 
 def plot_throughput(
-    data: List[Dict[str, Any]],
-    label: str,
+    datasets: List[List[Dict[str, Any]]],
+    labels: List[str],
     output_file: Optional[str] = None,
     show_plot: bool = True
 ):
-    """Plot throughput metrics across concurrency levels."""
+    """Plot throughput metrics across concurrency levels for multiple datasets."""
     if HAS_SEABORN:
         sns.set_style("whitegrid")
     plt.style.use('ggplot')
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
-    concurrencies = [d['_concurrency'] for d in data]
+    # Collect all concurrencies for x-axis
+    all_concurrencies = set()
+    for data in datasets:
+        all_concurrencies.update([d['_concurrency'] for d in data])
+    all_concurrencies = sorted(all_concurrencies)
     
-    # Request throughput
-    request_throughput = [d.get('request_throughput', {}).get('avg', 0) for d in data]
-    ax1.plot(concurrencies, request_throughput, marker='o', linewidth=2, markersize=8, color='tab:blue')
+    # Plot each dataset
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        concurrencies = [d['_concurrency'] for d in data]
+        color = PREFIX_COLORS[data_idx % len(PREFIX_COLORS)]
+        
+        # Request throughput
+        request_throughput = [d.get('request_throughput', {}).get('avg', 0) for d in data]
+        ax1.plot(concurrencies, request_throughput, marker='o', linewidth=2, markersize=8, 
+                 color=color, label=label)
+        # Add value annotations
+        y_offset = 10 + (data_idx * 15)
+        for x, y in zip(concurrencies, request_throughput):
+            ax1.annotate(f'{y:.1f}', (x, y), textcoords='offset points',
+                        xytext=(0, y_offset), ha='center', fontsize=8, fontweight='bold', color=color)
+        
+        # Token throughput
+        token_throughput = [d.get('output_token_throughput', {}).get('avg', 0) for d in data]
+        ax2.plot(concurrencies, token_throughput, marker='s', linewidth=2, markersize=8, 
+                 color=color, label=label)
+        # Add value annotations
+        for x, y in zip(concurrencies, token_throughput):
+            ax2.annotate(f'{y:.0f}', (x, y), textcoords='offset points',
+                        xytext=(0, y_offset), ha='center', fontsize=8, fontweight='bold', color=color)
+    
     ax1.set_xlabel('Concurrency', fontsize=12)
     ax1.set_ylabel('Requests/sec', fontsize=12)
     ax1.set_title('Request Throughput', fontsize=14)
-    ax1.set_xticks(concurrencies)
+    ax1.set_xticks(all_concurrencies)
     ax1.grid(True, alpha=0.3)
+    ax1.legend()
     
-    # Token throughput
-    token_throughput = [d.get('output_token_throughput', {}).get('avg', 0) for d in data]
-    ax2.plot(concurrencies, token_throughput, marker='s', linewidth=2, markersize=8, color='tab:green')
     ax2.set_xlabel('Concurrency', fontsize=12)
     ax2.set_ylabel('Tokens/sec', fontsize=12)
     ax2.set_title('Output Token Throughput', fontsize=14)
-    ax2.set_xticks(concurrencies)
+    ax2.set_xticks(all_concurrencies)
     ax2.grid(True, alpha=0.3)
+    ax2.legend()
     
-    fig.suptitle(f'Throughput vs Concurrency - {label}', fontsize=14, y=1.02)
+    # Build subtitle with per-prefix stats
+    subtitle_parts = []
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        avg_input = np.mean([d.get('input_sequence_length', {}).get('avg', 0) for d in data])
+        avg_output = np.mean([d.get('output_sequence_length', {}).get('avg', 0) for d in data])
+        avg_requests = np.mean([d.get('request_count', {}).get('avg', 0) for d in data])
+        avg_failed = np.mean([len(d.get('error_summary', [])) for d in data])
+        if len(datasets) > 1:
+            subtitle_parts.append(f'{label}: In={avg_input:.0f}/Out={avg_output:.0f}, Req={avg_requests:.0f}/Fail={avg_failed:.0f}')
+        else:
+            subtitle_parts.append(f'In: {avg_input:.0f}, Out: {avg_output:.0f} tok | Req: {avg_requests:.0f}, Fail: {avg_failed:.0f}')
+    
+    title_label = labels[0] if len(labels) == 1 else "Comparison"
+    subtitle = subtitle_parts[0] if len(datasets) == 1 else ' | '.join(subtitle_parts)
+    fig.suptitle(f'Throughput vs Concurrency - {title_label}\n{subtitle}', fontsize=12, y=1.02)
     plt.tight_layout()
     
     if output_file:
@@ -229,86 +337,131 @@ def plot_throughput(
 
 
 def plot_combined(
-    data: List[Dict[str, Any]],
-    label: str,
+    datasets: List[List[Dict[str, Any]]],
+    labels: List[str],
     percentiles: List[str],
     output_file: Optional[str] = None,
     show_plot: bool = True
 ):
-    """Plot combined latency and throughput metrics."""
+    """Plot combined latency and throughput metrics for multiple datasets."""
     if HAS_SEABORN:
         sns.set_style("whitegrid")
     plt.style.use('ggplot')
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    concurrencies = [d['_concurrency'] for d in data]
+    # Collect all concurrencies
+    all_concurrencies = set()
+    for data in datasets:
+        all_concurrencies.update([d['_concurrency'] for d in data])
+    all_concurrencies = sorted(all_concurrencies)
     
     # 1. Request Latency Percentiles
     ax1 = axes[0, 0]
+    primary_percentile = percentiles[-1] if percentiles else None
     
-    for percentile in percentiles:
-        values = [d.get('request_latency', {}).get(percentile, 0) for d in data]
-        style = get_percentile_style(percentile)
-        linestyle = ':' if percentile == 'p50' else '-'
-        ax1.plot(concurrencies, values, marker=style['marker'], 
-                 linewidth=2, markersize=8, label=percentile.upper(), color=style['color'], linestyle=linestyle)
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        concurrencies = [d['_concurrency'] for d in data]
+        for percentile in percentiles:
+            values = [d.get('request_latency', {}).get(percentile, 0) for d in data]
+            style = get_percentile_style(percentile, data_idx)
+            linestyle = ':' if percentile == 'p50' else '-'
+            plot_label = f'{label} {percentile.upper()}' if len(datasets) > 1 else percentile.upper()
+            ax1.plot(concurrencies, values, marker=style['marker'], 
+                     linewidth=2, markersize=8, label=plot_label, color=style['color'], linestyle=linestyle)
+            # Add value annotations for primary percentile
+            if percentile == primary_percentile:
+                y_offset = 5 + (data_idx * 12)
+                for x, y in zip(concurrencies, values):
+                    ax1.annotate(f'{y:.0f}', (x, y), textcoords='offset points',
+                                xytext=(0, y_offset), ha='center', fontsize=7, fontweight='bold',
+                                color=style['color'])
     
     ax1.set_xlabel('Concurrency')
     ax1.set_ylabel('Latency (ms)')
     ax1.set_title('Request Latency Percentiles')
-    ax1.legend()
-    ax1.set_xticks(concurrencies)
+    ax1.legend(fontsize=8)
+    ax1.set_xticks(all_concurrencies)
     ax1.grid(True, alpha=0.3)
     
     # 2. Request Throughput
     ax2 = axes[0, 1]
-    request_throughput = [d.get('request_throughput', {}).get('avg', 0) for d in data]
-    ax2.bar(range(len(concurrencies)), request_throughput, color='tab:blue', alpha=0.7)
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        concurrencies = [d['_concurrency'] for d in data]
+        request_throughput = [d.get('request_throughput', {}).get('avg', 0) for d in data]
+        color = PREFIX_COLORS[data_idx % len(PREFIX_COLORS)]
+        ax2.plot(concurrencies, request_throughput, marker='o', linewidth=2, markersize=8,
+                 color=color, label=label)
+        # Add value annotations
+        y_offset = 5 + (data_idx * 12)
+        for x, y in zip(concurrencies, request_throughput):
+            ax2.annotate(f'{y:.1f}', (x, y), textcoords='offset points',
+                        xytext=(0, y_offset), ha='center', fontsize=7, fontweight='bold', color=color)
     ax2.set_xlabel('Concurrency')
     ax2.set_ylabel('Requests/sec')
     ax2.set_title('Request Throughput')
-    ax2.set_xticks(range(len(concurrencies)))
-    ax2.set_xticklabels(concurrencies)
-    ax2.grid(True, alpha=0.3, axis='y')
+    ax2.set_xticks(all_concurrencies)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
     
     # 3. Token Throughput
     ax3 = axes[1, 0]
-    token_throughput = [d.get('output_token_throughput', {}).get('avg', 0) for d in data]
-    ax3.bar(range(len(concurrencies)), token_throughput, color='tab:green', alpha=0.7)
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        concurrencies = [d['_concurrency'] for d in data]
+        token_throughput = [d.get('output_token_throughput', {}).get('avg', 0) for d in data]
+        color = PREFIX_COLORS[data_idx % len(PREFIX_COLORS)]
+        ax3.plot(concurrencies, token_throughput, marker='s', linewidth=2, markersize=8,
+                 color=color, label=label)
+        # Add value annotations
+        y_offset = 5 + (data_idx * 12)
+        for x, y in zip(concurrencies, token_throughput):
+            ax3.annotate(f'{y:.0f}', (x, y), textcoords='offset points',
+                        xytext=(0, y_offset), ha='center', fontsize=7, fontweight='bold', color=color)
     ax3.set_xlabel('Concurrency')
     ax3.set_ylabel('Tokens/sec')
     ax3.set_title('Output Token Throughput')
-    ax3.set_xticks(range(len(concurrencies)))
-    ax3.set_xticklabels(concurrencies)
-    ax3.grid(True, alpha=0.3, axis='y')
+    ax3.set_xticks(all_concurrencies)
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
     
     # 4. Latency Distribution (box-like using percentiles)
     ax4 = axes[1, 1]
-    x = range(len(concurrencies))
-    
-    # Get percentile values
-    p50 = [d.get('request_latency', {}).get('p50', 0) for d in data]
-    p25 = [d.get('request_latency', {}).get('p25', 0) for d in data]
-    p75 = [d.get('request_latency', {}).get('p75', 0) for d in data]
-    p95 = [d.get('request_latency', {}).get('p95', 0) for d in data]
-    p5 = [d.get('request_latency', {}).get('p5', 0) for d in data]
-    
-    # Plot as error bars
-    ax4.errorbar(x, p50, yerr=[np.array(p50) - np.array(p25), np.array(p75) - np.array(p50)],
-                 fmt='o', capsize=5, capthick=2, color='tab:blue', label='P25-P50-P75')
-    ax4.scatter(x, p95, marker='^', s=50, color='tab:red', label='P95', zorder=5)
-    ax4.scatter(x, p5, marker='v', s=50, color='tab:green', label='P5', zorder=5)
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        concurrencies = [d['_concurrency'] for d in data]
+        x = concurrencies
+        color = PREFIX_COLORS[data_idx % len(PREFIX_COLORS)]
+        
+        p50 = [d.get('request_latency', {}).get('p50', 0) for d in data]
+        p25 = [d.get('request_latency', {}).get('p25', 0) for d in data]
+        p75 = [d.get('request_latency', {}).get('p75', 0) for d in data]
+        p95 = [d.get('request_latency', {}).get('p95', 0) for d in data]
+        
+        ax4.errorbar(x, p50, yerr=[np.array(p50) - np.array(p25), np.array(p75) - np.array(p50)],
+                     fmt='o', capsize=5, capthick=2, color=color, label=f'{label} P25-P50-P75')
+        ax4.scatter(x, p95, marker='^', s=50, color=color, zorder=5)
     
     ax4.set_xlabel('Concurrency')
     ax4.set_ylabel('Latency (ms)')
     ax4.set_title('Latency Distribution')
-    ax4.set_xticks(x)
-    ax4.set_xticklabels(concurrencies)
-    ax4.legend()
+    ax4.set_xticks(all_concurrencies)
+    ax4.legend(fontsize=8)
     ax4.grid(True, alpha=0.3)
     
-    fig.suptitle(f'Benchmark Results - {label}', fontsize=16, y=1.02)
+    # Build subtitle with per-prefix stats
+    title_label = labels[0] if len(labels) == 1 else "Comparison"
+    subtitle_parts = []
+    for data_idx, (data, label) in enumerate(zip(datasets, labels)):
+        avg_input = np.mean([d.get('input_sequence_length', {}).get('avg', 0) for d in data])
+        avg_output = np.mean([d.get('output_sequence_length', {}).get('avg', 0) for d in data])
+        avg_requests = np.mean([d.get('request_count', {}).get('avg', 0) for d in data])
+        avg_failed = np.mean([len(d.get('error_summary', [])) for d in data])
+        if len(datasets) > 1:
+            subtitle_parts.append(f'{label}: In={avg_input:.0f}/Out={avg_output:.0f}, Req={avg_requests:.0f}/Fail={avg_failed:.0f}')
+        else:
+            subtitle_parts.append(f'In: {avg_input:.0f}, Out: {avg_output:.0f} tokens | Req: {avg_requests:.0f}, Fail: {avg_failed:.0f}')
+    
+    subtitle = ' | '.join(subtitle_parts) if len(datasets) == 1 else '\n'.join(subtitle_parts)
+    fig.suptitle(f'Benchmark Results - {title_label}\n{subtitle}', fontsize=11, y=1.02)
     plt.tight_layout()
     
     if output_file:
@@ -321,27 +474,28 @@ def plot_combined(
     plt.close()
 
 
-def print_summary(data: List[Dict[str, Any]], label: str):
-    """Print a summary table of the benchmark results."""
-    print(f"\n{'='*80}")
-    print(f"Benchmark Summary: {label}")
-    print(f"{'='*80}")
-    
-    headers = ['Concurrency', 'Req/s', 'Tokens/s', 'Latency Avg (ms)', 'P50 (ms)', 'P95 (ms)', 'P99 (ms)']
-    print(f"{headers[0]:<12} {headers[1]:<10} {headers[2]:<12} {headers[3]:<16} {headers[4]:<12} {headers[5]:<12} {headers[6]:<12}")
-    print('-' * 80)
-    
-    for d in data:
-        concurrency = d['_concurrency']
-        req_throughput = d.get('request_throughput', {}).get('avg', 0)
-        token_throughput = d.get('output_token_throughput', {}).get('avg', 0)
-        latency = d.get('request_latency', {})
+def print_summary(datasets: List[List[Dict[str, Any]]], labels: List[str]):
+    """Print a summary table of the benchmark results for multiple datasets."""
+    for data, label in zip(datasets, labels):
+        print(f"\n{'='*80}")
+        print(f"Benchmark Summary: {label}")
+        print(f"{'='*80}")
         
-        print(f"{concurrency:<12} {req_throughput:<10.2f} {token_throughput:<12.2f} "
-              f"{latency.get('avg', 0):<16.2f} {latency.get('p50', 0):<12.2f} "
-              f"{latency.get('p95', 0):<12.2f} {latency.get('p99', 0):<12.2f}")
-    
-    print('=' * 80)
+        headers = ['Concurrency', 'Req/s', 'Tokens/s', 'Latency Avg (ms)', 'P50 (ms)', 'P95 (ms)', 'P99 (ms)']
+        print(f"{headers[0]:<12} {headers[1]:<10} {headers[2]:<12} {headers[3]:<16} {headers[4]:<12} {headers[5]:<12} {headers[6]:<12}")
+        print('-' * 80)
+        
+        for d in data:
+            concurrency = d['_concurrency']
+            req_throughput = d.get('request_throughput', {}).get('avg', 0)
+            token_throughput = d.get('output_token_throughput', {}).get('avg', 0)
+            latency = d.get('request_latency', {})
+            
+            print(f"{concurrency:<12} {req_throughput:<10.2f} {token_throughput:<12.2f} "
+                  f"{latency.get('avg', 0):<16.2f} {latency.get('p50', 0):<12.2f} "
+                  f"{latency.get('p95', 0):<12.2f} {latency.get('p99', 0):<12.2f}")
+        
+        print('=' * 80)
 
 
 def main():
@@ -350,17 +504,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+    # Single prefix
     python visualize.py --prefix accounts_pyroworks --label "Pyroworks QWen3"
+    
+    # Multiple prefixes for comparison
+    python visualize.py --prefix fw_pyroworks trtllm_pyroworks --label "Fireworks" "TRT-LLM"
+    
+    # With percentiles
     python visualize.py --prefix accounts_pyroworks --label "Pyroworks" --percentile p50 p95 p99
+    
+    # Custom metric
     python visualize.py --prefix accounts_pyroworks --label "Pyroworks" --metric output_sequence_length
-    python visualize.py --artifacts-dir ./artifacts --prefix qwen3 --label "QWen3" --output results.png
         """
     )
     
-    parser.add_argument('--prefix', type=str, required=True,
-                        help='Prefix to match artifact directories (e.g., "accounts_pyroworks")')
-    parser.add_argument('--label', type=str, required=True,
-                        help='Label for the plot legend/title')
+    parser.add_argument('--prefix', type=str, nargs='+', required=True,
+                        help='Prefix(es) to match artifact directories (e.g., "accounts_pyroworks" or multiple for comparison)')
+    parser.add_argument('--label', type=str, nargs='+', required=True,
+                        help='Label(s) for the plot legend/title (must match number of prefixes)')
     parser.add_argument('--artifacts-dir', type=str, default='./artifacts',
                         help='Directory containing benchmark artifacts (default: ./artifacts)')
     parser.add_argument('--percentile', type=str, nargs='+', default=['p50', 'p95'],
@@ -381,42 +542,52 @@ Examples:
     
     args = parser.parse_args()
     
-    # Find and load JSON files
-    print(f"Searching for benchmarks with prefix: {args.prefix}")
-    json_files = find_json_files(args.artifacts_dir, args.prefix)
-    
-    if not json_files:
-        print(f"Error: No benchmark files found with prefix '{args.prefix}' in {args.artifacts_dir}")
+    # Validate prefix and label counts match
+    if len(args.prefix) != len(args.label):
+        print(f"Error: Number of prefixes ({len(args.prefix)}) must match number of labels ({len(args.label)})")
         sys.exit(1)
     
-    print(f"Found {len(json_files)} benchmark file(s):")
-    for f in json_files:
-        print(f"  - {f}")
+    # Find and load JSON files for each prefix
+    datasets = []
+    labels = args.label
     
-    # Load benchmark data
-    data = load_benchmark_data(json_files)
+    for prefix, label in zip(args.prefix, args.label):
+        print(f"\nSearching for benchmarks with prefix: {prefix}")
+        json_files = find_json_files(args.artifacts_dir, prefix)
+        
+        if not json_files:
+            print(f"Error: No benchmark files found with prefix '{prefix}' in {args.artifacts_dir}")
+            sys.exit(1)
+        
+        print(f"Found {len(json_files)} benchmark file(s) for '{label}':")
+        for f in json_files:
+            print(f"  - {f}")
+        
+        # Load benchmark data
+        data = load_benchmark_data(json_files)
+        datasets.append(data)
     
     # Print summary if requested
     if args.summary:
-        print_summary(data, args.label)
+        print_summary(datasets, labels)
     
     # Generate plots
     show_plot = not args.no_show
     
     if args.plot_type == 'latency':
-        plot_metric(data, args.label, args.metric, args.percentile, args.output, show_plot)
+        plot_metric(datasets, labels, args.metric, args.percentile, args.output, show_plot)
     elif args.plot_type == 'throughput':
         output = args.output.replace('.png', '_throughput.png') if args.output else None
-        plot_throughput(data, args.label, output, show_plot)
+        plot_throughput(datasets, labels, output, show_plot)
     elif args.plot_type == 'combined':
-        plot_combined(data, args.label, args.percentile, args.output, show_plot)
+        plot_combined(datasets, labels, args.percentile, args.output, show_plot)
     elif args.plot_type == 'all':
         base_output = args.output.replace('.png', '') if args.output else None
-        plot_metric(data, args.label, args.metric, args.percentile, 
+        plot_metric(datasets, labels, args.metric, args.percentile, 
                    f"{base_output}_latency.png" if base_output else None, show_plot)
-        plot_throughput(data, args.label,
+        plot_throughput(datasets, labels,
                        f"{base_output}_throughput.png" if base_output else None, show_plot)
-        plot_combined(data, args.label, args.percentile,
+        plot_combined(datasets, labels, args.percentile,
                      f"{base_output}_combined.png" if base_output else None, show_plot)
 
 
