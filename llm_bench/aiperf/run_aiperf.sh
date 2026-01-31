@@ -13,6 +13,9 @@ REQUEST_COUNT=""
 TOKENIZER=""
 SEQUENCE_DISTRIBUTION=""
 EXTRA_INPUTS=""
+API_KEY="${FIREWORKS_API_KEY:-}"
+NO_GPU_TELEMETRY="true"
+NO_SERVER_METRICS="true"
 EXTRA_ARGS=()
 
 # Parse arguments
@@ -82,6 +85,18 @@ while [[ $# -gt 0 ]]; do
             EXTRA_INPUTS="$2"
             shift 2
             ;;
+        --api-key)
+            API_KEY="$2"
+            shift 2
+            ;;
+        --no-gpu-telemetry)
+            NO_GPU_TELEMETRY="true"
+            shift
+            ;;
+        --no-server-metrics)
+            NO_SERVER_METRICS="true"
+            shift
+            ;;
         *)
             EXTRA_ARGS+=("$1")
             shift
@@ -129,6 +144,18 @@ fi
 
 if [[ -n "$EXTRA_INPUTS" ]]; then
     CMD+=(--extra-inputs "$EXTRA_INPUTS")
+fi
+
+if [[ -n "$API_KEY" ]]; then
+    CMD+=(--api-key "$API_KEY")
+fi
+
+if [[ "$NO_GPU_TELEMETRY" == "true" ]]; then
+    CMD+=(--no-gpu-telemetry)
+fi
+
+if [[ "$NO_SERVER_METRICS" == "true" ]]; then
+    CMD+=(--no-server-metrics)
 fi
 
 # Add extra arguments
