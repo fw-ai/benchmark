@@ -683,7 +683,6 @@ class OpenAIProvider(BaseProvider):
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
         return data
