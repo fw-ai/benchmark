@@ -4,3 +4,4 @@ pillow
 gevent
 transformers
 locust-plugins
+tiktoken
