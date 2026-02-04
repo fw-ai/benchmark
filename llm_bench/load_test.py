@@ -161,13 +161,20 @@ class DatasetHolder:
                 else:
                     prompt = options.prompt
                 dataset_file = "code.txt"
+
+            # Compute effective prompt_cache_max_len from percentage if specified
+            prompt_cache_max_len = options.prompt_cache_max_len
+            if options.prompt_cache_max_pct is not None:
+                prompt_cache_max_len = int(options.prompt_tokens * (options.prompt_cache_max_pct / 100))
+                print(f"Using prompt cache max length: {prompt_cache_max_len} ({options.prompt_cache_max_pct}% of {options.prompt_tokens} prompt tokens)")
+
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
                 tokenizer_path=options.tokenizer,
                 chat=options.chat,
                 num_tokens=options.prompt_tokens,
-                common_tokens=options.prompt_cache_max_len,
+                common_tokens=prompt_cache_max_len,
             )
         else:
             raise ValueError(f"Unknown dataset: {options.dataset}")
@@ -1408,6 +1415,15 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--prompt-cache-max-pct",
+        env_var="PROMPT_CACHE_MAX_PCT",
+        type=float,
+        default=None,
+        help="Maximum percentage of prompt tokens to use for prompt cache (0-100). "
+        "If specified, overrides --prompt-cache-max-len by computing: prompt_tokens * (pct / 100). "
+        "For example, --prompt-cache-max-pct 75 with -p 50000 will use 37500 tokens for prompt cache.",
     )
     parser.add_argument(
         "--header",
