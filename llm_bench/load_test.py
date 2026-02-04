@@ -161,6 +161,7 @@ class DatasetHolder:
                 else:
                     prompt = options.prompt
                 dataset_file = "code.txt"
+
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
@@ -685,6 +686,9 @@ class FireworksProvider(OpenAIProvider):
         data = super().format_payload(prompt, max_tokens, images)
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
+        # Add prompt_cache_max_pct if specified (Fireworks-specific parameter)
+        if self.parsed_options.prompt_cache_max_pct is not None:
+            data["prompt_cache_max_pct"] = self.parsed_options.prompt_cache_max_pct
         return data
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
@@ -1408,6 +1412,14 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--prompt-cache-max-pct",
+        env_var="PROMPT_CACHE_MAX_PCT",
+        type=float,
+        default=None,
+        help="(Fireworks only) Maximum percentage of prompt tokens to use for prompt cache (0-100). "
+        "Passed as prompt_cache_max_pct in the API request. Ignored for other providers.",
     )
     parser.add_argument(
         "--header",
