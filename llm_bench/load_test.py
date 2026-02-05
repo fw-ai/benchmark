@@ -688,7 +688,7 @@ class FireworksProvider(OpenAIProvider):
         data["perf_metrics_in_response"] = True
         # Add prompt_cache_max_pct if specified (Fireworks-specific parameter)
         if self.parsed_options.prompt_cache_max_pct is not None:
-            data["prompt_cache_max_pct"] = self.parsed_options.prompt_cache_max_pct
+            data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
         return data
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
