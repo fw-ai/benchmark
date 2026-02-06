@@ -25,6 +25,7 @@ OUTPUT_TOKENS=""
 PROMPT_TOKENS=""
 PROMPT_STD_MULT="3.3"  # Multiplier for prompt std calculation
 OUTPUT_STD_MULT="3.3"  # Multiplier for output std calculation
+PROMPT_PREFIX_LENGTH=""  # Prompt prefix length for aiperf (must be > 0 if specified)
 DATASET=""  # For aiperf: sharegpt, etc. (uses --public-dataset instead of --sequence-distribution)
 
 # Locust-specific defaults
@@ -60,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --output-std)
             OUTPUT_STD_MULT="$2"
+            shift 2
+            ;;
+        --prompt-prefix-length)
+            PROMPT_PREFIX_LENGTH="$2"
             shift 2
             ;;
         --dataset)
@@ -106,6 +111,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --endpoint-type TYPE    API type: openai-chat, openai-completions, etc."
             echo "  --dataset NAME          Public dataset (e.g., sharegpt) - uses --public-dataset instead of --sequence-distribution"
             echo "  --extra-inputs JSON     Extra inputs for requests"
+            echo "  --prompt-prefix-length N  Prompt prefix length (must be > 0)"
             echo "  --no-gpu-telemetry      Disable GPU telemetry"
             echo "  --no-server-metrics     Disable server metrics"
             echo ""
@@ -175,6 +181,8 @@ while [[ $# -gt 0 ]]; do
             PRESET_DATASET=$(jq -r ".[\"$PRESET\"].dataset // empty" "$PRESET_FILE")
             [[ -n "$PRESET_PROMPT_STD" ]] && PROMPT_STD_MULT="$PRESET_PROMPT_STD"
             [[ -n "$PRESET_OUTPUT_STD" ]] && OUTPUT_STD_MULT="$PRESET_OUTPUT_STD"
+            PRESET_PROMPT_PREFIX_LENGTH=$(jq -r ".[\"$PRESET\"][\"prompt-prefix-length\"] // empty" "$PRESET_FILE")
+            [[ -n "$PRESET_PROMPT_PREFIX_LENGTH" ]] && PROMPT_PREFIX_LENGTH="$PRESET_PROMPT_PREFIX_LENGTH"
             [[ -n "$PRESET_DATASET" ]] && DATASET="$PRESET_DATASET"
             shift 2
             ;;
@@ -321,6 +329,11 @@ for CONCURRENCY in "${CONCURRENCY_LIST[@]}"; do
 
         if [[ -n "$EXTRA_INPUTS" ]]; then
             CMD+=(--extra-inputs "$EXTRA_INPUTS")
+        fi
+
+        if [[ -n "$PROMPT_PREFIX_LENGTH" && "$PROMPT_PREFIX_LENGTH" -gt 0 ]]; then
+            CMD+=(--prompt-prefix-length "$PROMPT_PREFIX_LENGTH")
+            CMD+=(--prefix-prompt-pool-size 1)
         fi
 
         if [[ -n "$API_KEY" ]]; then
