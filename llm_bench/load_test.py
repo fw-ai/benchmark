@@ -52,9 +52,7 @@ class TranslationDataset:
         num_tokens: int,
         common_tokens: int,
     ):
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(
-            tokenizer_path, trust_remote_code=True
-        )
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -163,6 +161,7 @@ class DatasetHolder:
                 else:
                     prompt = options.prompt
                 dataset_file = "code.txt"
+
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
@@ -327,7 +326,7 @@ class LengthSampler:
                 mx = min(mx, self.cap)
             self.sample_func = lambda: random.randint(max(1, self.mean - int(self.alpha * self.mean)), mx)
         elif self.distribution == "constant":
-            self.sample_func = lambda: self.mean
+            self.sample_func = None
         elif self.distribution == "normal":
             self.sample_func = lambda: int(random.gauss(self.mean, self.mean * self.alpha))
         else:
@@ -336,6 +335,9 @@ class LengthSampler:
     def sample(self) -> int:
         if self.mean == 0:
             return 0
+        if self.distribution == "constant":
+            return self.mean
+
         for _ in range(1000):
             sample = self.sample_func()
             if sample <= 0:
@@ -457,9 +459,7 @@ class InitTracker:
             return cls.tokenizer
         import transformers
 
-        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            dir, trust_remote_code=True
-        )
+        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(dir, trust_remote_code=True)
         cls.tokenizer.add_bos_token = False
         cls.tokenizer.add_eos_token = False
         return cls.tokenizer
@@ -688,9 +688,11 @@ class OpenAIProvider(BaseProvider):
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
+        # Add prompt_cache_max_pct if specified (Fireworks-specific parameter)
+        if self.parsed_options.prompt_cache_max_pct is not None:
+            data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
         return data
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
@@ -735,9 +737,7 @@ class FireworksProvider(OpenAIProvider):
                         hit_rate * 100,
                     )
         except Exception as e:
-            print(
-                f"WARNING: Failed to parse speculation hit rates '{speculation_hit_rates}': {e}"
-            )
+            print(f"WARNING: Failed to parse speculation hit rates '{speculation_hit_rates}': {e}")
 
 
 class VllmProvider(OpenAIProvider):
@@ -1416,6 +1416,14 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--prompt-cache-max-pct",
+        env_var="PROMPT_CACHE_MAX_PCT",
+        type=float,
+        default=None,
+        help="(Fireworks only) Maximum percentage of prompt tokens to use for prompt cache (0-100). "
+        "Passed as prompt_cache_max_pct in the API request. Ignored for other providers.",
     )
     parser.add_argument(
         "--header",
