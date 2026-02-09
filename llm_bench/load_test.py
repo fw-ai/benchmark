@@ -147,7 +147,7 @@ class DatasetHolder:
                 shuffle_seed=getattr(options, "dataset_shuffle_seed", None),
                 dataset_limit=getattr(options, "dataset_limit", None),
             )
-        elif options.dataset == "limericks":
+        elif options.dataset in ("limericks", "code"):
             assert options.tokenizer is not None, "--tokenizer is required for limericks or code dataset"
             if options.dataset == "limericks":
                 if options.prompt is None:
@@ -316,7 +316,9 @@ class LengthSampler:
         self.cap = cap
         self.alpha = alpha
 
-        if self.distribution == "exponential":
+        if self.mean == 0:
+            self.sample_func = lambda: 0
+        elif self.distribution == "exponential":
             self.sample_func = lambda: int(random.expovariate(1 / self.mean))
         elif self.distribution == "uniform":
             mx = self.mean + int(self.alpha * self.mean)
@@ -331,6 +333,8 @@ class LengthSampler:
             raise ValueError(f"Unknown distribution {self.distribution}")
 
     def sample(self) -> int:
+        if self.mean == 0:
+            return 0
         if self.distribution == "constant":
             return self.mean
 
