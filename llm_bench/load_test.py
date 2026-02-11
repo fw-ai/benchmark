@@ -604,6 +604,8 @@ class OpenAIProvider(BaseProvider):
             "temperature": self.parsed_options.temperature,
             "n": self.parsed_options.n,
         }
+        if self.parsed_options.stream:
+            data["stream_options"] = {"include_usage": True}
         if self.parsed_options.top_k is not None:
             data["top_k"] = self.parsed_options.top_k
         if self.parsed_options.logprobs is not None:
@@ -1110,6 +1112,11 @@ class LLMUser(HttpUser):
                     if data.get("perf_metrics"):
                         perf_metrics = data["perf_metrics"]
                     if not data.get("choices"):
+                        usage = data.get("usage")
+                        if usage and usage.get("completion_tokens"):
+                            total_usage_tokens = usage["completion_tokens"]
+                        if usage and usage.get("prompt_tokens"):
+                            prompt_usage_tokens = usage["prompt_tokens"]
                         done_empty_chunk = True
                         continue
                     out = self.provider_formatter.parse_output_json(data)
