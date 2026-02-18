@@ -60,12 +60,12 @@ class TranslationDataset:
             text = f.read()
             lims = text.split("\n\n")
             for i, lim in enumerate(lims):
-                num_tokens = len(self._tokenizer.encode(lim))
+                num_tokens = len(self._tokenizer.encode(lim, add_special_tokens=False))
                 self._all_limericks.append((lim, num_tokens))
 
         self._prefix = ""
         self._suffix = prompt
-        self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt))
+        self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt, add_special_tokens=False))
         # Use deterministic selection (sequential iteration) to ensure all workers
         # get the same prefix for the same common_tokens value
         idx = 0
