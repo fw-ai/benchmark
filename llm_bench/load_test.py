@@ -541,8 +541,9 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 class ChunkMetadata:
     text: str
     logprob_tokens: Optional[int]
-    usage_tokens: Optional[int]
-    prompt_usage_tokens: Optional[int]
+    completion_tokens: Optional[int]
+    prompt_tokens: Optional[int]
+    cached_tokens: Optional[int]
 
 
 class BaseProvider(abc.ABC):
@@ -653,8 +654,9 @@ class OpenAIProvider(BaseProvider):
             return ChunkMetadata(
                 text=data["data"][0]["embedding"],
                 logprob_tokens=None,
-                usage_tokens=None,
-                prompt_usage_tokens=None,
+                completion_tokens=None,
+                prompt_tokens=None,
+                cached_tokens=None,
             )
         usage = data.get("usage", None)
 
@@ -679,11 +681,17 @@ class OpenAIProvider(BaseProvider):
         else:
             logprob_tokens = None
 
+        cached_tokens = None
+        if usage:
+            prompt_tokens_details = usage.get("prompt_tokens_details") or {}
+            cached_tokens = prompt_tokens_details.get("cached_tokens", None)
+
         return ChunkMetadata(
             text=text,
             logprob_tokens=logprob_tokens,
-            usage_tokens=usage["completion_tokens"] if usage else None,
-            prompt_usage_tokens=usage.get("prompt_tokens", None) if usage else None,
+            completion_tokens=usage["completion_tokens"] if usage else None,
+            prompt_tokens=usage.get("prompt_tokens", None) if usage else None,
+            cached_tokens=cached_tokens,
         )
 
 
@@ -795,16 +803,18 @@ class TgiProvider(BaseProvider):
             return ChunkMetadata(
                 text=data["token"]["text"],
                 logprob_tokens=1,
-                usage_tokens=None,
-                prompt_usage_tokens=None,
+                completion_tokens=None,
+                prompt_tokens=None,
+                cached_tokens=None,
             )
         else:
             # non-streaming response
             return ChunkMetadata(
                 text=data["generated_text"],
                 logprob_tokens=(len(data["details"]["tokens"]) if "details" in data else None),
-                usage_tokens=(data["details"]["generated_tokens"] if "details" in data else None),
-                prompt_usage_tokens=None,
+                completion_tokens=(data["details"]["generated_tokens"] if "details" in data else None),
+                prompt_tokens=None,
+                cached_tokens=None,
             )
 
 
@@ -932,7 +942,7 @@ class LLMUser(HttpUser):
             "provider": self.provider,
             "model": self.model,
             "prompt_tokens": self.environment.parsed_options.prompt_tokens,  # might be overwritten based on metric
-            "generation_tokens": str(self.max_tokens_sampler),
+            "completion_tokens": str(self.max_tokens_sampler),
             "stream": self.stream,
             "temperature": self.temperature,
             "logprobs": self.environment.parsed_options.logprobs,
@@ -1060,7 +1070,7 @@ class LLMUser(HttpUser):
 
     def _do_generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        prompt, prompt_usage_tokens, images = self._get_input()
+        prompt, prompt_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
@@ -1077,8 +1087,9 @@ class LLMUser(HttpUser):
             combined_text = ""
             done_empty_chunk = False
             done = False
-            total_usage_tokens = None
+            completion_tokens = None
             total_logprob_tokens = None
+            cached_tokens = None
             perf_metrics = None  # Capture perf_metrics from response body (streaming)
             try:
                 response.raise_for_status()
@@ -1114,16 +1125,22 @@ class LLMUser(HttpUser):
                     if not data.get("choices"):
                         usage = data.get("usage")
                         if usage and usage.get("completion_tokens"):
-                            total_usage_tokens = usage["completion_tokens"]
+                            completion_tokens = usage["completion_tokens"]
                         if usage and usage.get("prompt_tokens"):
-                            prompt_usage_tokens = usage["prompt_tokens"]
+                            prompt_tokens = usage["prompt_tokens"]
+                        if usage:
+                            prompt_tokens_details = usage.get("prompt_tokens_details") or {}
+                            if prompt_tokens_details.get("cached_tokens") is not None:
+                                cached_tokens = prompt_tokens_details["cached_tokens"]
                         done_empty_chunk = True
                         continue
                     out = self.provider_formatter.parse_output_json(data)
-                    if out.usage_tokens:
-                        total_usage_tokens = out.usage_tokens
-                    if out.prompt_usage_tokens:
-                        prompt_usage_tokens = out.prompt_usage_tokens
+                    if out.completion_tokens:
+                        completion_tokens = out.completion_tokens
+                    if out.prompt_tokens:
+                        prompt_tokens = out.prompt_tokens
+                    if out.cached_tokens is not None:
+                        cached_tokens = out.cached_tokens
                     combined_text += out.text
 
                     # some providers (SGLang) send an empty chunk first skewing the TTFT
@@ -1142,14 +1159,14 @@ class LLMUser(HttpUser):
 
             if (
                 (total_logprob_tokens is not None)
-                and (total_usage_tokens is not None)
-                and total_logprob_tokens != total_usage_tokens
+                and (completion_tokens is not None)
+                and total_logprob_tokens != completion_tokens
             ):
-                print(f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}")
+                print(f"WARNING: completion_tokens {completion_tokens} != logprob_tokens {total_logprob_tokens}")
             if total_logprob_tokens is not None:
                 num_tokens = total_logprob_tokens
             else:
-                num_tokens = total_usage_tokens
+                num_tokens = completion_tokens
 
             num_tokens = num_tokens or 0
             num_chars = len(combined_text)
@@ -1157,8 +1174,20 @@ class LLMUser(HttpUser):
             dur_total = now - t_start
             dur_generation = now - t_first_token
             dur_first_token = t_first_token - t_start
+
+            if not self.provider_formatter.parsed_options.embeddings:
+                prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
+
+            token_parts = []
+            if prompt_tokens:
+                token_parts.append(f"{prompt_tokens} prompt")
+            if cached_tokens is not None:
+                token_parts.append(f"{cached_tokens} cached")
+            token_parts.append(f"{num_tokens} completion")
+            token_str = ", ".join(token_parts)
+
             print(
-                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {num_tokens} tokens"
+                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
             )
             if self.environment.parsed_options.show_response:
                 print("---")
@@ -1172,7 +1201,7 @@ class LLMUser(HttpUser):
             if num_tokens:
                 if num_tokens != max_tokens:
                     print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
-                add_custom_metric("num_tokens", num_tokens)
+                add_custom_metric("completion_tokens", num_tokens)
                 add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
                 add_custom_metric(
                     "overall_latency_per_token",
@@ -1181,9 +1210,10 @@ class LLMUser(HttpUser):
                 )
 
             if not self.provider_formatter.parsed_options.embeddings:
-                prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
+                if cached_tokens is not None:
+                    add_custom_metric("cached_tokens", cached_tokens)
 
             # Allow provider to process response (e.g., for custom metrics)
             self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
@@ -1490,11 +1520,17 @@ def _(environment, **kw):
         "time_to_first_token",
         "latency_per_token",
         "overall_latency_per_token",
-        "num_tokens",
         "total_latency",
-        "prompt_tokens",  # might overwrite the static value based on server side tokenization
     ]:
         entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
+
+    # Token usage grouped: input -> cached (optional) -> output
+    del entries["prompt_tokens"]
+    entries["prompt_tokens"] = environment.stats.entries[("prompt_tokens", "METRIC")].avg_response_time
+    if ("cached_tokens", "METRIC") in environment.stats.entries:
+        entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
+    del entries["completion_tokens"]
+    entries["completion_tokens"] = environment.stats.entries[("completion_tokens", "METRIC")].avg_response_time
     if not environment.parsed_options.stream:
         # if there's no streaming these metrics are meaningless
         entries["time_to_first_token"] = ""
