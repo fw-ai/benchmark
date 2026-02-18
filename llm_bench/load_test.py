@@ -1521,16 +1521,12 @@ def _(environment, **kw):
         "latency_per_token",
         "overall_latency_per_token",
         "total_latency",
+        "completion_tokens",
+        "prompt_tokens",
     ]:
         entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
-
-    # Token usage grouped: input -> cached (optional) -> output
-    del entries["prompt_tokens"]
-    entries["prompt_tokens"] = environment.stats.entries[("prompt_tokens", "METRIC")].avg_response_time
     if ("cached_tokens", "METRIC") in environment.stats.entries:
         entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
-    del entries["completion_tokens"]
-    entries["completion_tokens"] = environment.stats.entries[("completion_tokens", "METRIC")].avg_response_time
     if not environment.parsed_options.stream:
         # if there's no streaming these metrics are meaningless
         entries["time_to_first_token"] = ""
