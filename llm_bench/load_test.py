@@ -166,7 +166,7 @@ class DatasetHolder:
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
                 tokenizer_path=options.tokenizer,
-                chat=options.chat,
+                chat=options.chat and not getattr(options, "rerank", False),
                 num_tokens=options.prompt_tokens,
                 common_tokens=options.prompt_cache_max_len,
             )
@@ -578,7 +578,9 @@ class BaseProvider(abc.ABC):
 
 class OpenAIProvider(BaseProvider):
     def get_url(self):
-        if self.parsed_options.embeddings:
+        if self.parsed_options.rerank:
+            return "/v1/rerank"
+        elif self.parsed_options.embeddings:
             return "/v1/embeddings"
         elif self.parsed_options.chat:
             return "/v1/chat/completions"
@@ -586,6 +588,20 @@ class OpenAIProvider(BaseProvider):
             return "/v1/completions"
 
     def format_payload(self, prompt, max_tokens, images):
+        if self.parsed_options.rerank:
+            documents = [doc.strip() for doc in prompt.split("\n\n") if doc.strip()]
+            query = self.parsed_options.rerank_query or "Find the most relevant document."
+            data = {
+                "model": self.model,
+                "query": query,
+                "documents": documents,
+            }
+            if self.parsed_options.rerank_top_n is not None:
+                data["top_n"] = self.parsed_options.rerank_top_n
+            if not self.parsed_options.rerank_return_documents:
+                data["return_documents"] = False
+            return data
+
         if self.parsed_options.embeddings:
             data = {
                 "model": self.model,
@@ -650,6 +666,17 @@ class OpenAIProvider(BaseProvider):
         return data
 
     def parse_output_json(self, data):
+        if self.parsed_options.rerank:
+            usage = data.get("usage", {})
+            scores = [f"{item['index']}:{item['relevance_score']:.4f}" for item in data.get("data", [])]
+            return ChunkMetadata(
+                text=", ".join(scores),
+                logprob_tokens=None,
+                completion_tokens=None,
+                prompt_tokens=usage.get("prompt_tokens"),
+                cached_tokens=None,
+            )
+
         if self.parsed_options.embeddings:
             return ChunkMetadata(
                 text=data["data"][0]["embedding"],
@@ -698,6 +725,8 @@ class OpenAIProvider(BaseProvider):
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
+        if self.parsed_options.rerank:
+            return data
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
         # Add prompt_cache_max_pct if specified (Fireworks-specific parameter)
@@ -1104,6 +1133,14 @@ class LLMUser(HttpUser):
                         print(f"WARNING: Received more chunks after [DONE]: {chunk}")
                 try:
                     now = time.perf_counter()
+                    if self.provider_formatter.parsed_options.rerank:
+                        t_first_token = now
+                        out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
+                        if out.prompt_tokens:
+                            prompt_tokens = out.prompt_tokens
+                        if self.environment.parsed_options.show_response:
+                            combined_text = out.text
+                        break
                     if self.provider_formatter.parsed_options.embeddings:
                         t_first_token = now
                         if self.environment.parsed_options.show_response:
@@ -1175,7 +1212,7 @@ class LLMUser(HttpUser):
             dur_generation = now - t_first_token
             dur_first_token = t_first_token - t_start
 
-            if not self.provider_formatter.parsed_options.embeddings:
+            if not (self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank):
                 prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
 
             token_parts = []
@@ -1209,7 +1246,7 @@ class LLMUser(HttpUser):
                     num_tokens,
                 )
 
-            if not self.provider_formatter.parsed_options.embeddings:
+            if not (self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank):
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
                 if cached_tokens is not None:
@@ -1292,6 +1329,31 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use /v1/embeddings API",
+    )
+    parser.add_argument(
+        "--rerank",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use /v1/rerank API. The generated prompt text is split into documents (by paragraph), "
+        "and --rerank-query is used as the query.",
+    )
+    parser.add_argument(
+        "--rerank-query",
+        type=str,
+        default=None,
+        help="For rerank: the search query string. Defaults to a generic query if not specified.",
+    )
+    parser.add_argument(
+        "--rerank-top-n",
+        type=int,
+        default=None,
+        help="For rerank: number of top results to return.",
+    )
+    parser.add_argument(
+        "--rerank-return-documents",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="For rerank: whether to return document text in response.",
     )
     parser.add_argument(
         "--return-logits",

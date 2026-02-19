@@ -20,6 +20,12 @@ Supported providers and API flavors:
   * Legacy HTTP endpoints (no streaming)
   * LLM-focused endpoints (with or without streaming)
 
+Supported API types:
+* Chat completions (`/v1/chat/completions`)
+* Text completions (`/v1/completions`)
+* Embeddings (`/v1/embeddings`)
+* Rerank (`/v1/rerank`)
+
 Captured metrics:
 * Overall latency
 * Number of generated tokens
