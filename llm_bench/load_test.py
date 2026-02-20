@@ -595,6 +595,8 @@ class OpenAIProvider(BaseProvider):
                 data["return_logits"] = self.parsed_options.return_logits
             if self.parsed_options.normalize is not None:
                 data["normalize"] = self.parsed_options.normalize
+            if self.parsed_options.service_tier is not None:
+                data["service_tier"] = self.parsed_options.service_tier
             return data
 
         data = {
@@ -645,6 +647,9 @@ class OpenAIProvider(BaseProvider):
             # Remove the last message if it's from assistant
             if data["messages"][-1].get("role") == "assistant":
                 data["messages"].pop()
+
+        if self.parsed_options.service_tier is not None:
+            data["service_tier"] = self.parsed_options.service_tier
 
         return data
 
@@ -1470,6 +1475,12 @@ def init_parser(parser):
         default=False,
         help="If the last message in the messages array is from the assistant role, remove it. "
         "This allows the model to generate new content instead of continuing from existing assistant content.",
+    )
+    parser.add_argument(
+        "--service-tier",
+        type=str,
+        default=None,
+        help="Set service tier for the request (e.g. 'priority').",
     )
 
 
