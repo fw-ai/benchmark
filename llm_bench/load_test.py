@@ -162,7 +162,7 @@ class DatasetHolder:
                     prompt = options.prompt
                 dataset_file = "code.txt"
 
-            if options.prompt_cache_max_len is not None:
+            if options.prompt_cache_max_len > 0:
                 common_tokens = options.prompt_cache_max_len
             elif options.prompt_cache_max_pct is not None:
                 common_tokens = int(options.prompt_tokens * options.prompt_cache_max_pct / 100)
@@ -1458,11 +1458,10 @@ def init_parser(parser):
         "--prompt-cache-max-len",
         env_var="PROMPT_CACHE_MAX_LEN",
         type=int,
-        default=None,
+        default=0,
         help="Maximum number of shared prefix tokens across requests. "
-        "If not specified but --prompt-cache-max-pct is set, auto-computed as "
-        "int(prompt_tokens * prompt_cache_max_pct / 100). Defaults to 0 (no shared prefix) "
-        "when neither this nor --prompt-cache-max-pct is provided.",
+        "When --prompt-cache-max-pct is set and this is 0, auto-computed as "
+        "int(prompt_tokens * prompt_cache_max_pct / 100). Defaults to 0.",
     )
     parser.add_argument(
         "--prompt-cache-max-pct",
