@@ -754,6 +754,8 @@ class VllmProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
+        if data.get("stream"):
+            data["stream_options"] = {"include_usage": True}
         return data
 
 
