@@ -1156,8 +1156,11 @@ class LLMUser(HttpUser):
                     response.failure(e)
                     return
             if t_first_token is None:
-                response.failure(Exception("empty response received"))
-                return
+                if max_tokens == 0:
+                    t_first_token = time.perf_counter()
+                else:
+                    response.failure(Exception("empty response received"))
+                    return
 
             if (
                 (total_logprob_tokens is not None)
