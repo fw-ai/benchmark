@@ -199,7 +199,7 @@ class FixedQPSPacer:
                 elif self.distribution == "constant":
                     wait = mean_wait
                 else:
-                    print("Unknown distribution {self.distribution}")
+                    print(f"Unknown distribution {self.distribution}")
                     os._exit(1)
                 t += wait
                 yield t
@@ -754,6 +754,8 @@ class VllmProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
+        if data.get("stream"):
+            data["stream_options"] = {"include_usage": True}
         return data
 
 

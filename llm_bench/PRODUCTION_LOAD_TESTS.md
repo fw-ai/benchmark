@@ -133,3 +133,20 @@ From `llm_bench/`:
 ```
 
 Or watch the log live: `tail -f results/run_eagle3_fa.log`
+
+## Updating the Google Doc with results
+
+After a load test completes, append the results to the [comparison doc](https://docs.google.com/document/d/1wlkryDkAlAperola_hE-jZj8H1MFFXlxBGCZE-kMNgk/edit):
+
+```bash
+# Eagle results (already run)
+python update_doc_with_results.py eagle > results/eagle_results_for_doc.md
+# Then copy-paste results/eagle_results_for_doc.md at the bottom of the doc
+
+# NoDraft results (when run completes)
+python update_doc_with_results.py nodraft > results/nodraft_results_for_doc.md
+# Then copy-paste results/nodraft_results_for_doc.md at the bottom of the doc
+
+# Both at once
+python update_doc_with_results.py both
+```

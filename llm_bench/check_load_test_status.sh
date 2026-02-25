@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Quick status for production load test (Eagle or other).
-# Usage: ./check_load_test_status.sh [eagle|nodraft|path/to/log]
+# Usage: ./check_load_test_status.sh [eagle|nodraft|vllm|path/to/log]
 #   eagle  -> results/run_eagle3_fa.log (default)
 #   nodraft -> results/run_nodraft.log
+#   vllm   -> results/run_vllm.log
 #   path   -> use that log file
 
 set -e
@@ -14,6 +15,8 @@ if [[ "$NAME" == eagle ]]; then
   LOG="results/run_eagle3_fa.log"
 elif [[ "$NAME" == nodraft ]]; then
   LOG="results/run_nodraft.log"
+elif [[ "$NAME" == vllm ]]; then
+  LOG="results/run_vllm.log"
 else
   LOG="$NAME"
 fi
