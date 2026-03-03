@@ -589,9 +589,12 @@ class OpenAIProvider(BaseProvider):
         if self.parsed_options.embeddings:
             data = {
                 "model": self.model,
-                "input": prompt,
+                "input": prompt,  # str, list[str], dict, or list[dict]
             }
-            # Add embeddings-specific parameters
+            if self.parsed_options.embeddings_dimensions is not None:
+                data["dimensions"] = self.parsed_options.embeddings_dimensions
+            if self.parsed_options.embeddings_prompt_template is not None:
+                data["prompt_template"] = self.parsed_options.embeddings_prompt_template
             if self.parsed_options.return_logits is not None:
                 data["return_logits"] = self.parsed_options.return_logits
             if self.parsed_options.normalize is not None:
@@ -651,11 +654,14 @@ class OpenAIProvider(BaseProvider):
 
     def parse_output_json(self, data):
         if self.parsed_options.embeddings:
+            usage = data.get("usage") or {}
+            num_embeddings = len(data["data"])
+            dims = len(data["data"][0]["embedding"]) if num_embeddings > 0 else 0
             return ChunkMetadata(
-                text=data["data"][0]["embedding"],
+                text=f"{num_embeddings}x{dims}",
                 logprob_tokens=None,
                 completion_tokens=None,
-                prompt_tokens=None,
+                prompt_tokens=usage.get("prompt_tokens"),
                 cached_tokens=None,
             )
         usage = data.get("usage", None)
@@ -698,11 +704,12 @@ class OpenAIProvider(BaseProvider):
 class FireworksProvider(OpenAIProvider):
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        # Enable perf_metrics_in_response to get speculation stats in streaming responses
-        data["perf_metrics_in_response"] = True
-        # Add prompt_cache_max_pct if specified (Fireworks-specific parameter)
-        if self.parsed_options.prompt_cache_max_pct is not None:
-            data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
+        if not self.parsed_options.embeddings:
+            # Enable perf_metrics_in_response to get speculation stats in streaming responses
+            data["perf_metrics_in_response"] = True
+            # Add prompt_cache_max_pct if specified (Fireworks-specific parameter)
+            if self.parsed_options.prompt_cache_max_pct is not None:
+                data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
         return data
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
@@ -943,12 +950,18 @@ class LLMUser(HttpUser):
             # TODO: add some server info with git version
             "provider": self.provider,
             "model": self.model,
-            "prompt_tokens": self.environment.parsed_options.prompt_tokens,  # might be overwritten based on metric
-            "completion_tokens": str(self.max_tokens_sampler),
             "stream": self.stream,
             "temperature": self.temperature,
             "logprobs": self.environment.parsed_options.logprobs,
         }
+        if self.environment.parsed_options.embeddings:
+            logging_params["embeddings_batch_size"] = self.environment.parsed_options.embeddings_batch_size
+            logging_params["prompt_tokens"] = self.environment.parsed_options.prompt_tokens
+            if self.environment.parsed_options.embeddings_dimensions is not None:
+                logging_params["embeddings_dimensions"] = self.environment.parsed_options.embeddings_dimensions
+        else:
+            logging_params["prompt_tokens"] = self.environment.parsed_options.prompt_tokens
+            logging_params["completion_tokens"] = str(self.max_tokens_sampler)
 
         if self.environment.parsed_options.top_k is not None:
             logging_params["top_k"] = self.environment.parsed_options.top_k
@@ -1072,7 +1085,16 @@ class LLMUser(HttpUser):
 
     def _do_generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        prompt, prompt_tokens, images = self._get_input()
+        if self.environment.parsed_options.embeddings and self.environment.parsed_options.embeddings_batch_size > 1:
+            batch_size = self.environment.parsed_options.embeddings_batch_size
+            prompts, prompt_tokens = [], 0
+            for _ in range(batch_size):
+                p, pt, _ = self._get_input()
+                prompts.append(p)
+                prompt_tokens += pt
+            prompt, images = prompts, None
+        else:
+            prompt, prompt_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
@@ -1108,9 +1130,10 @@ class LLMUser(HttpUser):
                     now = time.perf_counter()
                     if self.provider_formatter.parsed_options.embeddings:
                         t_first_token = now
-                        if self.environment.parsed_options.show_response:
-                            out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
-                            combined_text = out.text
+                        out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
+                        if out.prompt_tokens:
+                            prompt_tokens = out.prompt_tokens
+                        combined_text = out.text  # "NxD" e.g. "4x768"
                         break
                     if self.stream:
                         assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
@@ -1183,38 +1206,49 @@ class LLMUser(HttpUser):
             if not self.provider_formatter.parsed_options.embeddings:
                 prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
 
-            token_parts = []
-            if prompt_tokens:
-                token_parts.append(f"{prompt_tokens} prompt")
-            if cached_tokens is not None:
-                token_parts.append(f"{cached_tokens} cached")
-            token_parts.append(f"{num_tokens} completion")
-            token_str = ", ".join(token_parts)
-
-            print(
-                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
-            )
-            if self.environment.parsed_options.show_response:
-                print("---")
-                print(combined_text)
-                print("---")
-            if num_chars:
-                add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
-            if self.stream:
-                add_custom_metric("time_to_first_token", dur_first_token * 1000)
-            add_custom_metric("total_latency", dur_total * 1000)
-            if num_tokens:
-                if num_tokens != max_tokens:
-                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
-                add_custom_metric("completion_tokens", num_tokens)
-                add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
-                add_custom_metric(
-                    "overall_latency_per_token",
-                    dur_total / num_tokens * 1000,
-                    num_tokens,
+            if self.provider_formatter.parsed_options.embeddings:
+                batch_size = self.environment.parsed_options.embeddings_batch_size
+                print(
+                    f"Embeddings response: total {dur_total*1000:.2f} ms, shape {combined_text}, "
+                    f"batch {batch_size}, {prompt_tokens or '?'} prompt tokens"
                 )
+                if self.environment.parsed_options.show_response:
+                    print(f"  shape: {combined_text}")
+                add_custom_metric("total_latency", dur_total * 1000)
+                add_custom_metric("latency_per_embedding", dur_total / batch_size * 1000)
+                if prompt_tokens:
+                    add_custom_metric("prompt_tokens", prompt_tokens)
+            else:
+                token_parts = []
+                if prompt_tokens:
+                    token_parts.append(f"{prompt_tokens} prompt")
+                if cached_tokens is not None:
+                    token_parts.append(f"{cached_tokens} cached")
+                token_parts.append(f"{num_tokens} completion")
+                token_str = ", ".join(token_parts)
 
-            if not self.provider_formatter.parsed_options.embeddings:
+                print(
+                    f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
+                )
+                if self.environment.parsed_options.show_response:
+                    print("---")
+                    print(combined_text)
+                    print("---")
+                if num_chars:
+                    add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
+                if self.stream:
+                    add_custom_metric("time_to_first_token", dur_first_token * 1000)
+                add_custom_metric("total_latency", dur_total * 1000)
+                if num_tokens:
+                    if num_tokens != max_tokens:
+                        print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                    add_custom_metric("completion_tokens", num_tokens)
+                    add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
+                    add_custom_metric(
+                        "overall_latency_per_token",
+                        dur_total / num_tokens * 1000,
+                        num_tokens,
+                    )
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
                 if cached_tokens is not None:
@@ -1310,6 +1344,28 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="For embeddings: apply L2 normalization to activations when return_logits is None, or softmax to selected logits when return_logits is provided.",
+    )
+    parser.add_argument(
+        "--embeddings-batch-size",
+        type=int,
+        default=1,
+        help="For embeddings: number of texts to embed per request (sent as an array). "
+        "Useful for testing throughput with batched inputs. Default 1.",
+    )
+    parser.add_argument(
+        "--embeddings-dimensions",
+        type=int,
+        default=None,
+        help="For embeddings: requested number of output dimensions. "
+        "Only supported by certain models (e.g. nomic-ai/nomic-embed-text-v1.5).",
+    )
+    parser.add_argument(
+        "--embeddings-prompt-template",
+        type=str,
+        default=None,
+        help="For embeddings: Jinja2 template string for processing structured input objects before embedding. "
+        "Fields from the input object are substituted using {field_name} syntax. "
+        "Example: 'Embed this passage: {text}'",
     )
     parser.add_argument(
         "-p",
@@ -1521,30 +1577,43 @@ def _(environment, **kw):
         entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
     else:
         entries["concurrency"] = InitTracker.users
-    for metric_name in [
-        "time_to_first_token",
-        "latency_per_token",
-        "overall_latency_per_token",
-        "total_latency",
-        "completion_tokens",
-        "prompt_tokens",
-    ]:
-        entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
-    if ("cached_tokens", "METRIC") in environment.stats.entries:
-        entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
-    if not environment.parsed_options.stream:
-        # if there's no streaming these metrics are meaningless
-        entries["time_to_first_token"] = ""
-        entries["latency_per_token"] = ""
+
+    def _avg(metric_name):
+        entry = environment.stats.entries.get((metric_name, "METRIC"))
+        return entry.avg_response_time if entry else ""
+
+    if environment.parsed_options.embeddings:
+        for metric_name in ["total_latency", "latency_per_embedding", "prompt_tokens"]:
+            entries[metric_name] = _avg(metric_name)
+        percentile_metrics = ["total_latency", "latency_per_embedding"]
+    else:
+        for metric_name in [
+            "time_to_first_token",
+            "latency_per_token",
+            "overall_latency_per_token",
+            "total_latency",
+            "completion_tokens",
+            "prompt_tokens",
+        ]:
+            entries[metric_name] = _avg(metric_name)
+        if ("cached_tokens", "METRIC") in environment.stats.entries:
+            entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
+        if not environment.parsed_options.stream:
+            # if there's no streaming these metrics are meaningless
+            entries["time_to_first_token"] = ""
+            entries["latency_per_token"] = ""
+        percentile_metrics = ["time_to_first_token", "total_latency"]
+
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
     percentile_to_report = [50, 90, 95, 99, 99.9]
-    percentile_metrics = ["time_to_first_token", "total_latency"]
     for percentile_metric in percentile_metrics:
-        metrics = environment.stats.entries[percentile_metric, "METRIC"]
+        metric_entry = environment.stats.entries.get((percentile_metric, "METRIC"))
+        if metric_entry is None:
+            continue
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
-            entries[name] = metrics.get_response_time_percentile(percentile / 100)
+            entries[name] = metric_entry.get_response_time_percentile(percentile / 100)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
