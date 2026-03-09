@@ -723,15 +723,30 @@ class OpenAIProvider(BaseProvider):
 
 
 class FireworksProvider(OpenAIProvider):
+    def __init__(self, model, parsed_options):
+        super().__init__(model, parsed_options)
+        raw = parsed_options.acceptance_probs_override
+        if raw is not None:
+            try:
+                val = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"--acceptance-probs-override must be valid JSON: {e}")
+            if not isinstance(val, list) or not all(isinstance(x, (int, float)) for x in val):
+                raise ValueError("--acceptance-probs-override must be a JSON array of numbers")
+            self._acceptance_probs_override = val
+        else:
+            self._acceptance_probs_override = None
+
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         if self.parsed_options.rerank:
             return data
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
-        # Add prompt_cache_max_pct if specified (Fireworks-specific parameter)
         if self.parsed_options.prompt_cache_max_pct is not None:
             data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
+        if self._acceptance_probs_override is not None:
+            data["acceptance_probs_override"] = self._acceptance_probs_override
         return data
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
@@ -1528,6 +1543,14 @@ def init_parser(parser):
         default=None,
         help="(Fireworks only) Maximum percentage of prompt tokens to use for prompt cache (0-100). "
         "Passed as prompt_cache_max_pct in the API request. Ignored for other providers.",
+    )
+    parser.add_argument(
+        "--acceptance-probs-override",
+        type=str,
+        default=None,
+        help="JSON array of acceptance probabilities for speculative decoding override (e.g. '[0.9, 0.7, 0.5]'). "
+        "Each element is the probability of accepting the draft token at that position (0.0-1.0). "
+        "Injected as acceptance_probs_override in every request body. Fireworks-specific.",
     )
     parser.add_argument(
         "--header",
