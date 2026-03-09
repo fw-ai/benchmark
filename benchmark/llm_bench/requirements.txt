@@ -1,0 +1,8 @@
+locust
+orjson
+pillow
+gevent
+transformers
+tokenizers
+locust-plugins
+tiktoken

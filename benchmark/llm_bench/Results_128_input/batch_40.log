@@ -1,0 +1,1694 @@
+[2026-02-21 14:10:30,375] Davids-MacBook-Pro-2.local/INFO/locust.main: No run time limit set, use CTRL+C to interrupt
+[2026-02-21 14:10:30,375] Davids-MacBook-Pro-2.local/INFO/locust.main: Starting Locust 2.18.1
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                         0     0(0.00%) |      0       0       0      0 |    0.00        0.00
+
+[2026-02-21 14:10:30,376] Davids-MacBook-Pro-2.local/INFO/locust.runners: Ramping to 1 users at a rate of 1.00 per second
+[2026-02-21 14:10:30,376] Davids-MacBook-Pro-2.local/INFO/locust.runners: All users spawned: {"LLMUser": 1} (1 total users)
+[2026-02-21 14:10:30,376] Davids-MacBook-Pro-2.local/INFO/locust.runners: Resetting stats
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                               9     0(0.00%) |    110      87     180    110 |    0.00        0.00
+METRIC   time_to_first_token                                                                9     0(0.00%) |    124     108     202    110 |    0.00        0.00
+METRIC   total_latency                                                                      9     0(0.00%) |    124     108     202    110 |    0.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        27     0(0.00%) |    119      87     202    110 |    0.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                              23     0(0.00%) |     99      82     180     89 |    3.00        0.00
+METRIC   time_to_first_token                                                               23     0(0.00%) |    113     102     202    110 |    3.00        0.00
+METRIC   total_latency                                                                     23     0(0.00%) |    114     102     202    110 |    3.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                        69     0(0.00%) |    109      82     202    110 |    9.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                              37     0(0.00%) |     97      81     180     90 |    5.00        0.00
+METRIC   time_to_first_token                                                               37     0(0.00%) |    112     102     202    110 |    5.00        0.00
+METRIC   total_latency                                                                     37     0(0.00%) |    112     102     202    110 |    5.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       111     0(0.00%) |    107      81     202    110 |   15.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                              51     0(0.00%) |     97      81     180     90 |    5.67        0.00
+METRIC   time_to_first_token                                                               51     0(0.00%) |    111     102     202    110 |    5.67        0.00
+METRIC   total_latency                                                                     51     0(0.00%) |    111     102     202    110 |    5.67        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       153     0(0.00%) |    106      81     202    110 |   17.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                              65     0(0.00%) |     96      81     180     89 |    6.00        0.00
+METRIC   time_to_first_token                                                               65     0(0.00%) |    110     101     202    110 |    6.00        0.00
+METRIC   total_latency                                                                     65     0(0.00%) |    110     101     202    110 |    6.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       195     0(0.00%) |    105      81     202    110 |   18.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                              79     0(0.00%) |     95      81     180     89 |    6.20        0.00
+METRIC   time_to_first_token                                                               79     0(0.00%) |    109     101     202    110 |    6.20        0.00
+METRIC   total_latency                                                                     79     0(0.00%) |    109     101     202    110 |    6.20        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       237     0(0.00%) |    105      81     202    110 |   18.60        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                              93     0(0.00%) |     95      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                               93     0(0.00%) |    110     101     202    110 |    7.00        0.00
+METRIC   total_latency                                                                     93     0(0.00%) |    110     101     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       279     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             107     0(0.00%) |     95      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              107     0(0.00%) |    109     101     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    107     0(0.00%) |    109     101     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       321     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             121     0(0.00%) |     95      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              121     0(0.00%) |    109     101     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    121     0(0.00%) |    109     101     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       363     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             135     0(0.00%) |     95      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              135     0(0.00%) |    109     101     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    135     0(0.00%) |    109     101     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       405     0(0.00%) |    104      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             148     0(0.00%) |     95      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              148     0(0.00%) |    110     101     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    148     0(0.00%) |    110     101     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       444     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             162     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              162     0(0.00%) |    110     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    162     0(0.00%) |    110     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       486     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             176     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              176     0(0.00%) |    109     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    176     0(0.00%) |    110     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       528     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             190     0(0.00%) |     95      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              190     0(0.00%) |    109     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    190     0(0.00%) |    109     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       570     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             204     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              204     0(0.00%) |    109     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    204     0(0.00%) |    110     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       612     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             218     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              218     0(0.00%) |    110     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    218     0(0.00%) |    110     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       654     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             231     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              231     0(0.00%) |    109     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    231     0(0.00%) |    110     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       693     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             245     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              245     0(0.00%) |    110     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    245     0(0.00%) |    110     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       735     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+locust-plugins is not installed, Grafana won't work
+Deferring -t/--run-time to start after spawning complete: 150.0s
+Resetting stats after traffic reached a steady state
+Scheduling stop 150.0s after spawning complete (deferred -t)
+ Provider fireworks using model accounts/thumbtack/models/mismatch-model-v2#accounts/thumbtack/deployments/mismatch-model-v2-auto 
+Response received: total 202.33 ms, first token 202.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.36 ms, first token 112.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.81 ms, first token 108.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.05 ms, first token 114.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 140.94 ms, first token 140.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.67 ms, first token 109.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.51 ms, first token 108.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.08 ms, first token 112.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.75 ms, first token 108.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.21 ms, first token 108.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.02 ms, first token 107.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.72 ms, first token 108.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.69 ms, first token 102.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.81 ms, first token 109.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.68 ms, first token 102.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.13 ms, first token 109.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.32 ms, first token 108.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.39 ms, first token 107.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.01 ms, first token 108.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.11 ms, first token 108.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.64 ms, first token 109.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.75 ms, first token 103.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.59 ms, first token 108.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.01 ms, first token 104.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.99 ms, first token 107.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.73 ms, first token 109.66 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.82 ms, first token 112.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.63 ms, first token 110.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.35 ms, first token 109.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.44 ms, first token 114.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.75 ms, first token 110.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.31 ms, first token 103.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.17 ms, first token 111.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.59 ms, first token 103.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.27 ms, first token 109.23 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.62 ms, first token 110.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.96 ms, first token 106.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.82 ms, first token 108.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.47 ms, first token 111.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.18 ms, first token 113.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.85 ms, first token 110.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.47 ms, first token 104.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.48 ms, first token 108.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.77 ms, first token 104.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.00 ms, first token 110.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.98 ms, first token 107.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.13 ms, first token 108.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.10 ms, first token 111.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.90 ms, first token 108.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.42 ms, first token 111.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.82 ms, first token 103.78 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.77 ms, first token 110.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.51 ms, first token 103.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.11 ms, first token 113.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.37 ms, first token 108.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.66 ms, first token 107.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.35 ms, first token 108.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.04 ms, first token 106.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.13 ms, first token 108.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.51 ms, first token 101.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.01 ms, first token 106.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.69 ms, first token 101.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.16 ms, first token 106.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.40 ms, first token 106.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.77 ms, first token 103.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.92 ms, first token 106.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.20 ms, first token 108.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.84 ms, first token 107.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.33 ms, first token 108.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.10 ms, first token 102.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.84 ms, first token 108.77 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.30 ms, first token 102.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.28 ms, first token 110.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.46 ms, first token 109.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.23 ms, first token 107.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 116.67 ms, first token 116.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.18 ms, first token 111.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.37 ms, first token 109.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.56 ms, first token 109.51 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.58 ms, first token 105.54 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.16 ms, first token 109.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.94 ms, first token 102.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.14 ms, first token 112.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.76 ms, first token 108.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.56 ms, first token 107.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.33 ms, first token 109.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 152.01 ms, first token 151.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.73 ms, first token 109.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.74 ms, first token 102.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.41 ms, first token 113.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.43 ms, first token 103.36 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.31 ms, first token 111.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.07 ms, first token 110.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.77 ms, first token 106.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.39 ms, first token 108.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.44 ms, first token 109.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.36 ms, first token 108.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.85 ms, first token 110.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.27 ms, first token 103.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.87 ms, first token 109.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.15 ms, first token 104.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.39 ms, first token 108.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.54 ms, first token 113.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.84 ms, first token 105.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.36 ms, first token 109.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.85 ms, first token 110.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.41 ms, first token 109.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.06 ms, first token 110.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.27 ms, first token 104.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.22 ms, first token 111.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.46 ms, first token 103.39 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.63 ms, first token 110.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.65 ms, first token 110.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.12 ms, first token 107.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.42 ms, first token 109.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.11 ms, first token 110.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.90 ms, first token 108.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.92 ms, first token 109.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.63 ms, first token 104.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.13 ms, first token 110.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.72 ms, first token 104.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.37 ms, first token 111.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.22 ms, first token 108.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.05 ms, first token 109.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.22 ms, first token 108.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.90 ms, first token 109.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.52 ms, first token 110.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.04 ms, first token 111.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.62 ms, first token 104.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.40 ms, first token 112.33 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.03 ms, first token 108.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.77 ms, first token 107.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.13 ms, first token 111.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.87 ms, first token 105.82 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.59 ms, first token 109.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.00 ms, first token 109.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 182.71 ms, first token 182.51 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.87 ms, first token 110.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.35 ms, first token 105.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.72 ms, first token 114.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.17 ms, first token 103.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.86 ms, first token 114.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.62 ms, first token 111.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.65 ms, first token 107.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.82 ms, first token 108.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.73 ms, first token 108.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.90 ms, first token 109.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.27 ms, first token 103.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.42 ms, first token 111.36 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.56 ms, first token 105.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 128.77 ms, first token 128.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.23 ms, first token 111.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.02 ms, first token 106.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.08 ms, first token 109.01 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.74 ms, first token 111.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.54 ms, first token 110.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.23 ms, first token 113.14 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.07 ms, first token 108.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.77 ms, first token 109.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.67 ms, first token 103.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.03 ms, first token 109.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.13 ms, first token 111.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.94 ms, first token 106.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.41 ms, first token 108.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.00 ms, first token 108.94 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.06 ms, first token 109.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.04 ms, first token 108.99 ms, 0 chars, 5120 prompt, 0 completion
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             259     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              259     0(0.00%) |    110     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    259     0(0.00%) |    110     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       777     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             273     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              273     0(0.00%) |    109     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    273     0(0.00%) |    109     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       819     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             287     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              287     0(0.00%) |    109     101     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    287     0(0.00%) |    109     101     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       861     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             301     0(0.00%) |     96      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              301     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    301     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       903     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             315     0(0.00%) |     96      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              315     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    315     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       945     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             329     0(0.00%) |     96      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              329     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    329     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                       987     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             343     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              343     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    343     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1029     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             356     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              356     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    356     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1068     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             371     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              371     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    371     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1113     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             385     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              385     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    385     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1155     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             399     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              399     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    399     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1197     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             412     0(0.00%) |     96      81     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              412     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    412     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1236     0(0.00%) |    105      81     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             426     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              426     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    426     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1278     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Response received: total 102.14 ms, first token 102.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.79 ms, first token 108.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.83 ms, first token 104.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.48 ms, first token 109.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.33 ms, first token 109.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.07 ms, first token 107.01 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.75 ms, first token 109.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.62 ms, first token 108.56 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.88 ms, first token 108.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.22 ms, first token 103.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.76 ms, first token 109.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.67 ms, first token 102.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.17 ms, first token 112.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.71 ms, first token 107.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.94 ms, first token 108.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.21 ms, first token 108.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.25 ms, first token 115.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.33 ms, first token 111.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.78 ms, first token 103.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.47 ms, first token 111.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.27 ms, first token 107.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.71 ms, first token 109.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.38 ms, first token 110.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.16 ms, first token 107.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.75 ms, first token 110.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.01 ms, first token 110.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.29 ms, first token 110.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.71 ms, first token 110.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.30 ms, first token 106.23 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.07 ms, first token 111.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 126.64 ms, first token 126.56 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.08 ms, first token 114.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.77 ms, first token 110.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.83 ms, first token 106.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.40 ms, first token 109.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.22 ms, first token 113.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.22 ms, first token 111.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.09 ms, first token 106.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.84 ms, first token 108.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.82 ms, first token 102.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.42 ms, first token 111.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 140.62 ms, first token 140.59 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.81 ms, first token 108.78 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.82 ms, first token 111.77 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.89 ms, first token 109.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.89 ms, first token 108.85 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.75 ms, first token 109.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.27 ms, first token 103.23 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.43 ms, first token 109.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.62 ms, first token 106.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.16 ms, first token 109.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.87 ms, first token 108.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.95 ms, first token 107.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.99 ms, first token 111.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.33 ms, first token 109.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.12 ms, first token 110.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.38 ms, first token 114.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.31 ms, first token 107.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.48 ms, first token 112.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.94 ms, first token 106.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 128.02 ms, first token 127.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.69 ms, first token 112.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.32 ms, first token 112.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.45 ms, first token 115.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.41 ms, first token 109.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 123.05 ms, first token 122.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.76 ms, first token 111.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.81 ms, first token 103.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.07 ms, first token 109.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.92 ms, first token 102.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.65 ms, first token 109.59 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.41 ms, first token 109.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.84 ms, first token 110.78 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.50 ms, first token 107.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.92 ms, first token 108.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.64 ms, first token 107.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.71 ms, first token 109.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.73 ms, first token 105.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.92 ms, first token 110.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.64 ms, first token 102.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.30 ms, first token 113.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.05 ms, first token 110.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.77 ms, first token 106.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.73 ms, first token 109.66 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.72 ms, first token 109.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.76 ms, first token 110.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.42 ms, first token 110.36 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.02 ms, first token 107.94 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.12 ms, first token 111.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.18 ms, first token 104.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.02 ms, first token 109.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.17 ms, first token 108.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.58 ms, first token 104.51 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.34 ms, first token 106.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.03 ms, first token 106.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.43 ms, first token 108.36 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.20 ms, first token 109.14 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.14 ms, first token 102.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.12 ms, first token 110.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.38 ms, first token 104.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.38 ms, first token 106.33 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.86 ms, first token 108.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.68 ms, first token 104.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.53 ms, first token 107.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.71 ms, first token 108.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.25 ms, first token 112.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.05 ms, first token 108.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.48 ms, first token 115.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.80 ms, first token 110.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.78 ms, first token 101.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.75 ms, first token 106.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.08 ms, first token 108.01 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.57 ms, first token 104.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.59 ms, first token 108.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.87 ms, first token 106.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.69 ms, first token 106.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.84 ms, first token 108.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.56 ms, first token 102.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.33 ms, first token 106.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 100.31 ms, first token 100.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.78 ms, first token 107.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.61 ms, first token 105.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.13 ms, first token 107.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.35 ms, first token 109.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.25 ms, first token 111.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.45 ms, first token 109.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.19 ms, first token 111.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.56 ms, first token 102.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.99 ms, first token 108.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.26 ms, first token 103.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.48 ms, first token 111.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.08 ms, first token 109.01 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.71 ms, first token 107.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.20 ms, first token 107.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.35 ms, first token 110.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.49 ms, first token 113.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.26 ms, first token 104.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.82 ms, first token 113.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.22 ms, first token 102.14 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.87 ms, first token 109.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.56 ms, first token 111.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.09 ms, first token 109.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.99 ms, first token 107.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.95 ms, first token 109.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.88 ms, first token 109.82 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.09 ms, first token 111.01 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.98 ms, first token 111.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.04 ms, first token 102.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.45 ms, first token 112.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.44 ms, first token 112.36 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.48 ms, first token 108.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.68 ms, first token 110.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.88 ms, first token 103.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.51 ms, first token 111.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.55 ms, first token 104.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.50 ms, first token 112.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.14 ms, first token 112.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.95 ms, first token 107.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.78 ms, first token 108.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.84 ms, first token 108.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.81 ms, first token 111.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.10 ms, first token 105.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.14 ms, first token 113.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.31 ms, first token 104.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.99 ms, first token 110.85 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.97 ms, first token 111.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.97 ms, first token 107.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.25 ms, first token 110.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.77 ms, first token 109.72 ms, 0 chars, 5120 prompt, 0 completion
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             440     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              440     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    440     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1320     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             453     0(0.00%) |     96      81     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              453     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    453     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1359     0(0.00%) |    105      81     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             467     0(0.00%) |     96      81     180     89 |    6.80        0.00
+METRIC   time_to_first_token                                                              467     0(0.00%) |    109     100     202    110 |    6.80        0.00
+METRIC   total_latency                                                                    467     0(0.00%) |    109     100     202    110 |    6.80        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1401     0(0.00%) |    105      81     202    110 |   20.40        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             482     0(0.00%) |     96      80     180     89 |    6.80        0.00
+METRIC   time_to_first_token                                                              482     0(0.00%) |    109     100     202    110 |    6.80        0.00
+METRIC   total_latency                                                                    482     0(0.00%) |    109     100     202    110 |    6.80        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1446     0(0.00%) |    105      80     202    110 |   20.40        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             497     0(0.00%) |     96      80     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              497     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    497     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1491     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             511     0(0.00%) |     96      80     180     89 |    7.10        0.00
+METRIC   time_to_first_token                                                              511     0(0.00%) |    109     100     202    110 |    7.10        0.00
+METRIC   total_latency                                                                    511     0(0.00%) |    109     100     202    110 |    7.10        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1533     0(0.00%) |    104      80     202    110 |   21.30        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             525     0(0.00%) |     96      80     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              525     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    525     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1575     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             539     0(0.00%) |     95      80     180     89 |    7.10        0.00
+METRIC   time_to_first_token                                                              539     0(0.00%) |    109     100     202    110 |    7.10        0.00
+METRIC   total_latency                                                                    539     0(0.00%) |    109     100     202    110 |    7.10        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1617     0(0.00%) |    104      80     202    110 |   21.30        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             553     0(0.00%) |     95      80     180     89 |    7.10        0.00
+METRIC   time_to_first_token                                                              553     0(0.00%) |    109     100     202    110 |    7.10        0.00
+METRIC   total_latency                                                                    553     0(0.00%) |    109     100     202    110 |    7.10        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1659     0(0.00%) |    104      80     202    110 |   21.30        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             566     0(0.00%) |     95      80     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              566     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    566     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1698     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             581     0(0.00%) |     95      80     180     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              581     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    581     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1743     0(0.00%) |    104      80     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             595     0(0.00%) |     95      80     180     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              595     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    595     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1785     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Response received: total 109.79 ms, first token 109.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.73 ms, first token 112.66 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.69 ms, first token 103.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.50 ms, first token 111.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.04 ms, first token 103.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.11 ms, first token 110.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.19 ms, first token 111.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.16 ms, first token 109.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.66 ms, first token 113.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.46 ms, first token 113.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.74 ms, first token 109.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.91 ms, first token 103.85 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.69 ms, first token 109.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.77 ms, first token 103.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.01 ms, first token 108.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.13 ms, first token 109.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.51 ms, first token 107.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.05 ms, first token 110.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.21 ms, first token 110.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.42 ms, first token 108.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.78 ms, first token 109.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.26 ms, first token 103.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.52 ms, first token 108.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.42 ms, first token 104.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.57 ms, first token 115.47 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.36 ms, first token 111.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.76 ms, first token 108.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.22 ms, first token 108.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.29 ms, first token 109.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.92 ms, first token 108.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.43 ms, first token 111.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.46 ms, first token 102.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.17 ms, first token 109.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.36 ms, first token 103.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.34 ms, first token 109.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.45 ms, first token 111.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.06 ms, first token 106.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.35 ms, first token 110.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.48 ms, first token 108.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.71 ms, first token 108.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.74 ms, first token 109.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.02 ms, first token 102.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.44 ms, first token 104.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.70 ms, first token 108.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.10 ms, first token 111.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.77 ms, first token 106.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.98 ms, first token 108.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.96 ms, first token 108.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.18 ms, first token 113.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.15 ms, first token 109.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.67 ms, first token 103.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.13 ms, first token 110.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.29 ms, first token 104.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.11 ms, first token 113.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.52 ms, first token 108.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.20 ms, first token 108.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.58 ms, first token 110.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.41 ms, first token 109.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.10 ms, first token 109.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.70 ms, first token 109.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.52 ms, first token 103.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.13 ms, first token 114.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 172.79 ms, first token 172.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.30 ms, first token 110.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.36 ms, first token 108.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.65 ms, first token 107.60 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.49 ms, first token 110.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.47 ms, first token 111.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.54 ms, first token 112.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.13 ms, first token 112.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.00 ms, first token 102.94 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.22 ms, first token 109.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.00 ms, first token 103.94 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.56 ms, first token 109.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.72 ms, first token 108.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.85 ms, first token 108.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.34 ms, first token 110.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.48 ms, first token 109.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.56 ms, first token 108.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.45 ms, first token 110.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.17 ms, first token 104.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.63 ms, first token 108.59 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.23 ms, first token 104.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.11 ms, first token 110.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.22 ms, first token 108.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.14 ms, first token 108.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.00 ms, first token 108.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.29 ms, first token 107.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.78 ms, first token 108.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.10 ms, first token 109.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.29 ms, first token 103.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.56 ms, first token 111.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.50 ms, first token 102.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.71 ms, first token 108.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.68 ms, first token 108.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.11 ms, first token 107.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.66 ms, first token 108.59 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 152.20 ms, first token 152.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.02 ms, first token 107.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.35 ms, first token 109.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.05 ms, first token 106.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.90 ms, first token 111.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.20 ms, first token 104.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.54 ms, first token 109.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.48 ms, first token 108.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.76 ms, first token 107.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.94 ms, first token 107.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.56 ms, first token 110.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.40 ms, first token 107.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.24 ms, first token 109.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.55 ms, first token 102.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.16 ms, first token 114.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.48 ms, first token 103.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.30 ms, first token 113.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.20 ms, first token 109.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.76 ms, first token 107.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.44 ms, first token 109.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.25 ms, first token 113.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.02 ms, first token 111.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.13 ms, first token 106.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.92 ms, first token 108.85 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.68 ms, first token 102.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 120.14 ms, first token 120.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.52 ms, first token 107.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.09 ms, first token 108.05 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.76 ms, first token 105.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 126.45 ms, first token 126.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.24 ms, first token 109.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.02 ms, first token 107.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.18 ms, first token 102.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.79 ms, first token 109.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 100.66 ms, first token 100.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.28 ms, first token 106.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.73 ms, first token 106.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.25 ms, first token 103.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.24 ms, first token 105.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.96 ms, first token 106.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 119.31 ms, first token 119.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.01 ms, first token 100.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.94 ms, first token 106.82 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 100.59 ms, first token 100.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.57 ms, first token 106.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.07 ms, first token 105.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.88 ms, first token 107.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.99 ms, first token 108.77 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.79 ms, first token 106.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.83 ms, first token 109.78 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.17 ms, first token 105.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.10 ms, first token 109.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.64 ms, first token 106.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.80 ms, first token 111.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.51 ms, first token 112.47 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.63 ms, first token 108.56 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.85 ms, first token 110.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.15 ms, first token 109.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.89 ms, first token 108.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.57 ms, first token 109.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.04 ms, first token 103.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.74 ms, first token 108.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.97 ms, first token 102.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.10 ms, first token 109.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.35 ms, first token 109.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.17 ms, first token 106.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.29 ms, first token 111.23 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.67 ms, first token 109.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.67 ms, first token 111.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.53 ms, first token 111.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.54 ms, first token 103.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.84 ms, first token 109.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.90 ms, first token 102.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.50 ms, first token 110.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.03 ms, first token 111.00 ms, 0 chars, 5120 prompt, 0 completion
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             608     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              608     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    608     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1824     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             622     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              622     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    622     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1866     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             636     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              636     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    636     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1908     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             650     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              650     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    650     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1950     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             664     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              664     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    664     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1992     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             679     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              679     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    679     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2037     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             693     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              693     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    693     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2079     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             707     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              707     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    707     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2121     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             720     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              720     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    720     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2160     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             735     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              735     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    735     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2205     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             749     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              749     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    749     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2247     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             763     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              763     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    763     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2289     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             777     0(0.00%) |     96      80     200     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              777     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    777     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2331     0(0.00%) |    105      80     202    110 |   20.70        0.00
+
+Response received: total 107.71 ms, first token 107.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.75 ms, first token 114.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.74 ms, first token 109.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.55 ms, first token 111.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.93 ms, first token 113.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.81 ms, first token 103.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.90 ms, first token 111.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.47 ms, first token 103.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.88 ms, first token 112.82 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.16 ms, first token 109.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.55 ms, first token 108.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.78 ms, first token 108.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.33 ms, first token 112.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.02 ms, first token 108.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.34 ms, first token 109.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.05 ms, first token 103.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.44 ms, first token 110.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.17 ms, first token 103.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.76 ms, first token 108.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.91 ms, first token 108.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.05 ms, first token 107.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.38 ms, first token 110.33 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.49 ms, first token 111.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.56 ms, first token 110.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.27 ms, first token 103.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.61 ms, first token 108.56 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.60 ms, first token 109.56 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.11 ms, first token 110.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.13 ms, first token 112.05 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 121.17 ms, first token 121.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.54 ms, first token 108.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.98 ms, first token 107.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.58 ms, first token 110.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.81 ms, first token 108.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.75 ms, first token 103.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.95 ms, first token 109.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.92 ms, first token 102.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 116.87 ms, first token 116.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.17 ms, first token 109.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.56 ms, first token 107.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.64 ms, first token 111.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.12 ms, first token 112.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 123.40 ms, first token 123.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.44 ms, first token 111.40 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.21 ms, first token 104.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.35 ms, first token 109.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.50 ms, first token 103.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.04 ms, first token 109.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.33 ms, first token 110.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.81 ms, first token 108.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.68 ms, first token 109.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.16 ms, first token 109.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.36 ms, first token 109.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.71 ms, first token 102.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.85 ms, first token 108.78 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.77 ms, first token 102.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 116.00 ms, first token 115.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.97 ms, first token 108.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.87 ms, first token 106.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.98 ms, first token 109.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.37 ms, first token 109.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.97 ms, first token 109.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.14 ms, first token 113.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.31 ms, first token 104.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.74 ms, first token 114.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.50 ms, first token 102.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.23 ms, first token 110.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.68 ms, first token 111.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.51 ms, first token 106.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.88 ms, first token 110.82 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.29 ms, first token 109.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.58 ms, first token 108.51 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.79 ms, first token 110.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.37 ms, first token 103.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.98 ms, first token 109.94 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.37 ms, first token 103.33 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.61 ms, first token 110.54 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.48 ms, first token 109.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.66 ms, first token 108.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.84 ms, first token 108.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.75 ms, first token 108.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 202.01 ms, first token 201.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.24 ms, first token 104.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.28 ms, first token 108.23 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.58 ms, first token 103.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.06 ms, first token 110.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.11 ms, first token 110.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.63 ms, first token 109.60 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.07 ms, first token 110.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.49 ms, first token 108.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.15 ms, first token 109.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.89 ms, first token 111.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.99 ms, first token 102.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.18 ms, first token 109.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.28 ms, first token 104.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.34 ms, first token 112.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.62 ms, first token 111.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.69 ms, first token 108.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.71 ms, first token 109.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.74 ms, first token 109.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.80 ms, first token 109.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.24 ms, first token 114.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.94 ms, first token 103.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 116.71 ms, first token 116.66 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.22 ms, first token 104.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.17 ms, first token 111.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.32 ms, first token 109.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.38 ms, first token 111.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 119.62 ms, first token 119.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.37 ms, first token 113.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.24 ms, first token 109.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.59 ms, first token 109.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.70 ms, first token 102.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.95 ms, first token 107.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.88 ms, first token 103.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.23 ms, first token 109.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.36 ms, first token 110.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.11 ms, first token 106.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.68 ms, first token 108.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.94 ms, first token 110.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.67 ms, first token 109.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.23 ms, first token 109.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.65 ms, first token 103.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.97 ms, first token 109.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.14 ms, first token 109.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.72 ms, first token 108.66 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.31 ms, first token 109.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.07 ms, first token 109.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.66 ms, first token 108.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.69 ms, first token 110.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.91 ms, first token 108.85 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.97 ms, first token 109.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.37 ms, first token 103.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 118.20 ms, first token 118.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.31 ms, first token 110.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.72 ms, first token 114.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 118.59 ms, first token 118.56 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.07 ms, first token 115.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.32 ms, first token 115.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.30 ms, first token 114.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 116.18 ms, first token 116.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.51 ms, first token 109.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.07 ms, first token 103.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.50 ms, first token 108.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.37 ms, first token 104.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.70 ms, first token 108.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.74 ms, first token 108.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.59 ms, first token 108.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.76 ms, first token 108.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.81 ms, first token 108.77 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.54 ms, first token 112.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.38 ms, first token 112.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.45 ms, first token 104.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.67 ms, first token 109.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.00 ms, first token 102.93 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.10 ms, first token 110.05 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.85 ms, first token 109.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.06 ms, first token 107.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.93 ms, first token 109.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.31 ms, first token 109.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.67 ms, first token 111.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.73 ms, first token 111.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 100.85 ms, first token 100.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.37 ms, first token 107.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.53 ms, first token 101.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 121.74 ms, first token 121.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.23 ms, first token 106.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.11 ms, first token 105.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.54 ms, first token 107.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.27 ms, first token 107.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.24 ms, first token 109.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.71 ms, first token 109.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.61 ms, first token 101.55 ms, 0 chars, 5120 prompt, 0 completion
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             791     0(0.00%) |     96      80     200     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              791     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    791     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2373     0(0.00%) |    105      80     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             805     0(0.00%) |     95      80     200     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              805     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    805     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2415     0(0.00%) |    104      80     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             819     0(0.00%) |     95      80     200     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              819     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    819     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2457     0(0.00%) |    104      80     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             834     0(0.00%) |     95      80     200     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              834     0(0.00%) |    109     100     202    110 |    6.90        0.00
+METRIC   total_latency                                                                    834     0(0.00%) |    109     100     202    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2502     0(0.00%) |    104      80     202    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             847     0(0.00%) |     95      80     200     89 |    7.10        0.00
+METRIC   time_to_first_token                                                              847     0(0.00%) |    109     100     202    110 |    7.10        0.00
+METRIC   total_latency                                                                    847     0(0.00%) |    109     100     202    110 |    7.10        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2541     0(0.00%) |    104      80     202    110 |   21.30        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             862     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              862     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    862     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2586     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             875     0(0.00%) |     96      80     200     89 |    7.10        0.00
+METRIC   time_to_first_token                                                              875     0(0.00%) |    109     100     202    110 |    7.10        0.00
+METRIC   total_latency                                                                    875     0(0.00%) |    109     100     202    110 |    7.10        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2625     0(0.00%) |    105      80     202    110 |   21.30        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             889     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              889     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    889     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2667     0(0.00%) |    105      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             902     0(0.00%) |     95      80     200     89 |    7.00        0.00
+METRIC   time_to_first_token                                                              902     0(0.00%) |    109     100     202    110 |    7.00        0.00
+METRIC   total_latency                                                                    902     0(0.00%) |    109     100     202    110 |    7.00        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2706     0(0.00%) |    104      80     202    110 |   21.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             915     0(0.00%) |     96      80     288     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              915     0(0.00%) |    109     100     291    110 |    6.90        0.00
+METRIC   total_latency                                                                    915     0(0.00%) |    109     100     291    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2745     0(0.00%) |    105      80     291    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             929     0(0.00%) |     96      80     288     89 |    6.80        0.00
+METRIC   time_to_first_token                                                              929     0(0.00%) |    109     100     291    110 |    6.80        0.00
+METRIC   total_latency                                                                    929     0(0.00%) |    109     100     291    110 |    6.80        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2787     0(0.00%) |    105      80     291    110 |   20.40        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             943     0(0.00%) |     96      80     288     89 |    6.70        0.00
+METRIC   time_to_first_token                                                              943     0(0.00%) |    109     100     291    110 |    6.70        0.00
+METRIC   total_latency                                                                    943     0(0.00%) |    109     100     291    110 |    6.70        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2829     0(0.00%) |    105      80     291    110 |   20.10        0.00
+
+Response received: total 111.99 ms, first token 111.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.45 ms, first token 102.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.45 ms, first token 110.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.87 ms, first token 106.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.42 ms, first token 106.36 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 147.82 ms, first token 147.78 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.62 ms, first token 109.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.34 ms, first token 110.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.47 ms, first token 112.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.12 ms, first token 105.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.15 ms, first token 110.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.05 ms, first token 103.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.81 ms, first token 109.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.54 ms, first token 111.47 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.14 ms, first token 110.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.72 ms, first token 108.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.68 ms, first token 109.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.59 ms, first token 113.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.94 ms, first token 108.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.19 ms, first token 103.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.00 ms, first token 109.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.24 ms, first token 104.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.19 ms, first token 115.14 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 126.55 ms, first token 126.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.75 ms, first token 110.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.61 ms, first token 108.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.94 ms, first token 109.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.64 ms, first token 109.56 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.58 ms, first token 109.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.17 ms, first token 103.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.50 ms, first token 110.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.93 ms, first token 103.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.41 ms, first token 108.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.65 ms, first token 108.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.25 ms, first token 106.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.75 ms, first token 109.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.49 ms, first token 111.39 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.78 ms, first token 110.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.14 ms, first token 113.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.55 ms, first token 102.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.37 ms, first token 113.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.25 ms, first token 103.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.56 ms, first token 109.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.80 ms, first token 114.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.05 ms, first token 106.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.49 ms, first token 109.44 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.14 ms, first token 109.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.56 ms, first token 111.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.19 ms, first token 112.14 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.81 ms, first token 102.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.79 ms, first token 109.72 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.52 ms, first token 103.47 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.74 ms, first token 108.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.33 ms, first token 109.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.67 ms, first token 108.60 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.21 ms, first token 109.14 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.45 ms, first token 109.39 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.77 ms, first token 109.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 140.48 ms, first token 140.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.79 ms, first token 102.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.86 ms, first token 109.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.22 ms, first token 106.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.96 ms, first token 109.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.07 ms, first token 110.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.07 ms, first token 106.03 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.86 ms, first token 110.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.54 ms, first token 110.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.28 ms, first token 109.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.72 ms, first token 110.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.61 ms, first token 103.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.99 ms, first token 109.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.01 ms, first token 103.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.81 ms, first token 109.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.03 ms, first token 110.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.19 ms, first token 107.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.31 ms, first token 111.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.02 ms, first token 110.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.10 ms, first token 111.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.36 ms, first token 111.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.11 ms, first token 106.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.02 ms, first token 111.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.94 ms, first token 102.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.35 ms, first token 112.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.72 ms, first token 109.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.34 ms, first token 108.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.27 ms, first token 109.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.34 ms, first token 110.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.64 ms, first token 109.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.41 ms, first token 109.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.03 ms, first token 102.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.40 ms, first token 108.33 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.38 ms, first token 103.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.75 ms, first token 110.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.45 ms, first token 111.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.98 ms, first token 105.94 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.99 ms, first token 107.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.82 ms, first token 109.79 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.15 ms, first token 109.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.88 ms, first token 112.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.41 ms, first token 103.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.30 ms, first token 108.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.42 ms, first token 102.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.19 ms, first token 111.14 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.06 ms, first token 108.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.64 ms, first token 107.59 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.26 ms, first token 108.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.83 ms, first token 109.78 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.69 ms, first token 109.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.52 ms, first token 108.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.18 ms, first token 104.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.56 ms, first token 109.51 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.17 ms, first token 103.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.35 ms, first token 110.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.30 ms, first token 111.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.37 ms, first token 106.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.94 ms, first token 109.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.73 ms, first token 107.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.22 ms, first token 109.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.64 ms, first token 111.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.48 ms, first token 104.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.97 ms, first token 108.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.94 ms, first token 104.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.80 ms, first token 112.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.08 ms, first token 106.05 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.17 ms, first token 108.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.23 ms, first token 108.19 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.22 ms, first token 111.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.74 ms, first token 108.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.34 ms, first token 104.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.72 ms, first token 109.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.42 ms, first token 102.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.89 ms, first token 108.85 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.60 ms, first token 110.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.82 ms, first token 107.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.97 ms, first token 109.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.73 ms, first token 109.65 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.88 ms, first token 112.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.56 ms, first token 110.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.21 ms, first token 105.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.64 ms, first token 112.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.19 ms, first token 103.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.60 ms, first token 109.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.28 ms, first token 107.22 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.78 ms, first token 108.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.68 ms, first token 111.60 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 134.57 ms, first token 134.45 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.46 ms, first token 110.39 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.59 ms, first token 114.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.18 ms, first token 113.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.39 ms, first token 103.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.07 ms, first token 110.02 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.42 ms, first token 108.36 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.94 ms, first token 107.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.78 ms, first token 109.75 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.42 ms, first token 107.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.10 ms, first token 109.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.03 ms, first token 109.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.77 ms, first token 103.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.29 ms, first token 110.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.17 ms, first token 103.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.88 ms, first token 109.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.65 ms, first token 110.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.49 ms, first token 107.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.84 ms, first token 109.77 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.30 ms, first token 112.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.45 ms, first token 110.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.87 ms, first token 112.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.02 ms, first token 103.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.20 ms, first token 112.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.42 ms, first token 105.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.94 ms, first token 110.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.31 ms, first token 109.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 170.97 ms, first token 170.83 ms, 0 chars, 5120 prompt, 0 completion
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             957     0(0.00%) |     96      80     288     89 |    6.80        0.00
+METRIC   time_to_first_token                                                              957     0(0.00%) |    109     100     291    110 |    6.80        0.00
+METRIC   total_latency                                                                    957     0(0.00%) |    109     100     291    110 |    6.80        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2871     0(0.00%) |    105      80     291    110 |   20.40        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             971     0(0.00%) |     96      80     288     89 |    6.80        0.00
+METRIC   time_to_first_token                                                              971     0(0.00%) |    109     100     291    110 |    6.80        0.00
+METRIC   total_latency                                                                    971     0(0.00%) |    109     100     291    110 |    6.80        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2913     0(0.00%) |    105      80     291    110 |   20.40        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             984     0(0.00%) |     96      80     288     89 |    6.80        0.00
+METRIC   time_to_first_token                                                              984     0(0.00%) |    109     100     291    110 |    6.80        0.00
+METRIC   total_latency                                                                    984     0(0.00%) |    109     100     291    110 |    6.80        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2952     0(0.00%) |    105      80     291    110 |   20.40        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                             997     0(0.00%) |     96      80     288     89 |    6.90        0.00
+METRIC   time_to_first_token                                                              997     0(0.00%) |    109     100     291    110 |    6.90        0.00
+METRIC   total_latency                                                                    997     0(0.00%) |    109     100     291    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      2991     0(0.00%) |    105      80     291    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                            1011     0(0.00%) |     96      80     288     89 |    6.90        0.00
+METRIC   time_to_first_token                                                             1011     0(0.00%) |    109     100     291    110 |    6.90        0.00
+METRIC   total_latency                                                                   1011     0(0.00%) |    109     100     291    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      3033     0(0.00%) |    105      80     291    110 |   20.70        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                            1025     0(0.00%) |     96      80     288     89 |    6.80        0.00
+METRIC   time_to_first_token                                                             1025     0(0.00%) |    109     100     291    110 |    6.80        0.00
+METRIC   total_latency                                                                   1025     0(0.00%) |    109     100     291    110 |    6.80        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      3075     0(0.00%) |    105      80     291    110 |   20.40        0.00
+
+[2026-02-21 14:13:00,402] Davids-MacBook-Pro-2.local/INFO/locust.main: writing html report to file: Results/batch_40.html
+[2026-02-21 14:13:00,403] Davids-MacBook-Pro-2.local/INFO/locust.main: Shutting down (exit code 0)
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+POST     /inference/v1/rerank                                                            1035     0(0.00%) |     96      80     288     89 |    6.90        0.00
+METRIC   completion_tokens                                                                  0     0(0.00%) |      0       0       0      0 |    0.00        0.00
+METRIC   latency_per_token                                                                  0     0(0.00%) |      0       0       0      0 |    0.00        0.00
+METRIC   overall_latency_per_token                                                          0     0(0.00%) |      0       0       0      0 |    0.00        0.00
+METRIC   prompt_tokens                                                                      0     0(0.00%) |      0       0       0      0 |    0.00        0.00
+METRIC   time_to_first_token                                                             1035     0(0.00%) |    109     100     291    110 |    6.90        0.00
+METRIC   total_latency                                                                   1035     0(0.00%) |    109     100     291    110 |    6.90        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      3105     0(0.00%) |    105      80     291    110 |   20.71        0.00
+
+Response time percentiles (approximated)
+Type     Name                                                                                  50%    66%    75%    80%    90%    95%    98%    99%  99.9% 99.99%   100% # reqs
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+POST     /inference/v1/rerank                                                                   89    110    110    110    110    110    120    140    200    290    290   1035
+METRIC   time_to_first_token                                                                   110    110    110    110    110    110    130    150    200    290    290   1035
+METRIC   total_latency                                                                         110    110    110    110    110    110    130    150    200    290    290   1035
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                            110    110    110    110    110    110    130    150    200    290    290   3105
+
+Response received: total 110.33 ms, first token 110.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.35 ms, first token 109.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.06 ms, first token 111.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.89 ms, first token 111.82 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.63 ms, first token 105.59 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.33 ms, first token 113.27 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.27 ms, first token 103.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.42 ms, first token 109.37 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.35 ms, first token 109.30 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.76 ms, first token 109.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.20 ms, first token 109.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.65 ms, first token 109.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.43 ms, first token 109.39 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.74 ms, first token 110.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.30 ms, first token 105.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.89 ms, first token 111.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.56 ms, first token 105.43 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.40 ms, first token 111.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.53 ms, first token 108.47 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.21 ms, first token 109.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.13 ms, first token 109.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.66 ms, first token 108.61 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.53 ms, first token 111.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.75 ms, first token 102.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.01 ms, first token 107.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.26 ms, first token 101.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.48 ms, first token 111.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.85 ms, first token 108.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.81 ms, first token 107.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.95 ms, first token 106.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.26 ms, first token 108.18 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.91 ms, first token 106.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 124.06 ms, first token 123.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.79 ms, first token 103.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.92 ms, first token 107.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 164.22 ms, first token 164.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.06 ms, first token 109.01 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.38 ms, first token 112.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.68 ms, first token 107.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.22 ms, first token 111.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 291.82 ms, first token 291.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 113.75 ms, first token 113.68 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.72 ms, first token 114.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.48 ms, first token 105.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.80 ms, first token 110.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.62 ms, first token 106.58 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.32 ms, first token 110.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.67 ms, first token 108.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.66 ms, first token 106.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.90 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.54 ms, first token 110.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.06 ms, first token 108.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.74 ms, first token 110.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.99 ms, first token 103.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.31 ms, first token 109.21 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.70 ms, first token 101.62 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.45 ms, first token 108.41 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.58 ms, first token 108.55 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.29 ms, first token 105.20 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.93 ms, first token 108.86 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.44 ms, first token 108.39 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.17 ms, first token 108.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.37 ms, first token 109.29 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.42 ms, first token 103.34 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.57 ms, first token 112.51 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 101.70 ms, first token 101.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.94 ms, first token 108.81 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.85 ms, first token 110.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.58 ms, first token 108.54 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.17 ms, first token 109.10 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.15 ms, first token 111.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.95 ms, first token 110.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.03 ms, first token 110.96 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.14 ms, first token 104.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.82 ms, first token 109.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.21 ms, first token 104.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.90 ms, first token 112.83 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 114.16 ms, first token 114.09 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.67 ms, first token 108.60 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.22 ms, first token 110.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.76 ms, first token 110.69 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.56 ms, first token 109.51 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.15 ms, first token 112.08 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.17 ms, first token 104.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.09 ms, first token 109.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.59 ms, first token 104.53 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.59 ms, first token 110.54 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.33 ms, first token 110.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.16 ms, first token 108.12 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.20 ms, first token 109.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.33 ms, first token 110.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.53 ms, first token 109.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.06 ms, first token 109.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.96 ms, first token 104.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.89 ms, first token 111.85 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.45 ms, first token 103.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.34 ms, first token 112.26 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.90 ms, first token 108.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.99 ms, first token 109.89 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.69 ms, first token 109.63 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.85 ms, first token 112.77 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.19 ms, first token 109.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.46 ms, first token 109.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.46 ms, first token 109.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.81 ms, first token 111.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.64 ms, first token 110.57 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.86 ms, first token 110.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.07 ms, first token 106.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.97 ms, first token 109.91 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 122.99 ms, first token 122.92 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.53 ms, first token 111.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.61 ms, first token 111.54 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.72 ms, first token 103.66 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.88 ms, first token 109.82 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.82 ms, first token 102.76 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.89 ms, first token 110.84 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 159.58 ms, first token 159.52 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.16 ms, first token 107.11 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.10 ms, first token 108.04 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.03 ms, first token 109.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.76 ms, first token 107.71 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.76 ms, first token 109.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.32 ms, first token 104.28 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.64 ms, first token 109.59 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.84 ms, first token 102.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.03 ms, first token 111.98 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.51 ms, first token 109.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.38 ms, first token 107.32 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.40 ms, first token 109.35 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.49 ms, first token 111.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 160.69 ms, first token 160.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.01 ms, first token 111.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.20 ms, first token 103.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.73 ms, first token 110.67 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.21 ms, first token 105.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.94 ms, first token 109.87 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.80 ms, first token 109.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.26 ms, first token 110.17 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.01 ms, first token 108.97 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.19 ms, first token 111.15 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.03 ms, first token 108.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.46 ms, first token 109.42 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.13 ms, first token 103.06 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.29 ms, first token 109.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 105.55 ms, first token 105.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.56 ms, first token 109.48 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 111.56 ms, first token 111.50 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 106.93 ms, first token 106.88 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.45 ms, first token 108.38 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.28 ms, first token 110.24 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.20 ms, first token 108.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 115.80 ms, first token 115.74 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.77 ms, first token 104.70 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.20 ms, first token 108.13 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 102.54 ms, first token 102.49 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.32 ms, first token 110.25 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 110.06 ms, first token 109.99 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.00 ms, first token 106.95 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.13 ms, first token 109.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.80 ms, first token 109.73 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.07 ms, first token 109.00 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 125.71 ms, first token 125.64 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 104.13 ms, first token 104.07 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 109.22 ms, first token 109.16 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 103.53 ms, first token 103.46 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 112.38 ms, first token 112.31 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 107.88 ms, first token 107.80 ms, 0 chars, 5120 prompt, 0 completion
+Response received: total 108.43 ms, first token 108.37 ms, 0 chars, 5120 prompt, 0 completion
+=================================== Summary ====================================
+Provider                 : fireworks
+Model                    : accounts/thumbtack/models/mismatch-model-v2#accounts/thumbtack/deployments/mismatch-model-v2-auto
+Prompt Tokens            : 0.0
+Completion Tokens        : 0.0
+Stream                   : True
+Temperature              : 1.0
+Logprobs                 : None
+Num Documents            : 40
+Tokens Per Document      : 128
+Concurrency              : 1
+Time To First Token      : 109.75033242529896
+Latency Per Token        : 0.0
+Overall Latency Per Token: 0.0
+Total Latency            : 109.81217788797825
+Num Requests             : 1035
+Qps                      : 6.903818453359805
+P50 Time To First Token  : 110.0
+P90 Time To First Token  : 110.0
+P95 Time To First Token  : 110.0
+P99 Time To First Token  : 150.0
+P99.9 Time To First Token: 200.0
+P50 Total Latency        : 110.0
+P90 Total Latency        : 110.0
+P95 Total Latency        : 110.0
+P99 Total Latency        : 150.0
+P99.9 Total Latency      : 200.0
+================================================================================
