@@ -66,6 +66,13 @@ Generation options:
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
 
+Embeddings and rerank options:
+- `--embeddings`: use the `/v1/embeddings` API instead of completions
+- `--rerank`: use the `/v1/rerank` API. The generated prompt text is split into documents (by paragraph), and `--rerank-query` is used as the query.
+- `--rerank-query`: the search query string for rerank requests. Defaults to a generic query if not specified.
+- `--rerank-top-n`: number of top results to return from the rerank endpoint.
+- `--rerank-return-documents` / `--no-rerank-return-documents`: whether to include document text in the rerank response (default: true).
+
 ### Writing results
 
 Locust prints out the detailed summary including quantiles of various metrics. Additionally, the script prints out the summary block at the very end of the output that includes the model being tested.
@@ -127,6 +134,18 @@ Benchmark Fireworks public deployment with 1 request and 2 images (1024w x 1024h
 
 ```bash
 locust -u 1  -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v3p1-8b-instruct --chat --prompt-images-with-resolutions 1024x1024 3084x1080
+```
+
+Benchmark Fireworks rerank deployment with a single request and 115k prompt tokens:
+
+```bash
+locust -u 1 -r 2 -H https://api.fireworks.ai/inference --api-key $FIREWORKS_API_KEY -m "accounts/fireworks/models/qwen3-reranker-8b" --rerank --prompt-tokens 115000 -t 3min --tokenizer /path/to/tokenizer --summary-file rerank_results.csv
+```
+
+Benchmark Fireworks rerank with a custom query and top-5 results:
+
+```bash
+locust -u 1 -r 2 -H https://api.fireworks.ai/inference --api-key $FIREWORKS_API_KEY -m "accounts/fireworks/models/qwen3-reranker-8b" --rerank --rerank-query "How do I reset my password?" --rerank-top-n 5 --prompt-tokens 4096 -t 1min --tokenizer /path/to/tokenizer
 ```
 
 Benchmark OpenAI deployment reading prompts from a file at 1 QPS:
