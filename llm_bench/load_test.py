@@ -737,6 +737,35 @@ class FireworksProvider(OpenAIProvider):
         else:
             self._acceptance_probs_override = None
 
+        forced_gen_path = parsed_options.forced_generation_file
+        if forced_gen_path is not None:
+            self._forced_generation_pool = itertools.cycle(
+                self._load_forced_generation_texts(forced_gen_path)
+            )
+        else:
+            self._forced_generation_pool = None
+
+    @staticmethod
+    def _load_forced_generation_texts(path):
+        texts = []
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict) and "text" in obj:
+                        texts.append(obj["text"])
+                    else:
+                        texts.append(line)
+                except json.JSONDecodeError:
+                    texts.append(line)
+        if not texts:
+            raise ValueError(f"--forced-generation-file '{path}' contains no text entries")
+        print(f"Loaded {len(texts)} forced generation texts from {path}")
+        return texts
+
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         if self.parsed_options.rerank:
@@ -747,6 +776,8 @@ class FireworksProvider(OpenAIProvider):
             data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
+        if self._forced_generation_pool is not None:
+            data["forced_generation"] = next(self._forced_generation_pool)
         return data
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
@@ -1551,6 +1582,14 @@ def init_parser(parser):
         help="JSON array of acceptance probabilities for speculative decoding override (e.g. '[0.9, 0.7, 0.5]'). "
         "Each element is the probability of accepting the draft token at that position (0.0-1.0). "
         "Injected as acceptance_probs_override in every request body. Fireworks-specific.",
+    )
+    parser.add_argument(
+        "--forced-generation-file",
+        type=str,
+        default=None,
+        help="Path to a file containing natural text completions for forced generation. "
+        "Supports plain text (one completion per line) or JSONL (one JSON object per line with a 'text' field). "
+        "Each request cycles through the pool so different requests get different forced texts. Fireworks-specific.",
     )
     parser.add_argument(
         "--header",
