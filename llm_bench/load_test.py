@@ -737,6 +737,67 @@ class FireworksProvider(OpenAIProvider):
         else:
             self._acceptance_probs_override = None
 
+        forced_gen_path = parsed_options.forced_generation_file
+        forced_gen_from_dataset = parsed_options.forced_generation_from_dataset
+        if forced_gen_path and forced_gen_from_dataset:
+            raise ValueError(
+                "--forced-generation-file and --forced-generation-from-dataset are mutually exclusive"
+            )
+
+        if forced_gen_path is not None:
+            self._forced_generation_pool = itertools.cycle(
+                self._load_forced_generation_texts(forced_gen_path)
+            )
+        elif forced_gen_from_dataset:
+            self._forced_generation_pool = itertools.cycle(
+                self._load_forced_generation_from_dataset(parsed_options.dataset)
+            )
+        else:
+            self._forced_generation_pool = None
+
+    @staticmethod
+    def _load_forced_generation_texts(path):
+        texts = []
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict) and "text" in obj:
+                        texts.append(obj["text"])
+                    else:
+                        texts.append(line)
+                except json.JSONDecodeError:
+                    texts.append(line)
+        if not texts:
+            raise ValueError(f"--forced-generation-file '{path}' contains no text entries")
+        print(f"Loaded {len(texts)} forced generation texts from {path}")
+        return texts
+
+    @staticmethod
+    def _load_forced_generation_from_dataset(dataset):
+        if dataset.startswith("@"):
+            raise ValueError(
+                "--forced-generation-from-dataset only works with 'limericks' or 'code' datasets, "
+                "not JSONL files. Use --forced-generation-file instead."
+            )
+        dataset_files = {"limericks": "limericks.txt", "code": "code.txt"}
+        if dataset not in dataset_files:
+            raise ValueError(
+                f"--forced-generation-from-dataset requires --dataset to be one of "
+                f"{list(dataset_files.keys())}, got '{dataset}'"
+            )
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_files[dataset])
+        with open(path, "r") as f:
+            text = f.read()
+        entries = [entry.strip() for entry in text.split("\n\n") if entry.strip()]
+        if not entries:
+            raise ValueError(f"Dataset file '{path}' contains no paragraph entries")
+        print(f"Loaded {len(entries)} forced generation entries from {dataset} dataset")
+        return entries
+
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
         if self.parsed_options.rerank:
@@ -747,6 +808,8 @@ class FireworksProvider(OpenAIProvider):
             data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
+        if self._forced_generation_pool is not None:
+            data["forced_generation"] = next(self._forced_generation_pool)
         return data
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
@@ -1551,6 +1614,24 @@ def init_parser(parser):
         help="JSON array of acceptance probabilities for speculative decoding override (e.g. '[0.9, 0.7, 0.5]'). "
         "Each element is the probability of accepting the draft token at that position (0.0-1.0). "
         "Injected as acceptance_probs_override in every request body. Fireworks-specific.",
+    )
+    parser.add_argument(
+        "--forced-generation-file",
+        type=str,
+        default=None,
+        help="Path to a file containing natural text completions for forced generation. "
+        "Supports plain text (one completion per line) or JSONL (one JSON object per line with a 'text' field). "
+        "Each request cycles through the pool so different requests get different forced texts. Fireworks-specific.",
+    )
+    parser.add_argument(
+        "--forced-generation-from-dataset",
+        action="store_true",
+        default=False,
+        help="Use the current --dataset (limericks or code) as forced generation text. "
+        "Parses the dataset file into paragraph-separated entries and cycles through them. "
+        "Each request gets a different entry for diverse expert routing. "
+        "Use with --acceptance-probs-override for representative MoE benchmarking. "
+        "Mutually exclusive with --forced-generation-file. Fireworks-specific.",
     )
     parser.add_argument(
         "--header",
