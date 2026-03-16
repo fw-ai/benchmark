@@ -28,6 +28,23 @@ except ImportError:
     print("locust-plugins is not installed, Grafana won't work")
 
 
+def _install_transformers_tokenizer_compat_shim():
+    """Patch moved helpers required by older remote tokenizer code."""
+    try:
+        import transformers.models.gpt2.tokenization_gpt2 as gpt2_module
+        from transformers.convert_slow_tokenizer import bytes_to_unicode
+    except ImportError:
+        return
+
+    if not hasattr(gpt2_module, "bytes_to_unicode"):
+        gpt2_module.bytes_to_unicode = bytes_to_unicode
+
+
+def _load_auto_tokenizer(tokenizer_path: str):
+    _install_transformers_tokenizer_compat_shim()
+    return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+
 def add_custom_metric(name, value, length_value=0):
     events.request.fire(
         request_type="METRIC",
@@ -52,7 +69,7 @@ class TranslationDataset:
         num_tokens: int,
         common_tokens: int,
     ):
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+        self._tokenizer = _load_auto_tokenizer(tokenizer_path)
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -457,9 +474,8 @@ class InitTracker:
             return None
         if cls.tokenizer:
             return cls.tokenizer
-        import transformers
 
-        cls.tokenizer = transformers.AutoTokenizer.from_pretrained(dir, trust_remote_code=True)
+        cls.tokenizer = _load_auto_tokenizer(dir)
         cls.tokenizer.add_bos_token = False
         cls.tokenizer.add_eos_token = False
         return cls.tokenizer
@@ -740,14 +756,10 @@ class FireworksProvider(OpenAIProvider):
         forced_gen_path = parsed_options.forced_generation_file
         forced_gen_from_dataset = parsed_options.forced_generation_from_dataset
         if forced_gen_path and forced_gen_from_dataset:
-            raise ValueError(
-                "--forced-generation-file and --forced-generation-from-dataset are mutually exclusive"
-            )
+            raise ValueError("--forced-generation-file and --forced-generation-from-dataset are mutually exclusive")
 
         if forced_gen_path is not None:
-            self._forced_generation_pool = itertools.cycle(
-                self._load_forced_generation_texts(forced_gen_path)
-            )
+            self._forced_generation_pool = itertools.cycle(self._load_forced_generation_texts(forced_gen_path))
         elif forced_gen_from_dataset:
             self._forced_generation_pool = itertools.cycle(
                 self._load_forced_generation_from_dataset(parsed_options.dataset)
@@ -1295,7 +1307,9 @@ class LLMUser(HttpUser):
             dur_generation = now - t_first_token
             dur_first_token = t_first_token - t_start
 
-            if not (self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank):
+            if not (
+                self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
+            ):
                 prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
 
             token_parts = []
@@ -1329,7 +1343,9 @@ class LLMUser(HttpUser):
                     num_tokens,
                 )
 
-            if not (self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank):
+            if not (
+                self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
+            ):
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
                 if cached_tokens is not None:
