@@ -1200,6 +1200,11 @@ class LLMUser(HttpUser):
                     # some providers (SGLang) send an empty chunk first skewing the TTFT
                     if combined_text and t_first_token is None:
                         t_first_token = now
+                        # Randomly cancel after first token if cancel_rate is set
+                        cancel_rate = getattr(self.environment.parsed_options, "cancel_rate", 0.0)
+                        if cancel_rate > 0.0 and random.random() < cancel_rate:
+                            response.success()
+                            return
 
                     if out.logprob_tokens:
                         total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
@@ -1496,6 +1501,12 @@ def init_parser(parser):
         choices=["constant", "uniform", "exponential"],
         default="constant",
         help="Must be used with --qps. Specifies how to space out requests: equally ('constant') or by sampling wait times from a distribution ('uniform' or 'exponential'). Expected QPS is going to match --qps",
+    )
+    parser.add_argument(
+        "--cancel-rate",
+        type=float,
+        default=0.0,
+        help="Probability (0.0-1.0) of cancelling a request after receiving the first token. E.g. 0.25 cancels 25%% of requests.",
     )
     parser.add_argument(
         "--burst",
