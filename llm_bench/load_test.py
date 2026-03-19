@@ -761,8 +761,13 @@ class FireworksProvider(OpenAIProvider):
         if forced_gen_path is not None:
             self._forced_generation_pool = itertools.cycle(self._load_forced_generation_texts(forced_gen_path))
         elif forced_gen_from_dataset:
-            self._forced_generation_pool = itertools.cycle(
-                self._load_forced_generation_from_dataset(parsed_options.dataset)
+            assert parsed_options.tokenizer is not None, (
+                "--tokenizer is required for --forced-generation-from-dataset"
+            )
+            self._forced_generation_pool = self._load_forced_generation_from_dataset(
+                dataset=parsed_options.dataset,
+                tokenizer=parsed_options.tokenizer,
+                max_tokens=parsed_options.max_tokens,
             )
         else:
             self._forced_generation_pool = None
@@ -789,7 +794,7 @@ class FireworksProvider(OpenAIProvider):
         return texts
 
     @staticmethod
-    def _load_forced_generation_from_dataset(dataset):
+    def _load_forced_generation_from_dataset(dataset, tokenizer, max_tokens):
         if dataset.startswith("@"):
             raise ValueError(
                 "--forced-generation-from-dataset only works with 'limericks' or 'code' datasets, "
@@ -802,13 +807,16 @@ class FireworksProvider(OpenAIProvider):
                 f"{list(dataset_files.keys())}, got '{dataset}'"
             )
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_files[dataset])
-        with open(path, "r") as f:
-            text = f.read()
-        entries = [entry.strip() for entry in text.split("\n\n") if entry.strip()]
-        if not entries:
-            raise ValueError(f"Dataset file '{path}' contains no paragraph entries")
-        print(f"Loaded {len(entries)} forced generation entries from {dataset} dataset")
-        return entries
+        ds = TranslationDataset(
+            path=path,
+            prompt="",
+            tokenizer_path=tokenizer,
+            chat=False,
+            num_tokens=max_tokens,
+            common_tokens=0,
+        )
+        print(f"Using TranslationDataset for forced generation ({dataset}, max_tokens={max_tokens})")
+        return (text for text, _tokens in ds)
 
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
