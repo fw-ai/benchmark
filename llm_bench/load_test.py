@@ -155,6 +155,7 @@ class JsonlDataset:
 
 class DatasetHolder:
     _instance = None
+    _forced_generation_instance = None
 
     @classmethod
     def _create_dataset(cls, options: argparse.Namespace):
@@ -195,6 +196,31 @@ class DatasetHolder:
         if cls._instance is None:
             cls._instance = cls._create_dataset(options)
         return cls._instance
+
+    @classmethod
+    def get_forced_generation_instance(cls, dataset, tokenizer, max_tokens):
+        if cls._forced_generation_instance is None:
+            if dataset.startswith("@"):
+                raise ValueError(
+                    "--forced-generation-from-dataset only works with 'limericks' or 'code' datasets, "
+                    "not JSONL files. Use --forced-generation-file instead."
+                )
+            dataset_files = {"limericks": "limericks.txt", "code": "code.txt"}
+            if dataset not in dataset_files:
+                raise ValueError(
+                    f"--forced-generation-from-dataset requires --dataset to be one of "
+                    f"{list(dataset_files.keys())}, got '{dataset}'"
+                )
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_files[dataset])
+            cls._forced_generation_instance = TranslationDataset(
+                path=path,
+                prompt="",
+                tokenizer_path=tokenizer,
+                chat=False,
+                num_tokens=max_tokens,
+                common_tokens=0,
+            )
+        return cls._forced_generation_instance
 
 
 class FixedQPSPacer:
@@ -761,14 +787,13 @@ class FireworksProvider(OpenAIProvider):
         if forced_gen_path is not None:
             self._forced_generation_pool = itertools.cycle(self._load_forced_generation_texts(forced_gen_path))
         elif forced_gen_from_dataset:
-            assert parsed_options.tokenizer is not None, (
-                "--tokenizer is required for --forced-generation-from-dataset"
-            )
-            self._forced_generation_pool = self._load_forced_generation_from_dataset(
+            assert parsed_options.tokenizer is not None, "--tokenizer is required for --forced-generation-from-dataset"
+            ds = DatasetHolder.get_forced_generation_instance(
                 dataset=parsed_options.dataset,
                 tokenizer=parsed_options.tokenizer,
                 max_tokens=parsed_options.max_tokens,
             )
+            self._forced_generation_pool = (text for text, _tokens in ds)
         else:
             self._forced_generation_pool = None
 
@@ -792,31 +817,6 @@ class FireworksProvider(OpenAIProvider):
             raise ValueError(f"--forced-generation-file '{path}' contains no text entries")
         print(f"Loaded {len(texts)} forced generation texts from {path}")
         return texts
-
-    @staticmethod
-    def _load_forced_generation_from_dataset(dataset, tokenizer, max_tokens):
-        if dataset.startswith("@"):
-            raise ValueError(
-                "--forced-generation-from-dataset only works with 'limericks' or 'code' datasets, "
-                "not JSONL files. Use --forced-generation-file instead."
-            )
-        dataset_files = {"limericks": "limericks.txt", "code": "code.txt"}
-        if dataset not in dataset_files:
-            raise ValueError(
-                f"--forced-generation-from-dataset requires --dataset to be one of "
-                f"{list(dataset_files.keys())}, got '{dataset}'"
-            )
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_files[dataset])
-        ds = TranslationDataset(
-            path=path,
-            prompt="",
-            tokenizer_path=tokenizer,
-            chat=False,
-            num_tokens=max_tokens,
-            common_tokens=0,
-        )
-        print(f"Using TranslationDataset for forced generation ({dataset}, max_tokens={max_tokens})")
-        return (text for text, _tokens in ds)
 
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
