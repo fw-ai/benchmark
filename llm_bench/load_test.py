@@ -281,7 +281,7 @@ class RampingPacer:
 
     _instance = None
 
-    def __init__(self, min_users, max_users, pct, warmup_time=30, max_spawn_rate=1):
+    def __init__(self, min_users, max_users, pct, warmup_time=30, max_spawn_rate=10):
         self.min_users = min_users
         self.max_users = max_users
         self.pct = pct
@@ -335,7 +335,7 @@ class RampingPacer:
         self._active_requests -= 1
 
     @classmethod
-    def instance(cls, min_users, max_users, pct, warmup_time=30, max_spawn_rate=1):
+    def instance(cls, min_users, max_users, pct, warmup_time=30, max_spawn_rate=10):
         if cls._instance is None:
             cls._instance = cls(min_users, max_users, pct, warmup_time, max_spawn_rate)
         else:
