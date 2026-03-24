@@ -56,6 +56,7 @@ def add_custom_metric(name, value, length_value=0):
     )
 
 
+PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 
@@ -631,7 +632,10 @@ class OpenAIProvider(BaseProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         if self.parsed_options.rerank:
-            documents = [doc.strip() for doc in prompt.split("\n\n") if doc.strip()]
+            if isinstance(prompt, list):
+                documents = prompt
+            else:
+                documents = [doc.strip() for doc in prompt.split("\n\n") if doc.strip()]
             query = self.parsed_options.rerank_query or "Find the most relevant document."
             data = {
                 "model": self.model,
@@ -654,6 +658,10 @@ class OpenAIProvider(BaseProvider):
                 data["return_logits"] = self.parsed_options.return_logits
             if self.parsed_options.normalize is not None:
                 data["normalize"] = self.parsed_options.normalize
+            if getattr(self.parsed_options, "embeddings_dimensions", None) is not None:
+                data["dimensions"] = self.parsed_options.embeddings_dimensions
+            if getattr(self.parsed_options, "embeddings_prompt_template", None) is not None:
+                data["prompt_template"] = self.parsed_options.embeddings_prompt_template
             return data
 
         data = {
@@ -1046,6 +1054,9 @@ class LLMUser(HttpUser):
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
 
         self.stream = self.environment.parsed_options.stream
+        # Rerank and embeddings endpoints are non-streaming single-response APIs
+        if self.environment.parsed_options.rerank or self.environment.parsed_options.embeddings:
+            self.stream = False
         self.ramping_pacer = None  # Will be set if --ramping-time is used
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
@@ -1123,6 +1134,18 @@ class LLMUser(HttpUser):
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
+        # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
+        if self.environment.parsed_options.rerank and (
+            getattr(self.environment.parsed_options, "num_documents", None) is not None
+            or getattr(self.environment.parsed_options, "tokens_per_document", None) is not None
+        ):
+            num_docs = getattr(self.environment.parsed_options, "num_documents", None) or 10
+            tokens_per_doc = getattr(self.environment.parsed_options, "tokens_per_document", None) or (
+                self.environment.parsed_options.prompt_tokens // num_docs
+            )
+            synthetic_prompt = "\n\n".join(PROMPT_PREFIX_TOKEN * tokens_per_doc for _ in range(num_docs))
+            self.dataset = iter(itertools.cycle([(synthetic_prompt, num_docs * tokens_per_doc)]))
+
     def _create_base64_image(self, width, height):
         """Create a random RGB image with the given dimensions and return as base64 data URI."""
         img = Image.new("RGB", (width, height))
@@ -1199,7 +1222,16 @@ class LLMUser(HttpUser):
 
     def _do_generate_text(self):
         max_tokens = self.max_tokens_sampler.sample()
-        prompt, prompt_tokens, images = self._get_input()
+        is_embeddings = self.provider_formatter.parsed_options.embeddings
+        batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
+        if is_embeddings and batch_size > 1:
+            prompts = []
+            for _ in range(batch_size):
+                p, _, _ = self._get_input()
+                prompts.append(p)
+            prompt, prompt_tokens, images = prompts, 0, None
+        else:
+            prompt, prompt_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
@@ -1243,9 +1275,14 @@ class LLMUser(HttpUser):
                         break
                     if self.provider_formatter.parsed_options.embeddings:
                         t_first_token = now
+                        resp_data = orjson.loads(chunk)
+                        usage = resp_data.get("usage", {})
+                        if usage.get("prompt_tokens"):
+                            prompt_tokens = usage["prompt_tokens"]
                         if self.environment.parsed_options.show_response:
-                            out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
-                            combined_text = out.text
+                            out = self.provider_formatter.parse_output_json(resp_data)
+                            combined_text = str(out.text)
+                        add_custom_metric("latency_per_embedding", (now - t_start) / batch_size * 1000)
                         break
                     if self.stream:
                         assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
@@ -1356,9 +1393,10 @@ class LLMUser(HttpUser):
                     num_tokens,
                 )
 
-            if not (
-                self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
-            ):
+            if self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank:
+                if prompt_tokens:
+                    add_custom_metric("prompt_tokens", prompt_tokens)
+            else:
                 if prompt_tokens:
                     add_custom_metric("prompt_tokens", prompt_tokens)
                 if cached_tokens is not None:
@@ -1468,6 +1506,20 @@ def init_parser(parser):
         help="For rerank: whether to return document text in response.",
     )
     parser.add_argument(
+        "--num-documents",
+        type=int,
+        default=None,
+        help="For rerank: number of synthetic documents to generate per request. "
+        "Used with --tokens-per-document to control document payload size.",
+    )
+    parser.add_argument(
+        "--tokens-per-document",
+        type=int,
+        default=None,
+        help="For rerank: approximate token count per synthetic document. "
+        "If set without --num-documents, defaults to 10 documents.",
+    )
+    parser.add_argument(
         "--return-logits",
         type=int,
         nargs="*",
@@ -1479,6 +1531,24 @@ def init_parser(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="For embeddings: apply L2 normalization to activations when return_logits is None, or softmax to selected logits when return_logits is provided.",
+    )
+    parser.add_argument(
+        "--embeddings-batch-size",
+        type=int,
+        default=1,
+        help="For embeddings: number of texts per request (sent as an array). Default 1.",
+    )
+    parser.add_argument(
+        "--embeddings-dimensions",
+        type=int,
+        default=None,
+        help="For embeddings: requested number of output dimensions.",
+    )
+    parser.add_argument(
+        "--embeddings-prompt-template",
+        type=str,
+        default=None,
+        help="For embeddings: Jinja2 template for structured input. Example: 'Embed this passage: {text}'",
     )
     parser.add_argument(
         "-p",
@@ -1722,30 +1792,54 @@ def _(environment, **kw):
         entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
     else:
         entries["concurrency"] = InitTracker.users
-    for metric_name in [
-        "time_to_first_token",
-        "latency_per_token",
-        "overall_latency_per_token",
-        "total_latency",
-        "completion_tokens",
-        "prompt_tokens",
-    ]:
-        entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
-    if ("cached_tokens", "METRIC") in environment.stats.entries:
-        entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
-    if not environment.parsed_options.stream:
-        # if there's no streaming these metrics are meaningless
-        entries["time_to_first_token"] = ""
-        entries["latency_per_token"] = ""
+
+    def _avg(metric_name):
+        entry = environment.stats.entries.get((metric_name, "METRIC"))
+        return entry.avg_response_time if entry else ""
+
+    if getattr(environment.parsed_options, "embeddings", False):
+        for metric_name in ["total_latency", "latency_per_embedding", "prompt_tokens"]:
+            entries[metric_name] = _avg(metric_name)
+        percentile_metrics = ["total_latency", "latency_per_embedding"]
+    elif getattr(environment.parsed_options, "rerank", False):
+        for metric_name in ["total_latency", "prompt_tokens"]:
+            entries[metric_name] = _avg(metric_name)
+        # Include rerank sweep params when set
+        num_docs = getattr(environment.parsed_options, "num_documents", None)
+        tokens_per_doc = getattr(environment.parsed_options, "tokens_per_document", None)
+        if num_docs is not None:
+            entries["num_documents"] = num_docs
+        if tokens_per_doc is not None:
+            entries["tokens_per_document"] = tokens_per_doc
+        percentile_metrics = ["total_latency"]
+    else:
+        for metric_name in [
+            "time_to_first_token",
+            "latency_per_token",
+            "overall_latency_per_token",
+            "total_latency",
+            "completion_tokens",
+            "prompt_tokens",
+        ]:
+            entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
+        if ("cached_tokens", "METRIC") in environment.stats.entries:
+            entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
+        if not environment.parsed_options.stream:
+            # if there's no streaming these metrics are meaningless
+            entries["time_to_first_token"] = ""
+            entries["latency_per_token"] = ""
+        percentile_metrics = ["time_to_first_token", "total_latency"]
+
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
     percentile_to_report = [50, 90, 95, 99, 99.9]
-    percentile_metrics = ["time_to_first_token", "total_latency"]
     for percentile_metric in percentile_metrics:
-        metrics = environment.stats.entries[percentile_metric, "METRIC"]
+        metric_entry = environment.stats.entries.get((percentile_metric, "METRIC"))
+        if metric_entry is None:
+            continue
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
-            entries[name] = metrics.get_response_time_percentile(percentile / 100)
+            entries[name] = metric_entry.get_response_time_percentile(percentile / 100)
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
