@@ -718,7 +718,8 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data):
         if self.parsed_options.rerank:
             usage = data.get("usage", {})
-            scores = [f"{item['index']}:{item['relevance_score']:.4f}" for item in data.get("data", [])]
+            results = data.get("results", data.get("data", []))
+            scores = [f"{item['index']}:{item['relevance_score']:.4f}" for item in results]
             return ChunkMetadata(
                 text=", ".join(scores),
                 logprob_tokens=None,
@@ -728,11 +729,12 @@ class OpenAIProvider(BaseProvider):
             )
 
         if self.parsed_options.embeddings:
+            usage = data.get("usage", {})
             return ChunkMetadata(
-                text=data["data"][0]["embedding"],
+                text=f"{len(data.get('data', []))} embeddings",
                 logprob_tokens=None,
                 completion_tokens=None,
-                prompt_tokens=None,
+                prompt_tokens=usage.get("prompt_tokens"),
                 cached_tokens=None,
             )
         usage = data.get("usage", None)
@@ -828,7 +830,7 @@ class FireworksProvider(OpenAIProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        if self.parsed_options.rerank:
+        if self.parsed_options.rerank or self.parsed_options.embeddings:
             return data
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
@@ -1158,6 +1160,10 @@ class LLMUser(HttpUser):
         prompt, prompt_tokens = next(self.dataset)
 
         if self.prompt_images:
+            if isinstance(prompt, dict) and "images" in prompt:
+                raise AssertionError(
+                    "Cannot use both --prompt-images-with-resolutions and images in prompt. Please provide only one of the two."
+                )
             images = self.prompt_images
             prompt_images_positioning = self.environment.parsed_options.prompt_images_positioning
             prompt = self.insert_image_placeholders(prompt, len(images), prompt_images_positioning)
