@@ -35,6 +35,34 @@ def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenize
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
 
+def resolve_max_seq_len(tokenizer_path: str) -> int:
+    config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
+    for name in (
+        "max_position_embeddings",
+        "model_max_length",
+        "max_sequence_length",
+        "seq_length",
+        "n_positions",
+    ):
+        v = getattr(config, name, None)
+        if isinstance(v, int) and v > 0:
+            return v
+    raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
+
+
+def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
+    pairs: list[tuple[int, int]] = []
+    s = min_seq_len
+    while s <= max_seq_len:
+        step = s // 8
+        for multiplier in [0, 1, 3, 5, 7]:
+            c = step * multiplier
+            if c <= s:
+                pairs.append((s, c))
+        s *= 2
+    return pairs
+
+
 def _dataset_path(dataset: str) -> str:
     name = "limericks.txt" if dataset == "limericks" else "code.txt"
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
@@ -170,6 +198,7 @@ def completions_url(base_url: str) -> str:
 class PairBenchmarkResult:
     prompt_tokens: int
     cached_tokens: int
+    num_prompts: int
     duration: float
     client_duration: float
     mean_fireworks_prompt_tokens: Optional[float]
@@ -203,11 +232,11 @@ def run_benchmark(
     api_key: str,
     dataset: str,
     pairs: list[tuple[int, int]],
-    min_prompt_tokens: int,
+    min_tokens_to_batch: int,
     max_tokens: int,
     rng_seed: Optional[int],
 ) -> list[PairBenchmarkResult]:
-    """Per-pair metrics: mTPM, total stage duration, mean Fireworks prompt/cached headers."""
+    """Per-pair prefill benchmark with multi-prompt batching."""
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(prompt_tokens for prompt_tokens, _ in pairs)
     chunks = load_chunks(dataset)
@@ -247,13 +276,12 @@ def run_benchmark(
         do_warmup()
 
         prompt_texts: list[str] = []
-        accumulated_tokens = 0
-        while accumulated_tokens < min_prompt_tokens:
+        batch_size = min_tokens_to_batch // prompt_tokens
+        for _ in range(batch_size):
             pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
             if len(pair_ids) != prompt_tokens:
                 raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
             prompt_texts.append(tokenizer.decode(pair_ids, skip_special_tokens=True))
-            accumulated_tokens += prompt_tokens
 
         print(
             f"Pair ({prompt_tokens}, {cached_tokens}): sending {len(prompt_texts)} prompts in one request",
@@ -265,7 +293,6 @@ def run_benchmark(
             raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
         wall = time.perf_counter() - wall_start
 
-        data = r.json()
         fwp = get_int_header(r.headers, "prompt-tokens")
         fwc = get_int_header(r.headers, "cached-prompt-tokens")
 
@@ -281,6 +308,7 @@ def run_benchmark(
             PairBenchmarkResult(
                 prompt_tokens=prompt_tokens,
                 cached_tokens=cached_tokens,
+                num_prompts=len(prompt_texts),
                 duration=st,
                 client_duration=wall,
                 mean_fireworks_prompt_tokens=fwp,
@@ -298,6 +326,7 @@ def format_table(rows: list[PairBenchmarkResult]) -> str:
             [
                 row.prompt_tokens,
                 row.cached_tokens,
+                row.num_prompts,
                 row.duration,
                 row.client_duration,
                 row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else "",
@@ -309,6 +338,7 @@ def format_table(rows: list[PairBenchmarkResult]) -> str:
         headers=[
             "prompt tokens",
             "cached tokens",
+            "num prompts",
             "server duration",
             "client duration",
             "server prompt tokens",
@@ -316,7 +346,7 @@ def format_table(rows: list[PairBenchmarkResult]) -> str:
         ],
         tablefmt="pipe",
         floatfmt=".6f",
-        colalign=("right",) * 6,
+        colalign=("right",) * 7,
     )
 
 
@@ -324,6 +354,7 @@ def format_csv(rows: list[PairBenchmarkResult]) -> str:
     headers = [
         "prompt_tokens",
         "cached_tokens",
+        "num_prompts",
         "server_duration",
         "client_duration",
         "server_prompt_tokens",
@@ -337,6 +368,7 @@ def format_csv(rows: list[PairBenchmarkResult]) -> str:
                 for v in [
                     row.prompt_tokens,
                     row.cached_tokens,
+                    row.num_prompts,
                     f"{row.duration:.6f}",
                     f"{row.client_duration:.6f}",
                     row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else "",
@@ -375,16 +407,29 @@ def main() -> None:
     )
     parser.add_argument("--dataset", choices=("limericks", "code"), default="limericks")
     parser.add_argument(
-        "-s",
-        "--seq-pairs",
-        required=True,
-        help="Comma-separated prompt_tokens:cached_tokens, e.g. 4096:2048,8192:4096",
+        "--max-seq-len",
+        type=int,
+        default=None,
+        help="Max sequence length (default: read from HF config).",
     )
     parser.add_argument(
-        "--min-prompt-tokens",
+        "--min-seq-len",
+        type=int,
+        default=1024,
+        help="Min sequence length for auto-generated pairs (default: 1024).",
+    )
+    parser.add_argument(
+        "-s",
+        "--seq-pairs",
+        default=None,
+        help="Comma-separated prompt_tokens:cached_tokens, e.g. 4096:2048,8192:4096. "
+        "If omitted, auto-generated from --max-seq-len.",
+    )
+    parser.add_argument(
+        "--min-tokens-to-batch",
         type=int,
         default=131_072,
-        help="Minimum total prompt tokens to accumulate per pair (default 128K).",
+        help="Minimum total prompt tokens to accumulate per batch (default 128K).",
     )
     parser.add_argument("--max-tokens", type=int, default=0, help="max_tokens for completions (default 0).")
     parser.add_argument(
@@ -404,7 +449,17 @@ def main() -> None:
     args = parser.parse_args()
     if not args.api_key:
         parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
-    pairs = parse_pairs_arg(args.seq_pairs)
+
+    max_seq_len = args.max_seq_len
+    if max_seq_len is None:
+        max_seq_len = resolve_max_seq_len(args.tokenizer)
+        print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
+
+    if args.seq_pairs is not None:
+        pairs = parse_pairs_arg(args.seq_pairs)
+    else:
+        pairs = generate_pairs(max_seq_len, min_seq_len=args.min_seq_len)
+        print(f"Auto-generated {len(pairs)} pairs from {args.min_seq_len} to {max_seq_len}", file=sys.stderr)
 
     rows = run_benchmark(
         tokenizer_path=args.tokenizer,
@@ -413,7 +468,7 @@ def main() -> None:
         api_key=args.api_key,
         dataset=args.dataset,
         pairs=pairs,
-        min_prompt_tokens=args.min_prompt_tokens,
+        min_tokens_to_batch=args.min_tokens_to_batch,
         max_tokens=args.max_tokens,
         rng_seed=args.seed,
     )
