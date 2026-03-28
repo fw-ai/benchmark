@@ -56,6 +56,174 @@ def add_custom_metric(name, value, length_value=0):
     )
 
 
+PERF_RESPONSE_METRIC_MAP = {
+    "server-time-to-first-token": ("server_time_to_first_token", 1000.0),
+    "server-processing-time": ("server_processing_time", 1000.0),
+    "tokenizer-queue-duration": ("tokenizer_queue_duration", 1000.0),
+    "tokenizer-duration": ("tokenizer_duration", 1000.0),
+    "prefill-queue-duration": ("prefill_queue_duration", 1000.0),
+    "prefill-duration": ("prefill_duration", 1000.0),
+    "generation-queue-duration": ("generation_queue_duration", 1000.0),
+    "num-concurrent-requests": ("num_concurrent_requests", 1.0),
+}
+
+
+def add_perf_response_metrics(perf_metrics):
+    if not perf_metrics:
+        return
+
+    for response_name, (metric_name, scale) in PERF_RESPONSE_METRIC_MAP.items():
+        raw_value = perf_metrics.get(response_name)
+        if raw_value in (None, ""):
+            continue
+        try:
+            add_custom_metric(metric_name, float(raw_value) * scale)
+        except (TypeError, ValueError):
+            print(f"WARNING: Failed to parse perf_metrics[{response_name!r}]={raw_value!r}")
+
+
+def extract_perf_response_metrics(perf_metrics):
+    if not perf_metrics:
+        return {}
+
+    metrics = {}
+    for response_name, (metric_name, scale) in PERF_RESPONSE_METRIC_MAP.items():
+        raw_value = perf_metrics.get(response_name)
+        if raw_value in (None, ""):
+            continue
+        try:
+            metrics[metric_name] = float(raw_value) * scale
+        except (TypeError, ValueError):
+            print(f"WARNING: Failed to parse perf_metrics[{response_name!r}]={raw_value!r}")
+    return metrics
+
+
+REQUEST_SUMMARY_METRICS = [
+    "time_to_first_token",
+    "latency_per_token",
+    "overall_latency_per_token",
+    "total_latency",
+    "completion_tokens",
+    "prompt_tokens",
+    "cached_tokens",
+    "server_time_to_first_token",
+    "server_processing_time",
+    "tokenizer_queue_duration",
+    "tokenizer_duration",
+    "prefill_queue_duration",
+    "prefill_duration",
+    "generation_queue_duration",
+    "num_concurrent_requests",
+]
+REQUEST_SUMMARY_PERCENTILES = [50, 90, 95, 99, 99.9]
+REQUEST_PERCENTILE_METRICS = [
+    "time_to_first_token",
+    "total_latency",
+    "server_time_to_first_token",
+    "server_processing_time",
+    "prefill_queue_duration",
+    "prefill_duration",
+    "generation_queue_duration",
+]
+
+
+def _request_metric_mean(values):
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _request_metric_percentile(values, percentile):
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * (percentile / 100.0)
+    lower_idx = int(rank)
+    upper_idx = min(lower_idx + 1, len(ordered) - 1)
+    fraction = rank - lower_idx
+    lower = ordered[lower_idx]
+    upper = ordered[upper_idx]
+    return lower + (upper - lower) * fraction
+
+
+class RequestMetricsAggregator:
+    metric_values = {}
+    num_requests = 0
+    num_failures = 0
+    measurement_start_monotonic = None
+    measurement_end_monotonic = None
+
+    @classmethod
+    def reset_measurement(cls):
+        cls.metric_values = {metric_name: [] for metric_name in REQUEST_SUMMARY_METRICS}
+        cls.num_requests = 0
+        cls.num_failures = 0
+        cls.measurement_start_monotonic = time.perf_counter()
+        cls.measurement_end_monotonic = None
+
+    @classmethod
+    def _touch(cls):
+        now = time.perf_counter()
+        if cls.measurement_start_monotonic is None:
+            cls.measurement_start_monotonic = now
+        cls.measurement_end_monotonic = now
+
+    @classmethod
+    def record_success(cls, metrics):
+        cls._touch()
+        cls.num_requests += 1
+        for metric_name, raw_value in metrics.items():
+            if raw_value is None:
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            cls.metric_values.setdefault(metric_name, []).append(value)
+
+    @classmethod
+    def record_failure(cls):
+        cls._touch()
+        cls.num_failures += 1
+
+    @classmethod
+    def build_summary(cls, environment):
+        entries = copy.copy(InitTracker.logging_params)
+        if environment.parsed_options.qps is not None:
+            entries["concurrency"] = (
+                f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
+            )
+        else:
+            entries["concurrency"] = InitTracker.users
+
+        for metric_name in REQUEST_SUMMARY_METRICS:
+            entries[metric_name] = _request_metric_mean(cls.metric_values.get(metric_name, []))
+
+        if not environment.parsed_options.stream:
+            entries["time_to_first_token"] = ""
+            entries["latency_per_token"] = ""
+
+        start = cls.measurement_start_monotonic
+        end = cls.measurement_end_monotonic or time.perf_counter()
+        duration = max(0.0, end - start) if start is not None else 0.0
+        entries["metric_source"] = "request_metrics"
+        entries["num_requests"] = cls.num_requests
+        entries["num_failures"] = cls.num_failures
+        entries["measurement_window_seconds"] = duration
+        entries["qps"] = (cls.num_requests / duration) if duration > 0 else 0.0
+
+        for percentile_metric in REQUEST_PERCENTILE_METRICS:
+            values = cls.metric_values.get(percentile_metric, [])
+            for percentile in REQUEST_SUMMARY_PERCENTILES:
+                name = f"P{percentile}_{percentile_metric}"
+                entries[name] = _request_metric_percentile(values, percentile) if values else ""
+
+        pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
+        return {pretty_name(k): v for k, v in entries.items()}
+
+
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 
@@ -491,6 +659,7 @@ class InitTracker:
         if cls.environment is None or cls.environment.runner is None:
             return
         print("Resetting stats after traffic reached a steady state")
+        RequestMetricsAggregator.reset_measurement()
         cls.environment.events.reset_stats.fire()
         cls.environment.runner.stats.reset_all()
 
@@ -508,6 +677,14 @@ class InitTracker:
 
 
 events.spawning_complete.add_listener(InitTracker.notify_spawning_complete)
+
+
+@events.request.add_listener
+def _track_request_failures(request_type, exception, **_kwargs):
+    if request_type == "METRIC":
+        return
+    if exception is not None:
+        RequestMetricsAggregator.record_failure()
 
 
 def _parse_run_time_to_seconds(run_time_value):
@@ -1364,6 +1541,20 @@ class LLMUser(HttpUser):
                 if cached_tokens is not None:
                     add_custom_metric("cached_tokens", cached_tokens)
 
+            add_perf_response_metrics(perf_metrics)
+            request_metrics = {
+                "total_latency": dur_total * 1000,
+                "time_to_first_token": (dur_first_token * 1000) if self.stream else None,
+                "completion_tokens": num_tokens,
+                "prompt_tokens": prompt_tokens,
+                "cached_tokens": cached_tokens,
+            }
+            if num_tokens:
+                request_metrics["latency_per_token"] = dur_generation / num_tokens * 1000
+                request_metrics["overall_latency_per_token"] = dur_total / num_tokens * 1000
+            request_metrics.update(extract_perf_response_metrics(perf_metrics))
+            RequestMetricsAggregator.record_success(request_metrics)
+
             # Allow provider to process response (e.g., for custom metrics)
             self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
 
@@ -1577,6 +1768,11 @@ def init_parser(parser):
         help="Append the line with the summary to the specified CSV file. Useful for generating a spreadsheet with perf sweep results. If the file doesn't exist, writes out the header first",
     )
     parser.add_argument(
+        "--request-metrics-file",
+        type=str,
+        help="Write the aggregated request-level metrics summary to the specified JSON file.",
+    )
+    parser.add_argument(
         "--qps",
         type=float,
         default=None,
@@ -1711,44 +1907,13 @@ def init_parser(parser):
 
 @events.quitting.add_listener
 def _(environment, **kw):
-    total_latency = environment.stats.entries[("total_latency", "METRIC")]
-    if environment.stats.total.num_failures > 0 or total_latency.num_requests == 0:
+    entries = RequestMetricsAggregator.build_summary(environment)
+    num_failures = int(entries.get("Num Failures", 0) or 0)
+    num_requests = int(entries.get("Num Requests", 0) or 0)
+    if num_failures > 0 or num_requests == 0:
         print("Test failed due to failed requests")
         environment.process_exit_code = 1
         return
-
-    entries = copy.copy(InitTracker.logging_params)
-    if environment.parsed_options.qps is not None:
-        entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
-    else:
-        entries["concurrency"] = InitTracker.users
-    for metric_name in [
-        "time_to_first_token",
-        "latency_per_token",
-        "overall_latency_per_token",
-        "total_latency",
-        "completion_tokens",
-        "prompt_tokens",
-    ]:
-        entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
-    if ("cached_tokens", "METRIC") in environment.stats.entries:
-        entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
-    if not environment.parsed_options.stream:
-        # if there's no streaming these metrics are meaningless
-        entries["time_to_first_token"] = ""
-        entries["latency_per_token"] = ""
-    entries["num_requests"] = total_latency.num_requests
-    entries["qps"] = total_latency.total_rps
-    percentile_to_report = [50, 90, 95, 99, 99.9]
-    percentile_metrics = ["time_to_first_token", "total_latency"]
-    for percentile_metric in percentile_metrics:
-        metrics = environment.stats.entries[percentile_metric, "METRIC"]
-        for percentile in percentile_to_report:
-            name = f"P{percentile}_{percentile_metric}"
-            entries[name] = metrics.get_response_time_percentile(percentile / 100)
-
-    pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
-    entries = {pretty_name(k): v for k, v in entries.items()}
 
     # print in the final event handler to make sure our output is the last one
     @events.quit.add_listener
@@ -1765,3 +1930,6 @@ def _(environment, **kw):
             if f.tell() == 0:
                 writer.writeheader()
             writer.writerow(entries)
+    if environment.parsed_options.request_metrics_file:
+        with open(environment.parsed_options.request_metrics_file, "w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, sort_keys=True)
