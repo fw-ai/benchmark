@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -205,6 +206,141 @@ class GenBenchmarkResult:
     client_duration: float
 
 
+def _run_pair_n_mode(
+    session: requests.Session,
+    url: str,
+    api_key: str,
+    model: Optional[str],
+    prompt_text: str,
+    max_tokens: int,
+    seq_len: int,
+    batch_size: int,
+    temperature: Optional[float],
+) -> GenBenchmarkResult:
+    """Single request with n=batch_size."""
+    print(
+        f"Pair (seq_len={seq_len}, batch_size={batch_size}): n={batch_size}, max_tokens={max_tokens}",
+        file=sys.stderr,
+    )
+
+    wall_start = time.perf_counter()
+    r = post_chat_completion(
+        session,
+        url,
+        api_key,
+        model,
+        prompt_text,
+        max_tokens=max_tokens,
+        n=batch_size,
+        temperature=temperature,
+    )
+    wall = time.perf_counter() - wall_start
+
+    if r.status_code != 200:
+        raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
+
+    gen_dur = get_header(r.headers, "generation-duration")
+    if gen_dur is None:
+        raise RuntimeError(
+            "Missing fireworks-generation-duration header (need dedicated deployment?). "
+            f"Got keys: {[k for k in r.headers.keys() if 'fireworks' in k.lower()]}"
+        )
+
+    resp_json = r.json()
+    completion_tokens = resp_json.get("usage", {}).get("completion_tokens", max_tokens * batch_size)
+    num_fwd = parse_num_forward_passes(r.headers, batch_size, completion_tokens)
+
+    fwp = get_int_header(r.headers, "prompt-tokens")
+    print(
+        f"  -> server prompt-tokens={fwp}, "
+        f"generation-duration={gen_dur:.6f}s, "
+        f"forward_passes={num_fwd}, client={wall:.2f}s",
+        file=sys.stderr,
+    )
+
+    return GenBenchmarkResult(
+        seq_len=seq_len,
+        batch_size=batch_size,
+        max_tokens=max_tokens,
+        generation_duration=gen_dur,
+        latency_per_forward=gen_dur / num_fwd,
+        client_duration=wall,
+    )
+
+
+def _run_pair_separate_mode(
+    url: str,
+    api_key: str,
+    model: Optional[str],
+    prompt_text: str,
+    max_tokens: int,
+    seq_len: int,
+    batch_size: int,
+    temperature: Optional[float],
+) -> GenBenchmarkResult:
+    """Send batch_size concurrent requests each with n=1."""
+    print(
+        f"Pair (seq_len={seq_len}, batch_size={batch_size}): "
+        f"{batch_size} separate requests, max_tokens={max_tokens}",
+        file=sys.stderr,
+    )
+
+    def _single_request() -> requests.Response:
+        s = requests.Session()
+        return post_chat_completion(
+            s,
+            url,
+            api_key,
+            model,
+            prompt_text,
+            max_tokens=max_tokens,
+            n=1,
+            temperature=temperature,
+        )
+
+    wall_start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=batch_size) as pool:
+        futures = [pool.submit(_single_request) for _ in range(batch_size)]
+        responses = []
+        for fut in as_completed(futures):
+            responses.append(fut.result())
+    wall = time.perf_counter() - wall_start
+
+    gen_durs: list[float] = []
+    fwd_counts: list[int] = []
+    for i, r in enumerate(responses):
+        if r.status_code != 200:
+            raise RuntimeError(f"Request {i} failed HTTP {r.status_code}: {r.text[:500]}")
+        gd = get_header(r.headers, "generation-duration")
+        if gd is None:
+            raise RuntimeError(
+                "Missing fireworks-generation-duration header (need dedicated deployment?). "
+                f"Got keys: {[k for k in r.headers.keys() if 'fireworks' in k.lower()]}"
+            )
+        gen_durs.append(gd)
+        resp_json = r.json()
+        ct = resp_json.get("usage", {}).get("completion_tokens", max_tokens)
+        fwd_counts.append(parse_num_forward_passes(r.headers, batch_size=1, completion_tokens=ct))
+
+    avg_gen_dur = sum(gen_durs) / len(gen_durs)
+    avg_fwd = sum(fwd_counts) / len(fwd_counts)
+
+    print(
+        f"  -> gen_dur avg={avg_gen_dur:.6f}s  min={min(gen_durs):.6f}s  max={max(gen_durs):.6f}s, "
+        f"fwd_passes avg={avg_fwd:.0f}, client={wall:.2f}s",
+        file=sys.stderr,
+    )
+
+    return GenBenchmarkResult(
+        seq_len=seq_len,
+        batch_size=batch_size,
+        max_tokens=max_tokens,
+        generation_duration=avg_gen_dur,
+        latency_per_forward=avg_gen_dur / avg_fwd,
+        client_duration=wall,
+    )
+
+
 def run_benchmark(
     tokenizer_path: str,
     model: Optional[str],
@@ -214,6 +350,7 @@ def run_benchmark(
     pairs: list[tuple[int, int]],
     max_tokens: int,
     temperature: Optional[float] = None,
+    separate_requests: bool = False,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(seq_len for seq_len, _ in pairs)
@@ -228,25 +365,10 @@ def run_benchmark(
     url = chat_completions_url(base_url)
     session = requests.Session()
 
-    # Warmup with the full-length prompt
-    warmup_ids = prefix_ids[: max_seq - len(suffix_ids)] + suffix_ids
-    warmup_prompt = tokenizer.decode(warmup_ids, skip_special_tokens=True)
-    print(f"Warmup: prompt tokens ~ {len(warmup_ids)}", file=sys.stderr)
-    t0 = time.perf_counter()
-    w = post_chat_completion(
-        session,
-        url,
-        api_key,
-        model,
-        warmup_prompt,
-        max_tokens=1,
-        n=1,
-        temperature=temperature,
-    )
-    elapsed_w = time.perf_counter() - t0
-    if w.status_code != 200:
-        raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
-    print(f"Warmup done in {elapsed_w:.2f}s", file=sys.stderr)
+    if separate_requests:
+        print("Mode: separate concurrent requests (no n>1)", file=sys.stderr)
+    else:
+        print("Mode: single request with n=batch_size", file=sys.stderr)
 
     results: list[GenBenchmarkResult] = []
 
@@ -254,57 +376,44 @@ def run_benchmark(
         prompt_ids = prefix_ids[: seq_len - len(suffix_ids)] + suffix_ids
         prompt_text = tokenizer.decode(prompt_ids, skip_special_tokens=True)
 
-        print(
-            f"Pair (seq_len={seq_len}, batch_size={batch_size}): " f"n={batch_size}, max_tokens={max_tokens}",
-            file=sys.stderr,
-        )
-
-        wall_start = time.perf_counter()
-        r = post_chat_completion(
+        # Warmup request.
+        w = post_chat_completion(
             session,
             url,
             api_key,
             model,
             prompt_text,
-            max_tokens=max_tokens,
-            n=batch_size,
+            max_tokens=1,
+            n=1,
             temperature=temperature,
         )
-        wall = time.perf_counter() - wall_start
+        if w.status_code != 200:
+            raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
 
-        if r.status_code != 200:
-            raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
-
-        gen_dur = get_header(r.headers, "generation-duration")
-        if gen_dur is None:
-            raise RuntimeError(
-                "Missing fireworks-generation-duration header (need dedicated deployment?). "
-                f"Got keys: {[k for k in r.headers.keys() if 'fireworks' in k.lower()]}"
-            )
-
-        resp_json = r.json()
-        completion_tokens = resp_json.get("usage", {}).get("completion_tokens", max_tokens * batch_size)
-        num_fwd = parse_num_forward_passes(r.headers, batch_size, completion_tokens)
-
-        fwp = get_int_header(r.headers, "prompt-tokens")
-        print(
-            f"  -> server prompt-tokens={fwp}, "
-            f"generation-duration={gen_dur:.6f}s, "
-            f"forward_passes={num_fwd}, client={wall:.2f}s",
-            file=sys.stderr,
-        )
-
-        lpf = gen_dur / num_fwd
-        results.append(
-            GenBenchmarkResult(
+        if separate_requests:
+            result = _run_pair_separate_mode(
+                url=url,
+                api_key=api_key,
+                model=model,
+                prompt_text=prompt_text,
+                max_tokens=max_tokens,
                 seq_len=seq_len,
                 batch_size=batch_size,
-                max_tokens=max_tokens,
-                generation_duration=gen_dur,
-                latency_per_forward=lpf,
-                client_duration=wall,
+                temperature=temperature,
             )
-        )
+        else:
+            result = _run_pair_n_mode(
+                session=session,
+                url=url,
+                api_key=api_key,
+                model=model,
+                prompt_text=prompt_text,
+                max_tokens=max_tokens,
+                seq_len=seq_len,
+                batch_size=batch_size,
+                temperature=temperature,
+            )
+        results.append(result)
 
     return results
 
@@ -411,6 +520,13 @@ def main() -> None:
         default=None,
         help="Sampling temperature (optional; omit to use server default).",
     )
+    parser.add_argument(
+        "--separate-requests",
+        action="store_true",
+        default=False,
+        help="Send batch_size separate concurrent requests (each with n=1) "
+        "instead of a single request with n=batch_size.",
+    )
 
     args = parser.parse_args()
     if not args.api_key:
@@ -444,6 +560,7 @@ def main() -> None:
         pairs=pairs,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        separate_requests=args.separate_requests,
     )
     if args.format == "csv":
         print(format_csv(rows))

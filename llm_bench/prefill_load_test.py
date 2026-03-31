@@ -50,7 +50,7 @@ def resolve_max_seq_len(tokenizer_path: str) -> int:
     raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
 
 
-def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
+def generate_pairs(max_seq_len: int, min_seq_len: int, kv_cache_block_size: int) -> list[tuple[int, int]]:
     pairs: list[tuple[int, int]] = []
     s = min_seq_len
     while s <= max_seq_len:
@@ -59,6 +59,9 @@ def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
             c = step * multiplier
             if c <= s:
                 pairs.append((s, c))
+        if step < kv_cache_block_size and kv_cache_block_size <= s:
+            pairs.append((s, kv_cache_block_size))
+            pairs.append((s, s - kv_cache_block_size))
         s *= 2
     return pairs
 
@@ -415,8 +418,14 @@ def main() -> None:
     parser.add_argument(
         "--min-seq-len",
         type=int,
-        default=1024,
-        help="Min sequence length for auto-generated pairs (default: 1024).",
+        default=None,
+        help="Min sequence length for auto-generated pairs (default: kv_cache_block_size * 8).",
+    )
+    parser.add_argument(
+        "--kv-cache-block-size",
+        type=int,
+        default=64,
+        help="KV cache block size (default: 64).",
     )
     parser.add_argument(
         "-s",
@@ -455,11 +464,14 @@ def main() -> None:
         max_seq_len = resolve_max_seq_len(args.tokenizer)
         print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
 
+    kv_cache_block_size = args.kv_cache_block_size
+    min_seq_len = args.min_seq_len if args.min_seq_len is not None else kv_cache_block_size * 8
+
     if args.seq_pairs is not None:
         pairs = parse_pairs_arg(args.seq_pairs)
     else:
-        pairs = generate_pairs(max_seq_len, min_seq_len=args.min_seq_len)
-        print(f"Auto-generated {len(pairs)} pairs from {args.min_seq_len} to {max_seq_len}", file=sys.stderr)
+        pairs = generate_pairs(max_seq_len, min_seq_len=min_seq_len, kv_cache_block_size=kv_cache_block_size)
+        print(f"Auto-generated {len(pairs)} pairs: {pairs}", file=sys.stderr)
 
     rows = run_benchmark(
         tokenizer_path=args.tokenizer,
