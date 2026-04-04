@@ -251,7 +251,7 @@ def run_benchmark(
     url = completions_url(base_url)
     session = requests.Session()
 
-    warmup_prompt = tokenizer.decode(base_ids, skip_special_tokens=True)
+    warmup_prompt = tokenizer.decode(base_ids[:-2], skip_special_tokens=True)
 
     def do_warmup() -> None:
         t0 = time.perf_counter()
@@ -284,7 +284,7 @@ def run_benchmark(
             pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
             if len(pair_ids) != prompt_tokens:
                 raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
-            prompt_texts.append(tokenizer.decode(pair_ids, skip_special_tokens=True))
+            prompt_texts.append(tokenizer.decode(pair_ids[:-2], skip_special_tokens=True))
 
         print(
             f"Pair ({prompt_tokens}, {cached_tokens}): sending {len(prompt_texts)} prompts in one request",
@@ -460,9 +460,12 @@ def main() -> None:
         parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
 
     max_seq_len = args.max_seq_len
+    hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
+    print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
     if max_seq_len is None:
-        max_seq_len = resolve_max_seq_len(args.tokenizer)
-        print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
+        max_seq_len = hf_max_seq_len
+    else:
+        max_seq_len = min(max_seq_len, hf_max_seq_len)
 
     kv_cache_block_size = args.kv_cache_block_size
     min_seq_len = args.min_seq_len if args.min_seq_len is not None else kv_cache_block_size * 8
