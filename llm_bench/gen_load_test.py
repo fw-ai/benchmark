@@ -539,9 +539,13 @@ def main() -> None:
             seq_lens = parse_int_list(args.seq_lens)
         else:
             max_seq_len = args.max_seq_len
+            hf_max = resolve_max_seq_len(args.tokenizer)
             if max_seq_len is None:
-                max_seq_len = resolve_max_seq_len(args.tokenizer)
+                max_seq_len = hf_max
                 print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
+            elif hf_max < max_seq_len:
+                print(f"Capping max_seq_len from {max_seq_len} to {hf_max} (HF config limit)", file=sys.stderr)
+                max_seq_len = hf_max
             seq_lens = generate_seq_lens(args.min_seq_len, max_seq_len)
         batch_sizes = get_profile_batch_sizes(args.max_batch_size)
         pairs = [(s, b) for s in seq_lens for b in batch_sizes]

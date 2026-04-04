@@ -460,9 +460,13 @@ def main() -> None:
         parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
 
     max_seq_len = args.max_seq_len
+    hf_max = resolve_max_seq_len(args.tokenizer)
     if max_seq_len is None:
-        max_seq_len = resolve_max_seq_len(args.tokenizer)
+        max_seq_len = hf_max
         print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
+    elif hf_max < max_seq_len:
+        print(f"Capping max_seq_len from {max_seq_len} to {hf_max} (HF config limit)", file=sys.stderr)
+        max_seq_len = hf_max
 
     kv_cache_block_size = args.kv_cache_block_size
     min_seq_len = args.min_seq_len if args.min_seq_len is not None else kv_cache_block_size * 8
