@@ -86,17 +86,14 @@ def build_ids_to_length(
     chunks: list[str],
     target_len: int,
 ) -> list[int]:
-    """Token ids from repeated limericks/code chunks, up to target_len."""
+    """Token ids from repeated limericks/code chunks, truncated to target_len (prefix kept)."""
     ids: list[int] = []
     i = 0
     while len(ids) < target_len and i < 1_000_000:
         lim = chunks[i % len(chunks)]
-        chunk_ids = tokenizer.encode(lim + "\n\n", add_special_tokens=False)
-        if len(ids) + len(chunk_ids) > target_len:
-            break
-        ids.extend(chunk_ids)
+        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
         i += 1
-    return ids
+    return ids[:target_len]
 
 
 def build_random_suffix_ids(
@@ -248,11 +245,13 @@ def run_benchmark(
     chunks = load_chunks(dataset)
 
     base_ids = build_ids_to_length(tokenizer, chunks, max_seq)
+    if len(base_ids) != max_seq:
+        raise RuntimeError(f"Internal error: base_ids length {len(base_ids)} != max_seq {max_seq}")
 
     url = completions_url(base_url)
     session = requests.Session()
 
-    warmup_prompt = tokenizer.decode(base_ids, skip_special_tokens=True)
+    warmup_prompt = tokenizer.decode(base_ids[:-2], skip_special_tokens=True)
 
     def do_warmup() -> None:
         t0 = time.perf_counter()
@@ -285,7 +284,7 @@ def run_benchmark(
             pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
             if len(pair_ids) != prompt_tokens:
                 raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
-            prompt_texts.append(tokenizer.decode(pair_ids, skip_special_tokens=True))
+            prompt_texts.append(tokenizer.decode(pair_ids[:-2], skip_special_tokens=True))
 
         print(
             f"Pair ({prompt_tokens}, {cached_tokens}): sending {len(prompt_texts)} prompts in one request",
@@ -461,20 +460,12 @@ def main() -> None:
         parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
 
     max_seq_len = args.max_seq_len
-    try:
-        hf_max = resolve_max_seq_len(args.tokenizer)
-        print(f"HF config max_seq_len={hf_max}", file=sys.stderr)
-    except ValueError:
-        hf_max = None
-        print("Could not infer max_seq_len from HF config", file=sys.stderr)
-
-    if max_seq_len is None and hf_max is not None:
-        max_seq_len = hf_max
-    elif max_seq_len is None:
-        parser.error("Cannot infer max_seq_len from HF config; pass --max-seq-len explicitly.")
-    elif hf_max is not None and hf_max < max_seq_len:
-        print(f"Capping max_seq_len from {max_seq_len} to {hf_max} (HF config limit)", file=sys.stderr)
-        max_seq_len = hf_max
+    hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
+    print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
+    if max_seq_len is None:
+        max_seq_len = hf_max_seq_len
+    else:
+        max_seq_len = min(max_seq_len, hf_max_seq_len)
 
     kv_cache_block_size = args.kv_cache_block_size
     min_seq_len = args.min_seq_len if args.min_seq_len is not None else kv_cache_block_size * 8

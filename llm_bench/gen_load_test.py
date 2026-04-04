@@ -79,6 +79,36 @@ def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenize
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
 
+def get_chat_template_overhead_tokens(
+    session: requests.Session,
+    url: str,
+    api_key: str,
+    model: Optional[str],
+    temperature: Optional[float],
+) -> int:
+    """Measure server-side chat template overhead via a single-token calibration request."""
+    r = post_chat_completion(
+        session,
+        url,
+        api_key,
+        model,
+        "x",
+        max_tokens=1,
+        n=1,
+        temperature=temperature,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Calibration request failed HTTP {r.status_code}: {r.text[:500]}")
+
+    server_tokens = get_int_header(r.headers, "prompt-tokens")
+    if server_tokens is None:
+        raise RuntimeError(
+            "Missing fireworks-prompt-tokens header in calibration response; "
+            "cannot determine chat template overhead."
+        )
+    return server_tokens + 1
+
+
 def _dataset_path(dataset: str) -> str:
     name = "limericks.txt" if dataset == "limericks" else "code.txt"
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
@@ -109,12 +139,9 @@ def build_ids_to_length(
     i = 0
     while len(ids) < target_len and i < 1_000_000:
         lim = chunks[i % len(chunks)]
-        chunk_ids = tokenizer.encode(lim + "\n\n", add_special_tokens=False)
-        if len(ids) + len(chunk_ids) > target_len:
-            break
-        ids.extend(chunk_ids)
+        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
         i += 1
-    return ids
+    return ids[:target_len]
 
 
 def get_header(headers: Mapping[str, str], short_key: str) -> Optional[float]:
@@ -362,9 +389,20 @@ def run_benchmark(
 
     suffix_ids = tokenizer.encode(suffix, add_special_tokens=False) if suffix else []
     prefix_ids = build_ids_to_length(tokenizer, chunks, max_seq)
+    if len(prefix_ids) + len(suffix_ids) < max_seq:
+        raise RuntimeError(f"Could only build {len(prefix_ids) + len(suffix_ids)} tokens from dataset, need {max_seq}")
 
     url = chat_completions_url(base_url)
     session = requests.Session()
+
+    chat_overhead = get_chat_template_overhead_tokens(
+        session,
+        url,
+        api_key,
+        model,
+        temperature,
+    )
+    print(f"Chat template overhead: {chat_overhead} tokens (server-calibrated)", file=sys.stderr)
 
     if separate_requests:
         print("Mode: separate concurrent requests (no n>1)", file=sys.stderr)
@@ -374,7 +412,7 @@ def run_benchmark(
     results: list[GenBenchmarkResult] = []
 
     for seq_len, batch_size in pairs:
-        prompt_ids = prefix_ids[: seq_len - len(suffix_ids)] + suffix_ids
+        prompt_ids = prefix_ids[: seq_len - chat_overhead - max_tokens - len(suffix_ids)] + suffix_ids
         prompt_text = tokenizer.decode(prompt_ids, skip_special_tokens=True)
 
         # Warmup request.
@@ -533,13 +571,6 @@ def main() -> None:
     if not args.api_key:
         parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
 
-    try:
-        hf_max = resolve_max_seq_len(args.tokenizer)
-        print(f"HF config max_seq_len={hf_max}", file=sys.stderr)
-    except ValueError:
-        hf_max = None
-        print("Could not infer max_seq_len from HF config", file=sys.stderr)
-
     if args.seq_batch_pairs is not None:
         pairs = parse_pairs_arg(args.seq_batch_pairs)
     else:
@@ -547,19 +578,21 @@ def main() -> None:
             seq_lens = parse_int_list(args.seq_lens)
         else:
             max_seq_len = args.max_seq_len
-            if max_seq_len is None and hf_max is not None:
-                max_seq_len = hf_max
-            elif max_seq_len is None:
-                parser.error("Cannot infer max_seq_len from HF config; pass --max-seq-len explicitly.")
-            elif hf_max is not None and hf_max < max_seq_len:
-                print(f"Capping max_seq_len from {max_seq_len} to {hf_max} (HF config limit)", file=sys.stderr)
-                max_seq_len = hf_max
+            hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
+            print(f"Resolved max_seq_len={hf_max_seq_len} from HF config", file=sys.stderr)
+            if max_seq_len is None:
+                max_seq_len = hf_max_seq_len
+            else:
+                max_seq_len = min(max_seq_len, hf_max_seq_len)
             seq_lens = generate_seq_lens(args.min_seq_len, max_seq_len)
         batch_sizes = get_profile_batch_sizes(args.max_batch_size)
         pairs = [(s, b) for s in seq_lens for b in batch_sizes]
 
     if args.max_kv_cache_entries is not None:
         pairs = [(s, b) for s, b in pairs if (s + args.max_tokens) * b <= args.max_kv_cache_entries]
+
+    if len(pairs) == 0:
+        raise RuntimeError("No seq:batch pairs")
 
     print(f"Using {len(pairs)} seq-batch pairs: {pairs}", file=sys.stderr)
 
