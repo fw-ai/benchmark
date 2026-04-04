@@ -104,12 +104,16 @@ def build_ids_to_length(
     tokenizer: transformers.PreTrainedTokenizer,
     chunks: list[str],
     target_len: int,
+    hard_max: Optional[int] = None,
 ) -> list[int]:
     ids: list[int] = []
     i = 0
     while len(ids) < target_len and i < 1_000_000:
         lim = chunks[i % len(chunks)]
-        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
+        chunk_ids = tokenizer.encode(lim + "\n\n", add_special_tokens=False)
+        if hard_max is not None and len(ids) + len(chunk_ids) > hard_max:
+            break
+        ids.extend(chunk_ids)
         i += 1
     return ids[:target_len]
 
@@ -351,6 +355,7 @@ def run_benchmark(
     max_tokens: int,
     temperature: Optional[float] = None,
     separate_requests: bool = False,
+    hard_max: Optional[int] = None,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(seq_len for seq_len, _ in pairs)
@@ -358,7 +363,7 @@ def run_benchmark(
     suffix = _DATASET_SUFFIXES.get(dataset, "")
 
     suffix_ids = tokenizer.encode(suffix, add_special_tokens=False) if suffix else []
-    prefix_ids = build_ids_to_length(tokenizer, chunks, max_seq)
+    prefix_ids = build_ids_to_length(tokenizer, chunks, max_seq, hard_max)
     if len(prefix_ids) + len(suffix_ids) < max_seq:
         raise RuntimeError(f"Could only build {len(prefix_ids) + len(suffix_ids)} tokens from dataset, need {max_seq}")
 
@@ -532,6 +537,9 @@ def main() -> None:
     if not args.api_key:
         parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
 
+    hf_max = resolve_max_seq_len(args.tokenizer)
+    print(f"HF config max_seq_len={hf_max}", file=sys.stderr)
+
     if args.seq_batch_pairs is not None:
         pairs = parse_pairs_arg(args.seq_batch_pairs)
     else:
@@ -539,10 +547,8 @@ def main() -> None:
             seq_lens = parse_int_list(args.seq_lens)
         else:
             max_seq_len = args.max_seq_len
-            hf_max = resolve_max_seq_len(args.tokenizer)
             if max_seq_len is None:
                 max_seq_len = hf_max
-                print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
             elif hf_max < max_seq_len:
                 print(f"Capping max_seq_len from {max_seq_len} to {hf_max} (HF config limit)", file=sys.stderr)
                 max_seq_len = hf_max
@@ -565,6 +571,7 @@ def main() -> None:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         separate_requests=args.separate_requests,
+        hard_max=hf_max,
     )
     if args.format == "csv":
         print(format_csv(rows))

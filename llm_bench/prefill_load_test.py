@@ -85,13 +85,17 @@ def build_ids_to_length(
     tokenizer: transformers.PreTrainedTokenizer,
     chunks: list[str],
     target_len: int,
+    hard_max: Optional[int] = None,
 ) -> list[int]:
     """Token ids from repeated limericks/code chunks, truncated to target_len (prefix kept)."""
     ids: list[int] = []
     i = 0
     while len(ids) < target_len and i < 1_000_000:
         lim = chunks[i % len(chunks)]
-        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
+        chunk_ids = tokenizer.encode(lim + "\n\n", add_special_tokens=False)
+        if hard_max is not None and len(ids) + len(chunk_ids) > hard_max:
+            break
+        ids.extend(chunk_ids)
         i += 1
     return ids[:target_len]
 
@@ -238,13 +242,14 @@ def run_benchmark(
     min_tokens_to_batch: int,
     max_tokens: int,
     rng_seed: Optional[int],
+    hard_max: Optional[int] = None,
 ) -> list[PairBenchmarkResult]:
     """Per-pair prefill benchmark with multi-prompt batching."""
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(prompt_tokens for prompt_tokens, _ in pairs)
     chunks = load_chunks(dataset)
 
-    base_ids = build_ids_to_length(tokenizer, chunks, max_seq)
+    base_ids = build_ids_to_length(tokenizer, chunks, max_seq, hard_max)
     if len(base_ids) != max_seq:
         raise RuntimeError(f"Internal error: base_ids length {len(base_ids)} != max_seq {max_seq}")
 
@@ -487,6 +492,7 @@ def main() -> None:
         min_tokens_to_batch=args.min_tokens_to_batch,
         max_tokens=args.max_tokens,
         rng_seed=args.seed,
+        hard_max=hf_max,
     )
     if args.format == "csv":
         print(format_csv(rows))
