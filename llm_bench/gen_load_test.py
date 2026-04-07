@@ -11,6 +11,7 @@ of target-model forward passes (speculation-aware).
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import time
@@ -18,6 +19,8 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 import requests
 import transformers
@@ -248,9 +251,9 @@ def _run_pair_n_mode(
     temperature: Optional[float],
 ) -> GenBenchmarkResult:
     """Single request with n=batch_size."""
-    print(
-        f"Pair (seq_len={seq_len}, batch_size={batch_size}): n={batch_size}, max_tokens={max_tokens}",
-        file=sys.stderr,
+    logger.info(
+        "Pair (seq_len=%d, batch_size=%d): n=%d, max_tokens=%d",
+        seq_len, batch_size, batch_size, max_tokens,
     )
 
     wall_start = time.perf_counter()
@@ -281,11 +284,9 @@ def _run_pair_n_mode(
     num_fwd = parse_num_forward_passes(r.headers, batch_size, completion_tokens)
 
     fwp = get_int_header(r.headers, "prompt-tokens")
-    print(
-        f"  -> server prompt-tokens={fwp}, "
-        f"generation-duration={gen_dur:.6f}s, "
-        f"forward_passes={num_fwd}, client={wall:.2f}s",
-        file=sys.stderr,
+    logger.info(
+        "  -> server prompt-tokens=%s, generation-duration=%.6fs, forward_passes=%s, client=%.2fs",
+        fwp, gen_dur, num_fwd, wall,
     )
 
     return GenBenchmarkResult(
@@ -309,10 +310,9 @@ def _run_pair_separate_mode(
     temperature: Optional[float],
 ) -> GenBenchmarkResult:
     """Send batch_size concurrent requests each with n=1."""
-    print(
-        f"Pair (seq_len={seq_len}, batch_size={batch_size}): "
-        f"{batch_size} separate requests, max_tokens={max_tokens}",
-        file=sys.stderr,
+    logger.info(
+        "Pair (seq_len=%d, batch_size=%d): %d separate requests, max_tokens=%d",
+        seq_len, batch_size, batch_size, max_tokens,
     )
 
     def _single_request() -> requests.Response:
@@ -355,10 +355,9 @@ def _run_pair_separate_mode(
     avg_gen_dur = sum(gen_durs) / len(gen_durs)
     avg_fwd = sum(fwd_counts) / len(fwd_counts)
 
-    print(
-        f"  -> gen_dur avg={avg_gen_dur:.6f}s  min={min(gen_durs):.6f}s  max={max(gen_durs):.6f}s, "
-        f"fwd_passes avg={avg_fwd:.0f}, client={wall:.2f}s",
-        file=sys.stderr,
+    logger.info(
+        "  -> gen_dur avg=%.6fs  min=%.6fs  max=%.6fs, fwd_passes avg=%.0f, client=%.2fs",
+        avg_gen_dur, min(gen_durs), max(gen_durs), avg_fwd, wall,
     )
 
     return GenBenchmarkResult(
@@ -381,6 +380,8 @@ def run_benchmark(
     max_tokens: int,
     temperature: Optional[float] = None,
     separate_requests: bool = False,
+    retries: int = 3,
+    retry_delay: float = 30.0,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(seq_len for seq_len, _ in pairs)
@@ -402,12 +403,12 @@ def run_benchmark(
         model,
         temperature,
     )
-    print(f"Chat template overhead: {chat_overhead} tokens (server-calibrated)", file=sys.stderr)
+    logger.info("Chat template overhead: %d tokens (server-calibrated)", chat_overhead)
 
     if separate_requests:
-        print("Mode: separate concurrent requests (no n>1)", file=sys.stderr)
+        logger.info("Mode: separate concurrent requests (no n>1)")
     else:
-        print("Mode: single request with n=batch_size", file=sys.stderr)
+        logger.info("Mode: single request with n=batch_size")
 
     results: list[GenBenchmarkResult] = []
 
@@ -415,44 +416,55 @@ def run_benchmark(
         prompt_ids = prefix_ids[: seq_len - chat_overhead - max_tokens - len(suffix_ids)] + suffix_ids
         prompt_text = tokenizer.decode(prompt_ids, skip_special_tokens=True)
 
-        # Warmup request.
-        w = post_chat_completion(
-            session,
-            url,
-            api_key,
-            model,
-            prompt_text,
-            max_tokens=1,
-            n=1,
-            temperature=temperature,
-        )
-        if w.status_code != 200:
-            raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
+        for attempt in range(1, retries + 1):
+            try:
+                w = post_chat_completion(
+                    session,
+                    url,
+                    api_key,
+                    model,
+                    prompt_text,
+                    max_tokens=1,
+                    n=1,
+                    temperature=temperature,
+                )
+                if w.status_code != 200:
+                    raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
 
-        if separate_requests:
-            result = _run_pair_separate_mode(
-                url=url,
-                api_key=api_key,
-                model=model,
-                prompt_text=prompt_text,
-                max_tokens=max_tokens,
-                seq_len=seq_len,
-                batch_size=batch_size,
-                temperature=temperature,
-            )
-        else:
-            result = _run_pair_n_mode(
-                session=session,
-                url=url,
-                api_key=api_key,
-                model=model,
-                prompt_text=prompt_text,
-                max_tokens=max_tokens,
-                seq_len=seq_len,
-                batch_size=batch_size,
-                temperature=temperature,
-            )
-        results.append(result)
+                if separate_requests:
+                    result = _run_pair_separate_mode(
+                        url=url,
+                        api_key=api_key,
+                        model=model,
+                        prompt_text=prompt_text,
+                        max_tokens=max_tokens,
+                        seq_len=seq_len,
+                        batch_size=batch_size,
+                        temperature=temperature,
+                    )
+                else:
+                    result = _run_pair_n_mode(
+                        session=session,
+                        url=url,
+                        api_key=api_key,
+                        model=model,
+                        prompt_text=prompt_text,
+                        max_tokens=max_tokens,
+                        seq_len=seq_len,
+                        batch_size=batch_size,
+                        temperature=temperature,
+                    )
+                results.append(result)
+                break
+            except Exception as e:
+                if attempt < retries:
+                    logger.warning(
+                        "Pair seq_len=%d batch_size=%d failed (attempt %d/%d): %s. Retrying in %.0fs ...",
+                        seq_len, batch_size, attempt, retries, e, retry_delay,
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    raise
 
     return results
 
@@ -478,6 +490,11 @@ def format_csv(rows: list[GenBenchmarkResult]) -> str:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
     parser = argparse.ArgumentParser(description="Generation (decode) latency benchmark (Fireworks chat completions).")
     parser.add_argument(
         "--tokenizer",
@@ -566,6 +583,18 @@ def main() -> None:
         help="Send batch_size separate concurrent requests (each with n=1) "
         "instead of a single request with n=batch_size.",
     )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=3,
+        help="Number of attempts per (seq_len, batch_size) pair (default: 3).",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=30.0,
+        help="Seconds to sleep between retries (default: 30).",
+    )
 
     args = parser.parse_args()
     if not args.api_key:
@@ -579,7 +608,7 @@ def main() -> None:
         else:
             max_seq_len = args.max_seq_len
             hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
-            print(f"Resolved max_seq_len={hf_max_seq_len} from HF config", file=sys.stderr)
+            logger.info("Resolved max_seq_len=%d from HF config", hf_max_seq_len)
             if max_seq_len is None:
                 max_seq_len = hf_max_seq_len
             else:
@@ -594,7 +623,7 @@ def main() -> None:
     if len(pairs) == 0:
         raise RuntimeError("No seq:batch pairs")
 
-    print(f"Using {len(pairs)} seq-batch pairs: {pairs}", file=sys.stderr)
+    logger.info("Using %d seq-batch pairs: %s", len(pairs), pairs)
 
     rows = run_benchmark(
         tokenizer_path=args.tokenizer,
@@ -606,6 +635,8 @@ def main() -> None:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         separate_requests=args.separate_requests,
+        retries=args.retries,
+        retry_delay=args.retry_delay,
     )
     if args.format == "csv":
         print(format_csv(rows))
