@@ -9,6 +9,7 @@ of prompts as a single multi-prompt request, reporting server and client duratio
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import random
 import sys
@@ -16,6 +17,8 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 import requests
 import transformers
@@ -238,6 +241,8 @@ def run_benchmark(
     min_tokens_to_batch: int,
     max_tokens: int,
     rng_seed: Optional[int],
+    retries: int = 3,
+    retry_delay: float = 30.0,
 ) -> list[PairBenchmarkResult]:
     """Per-pair prefill benchmark with multi-prompt batching."""
     tokenizer = _load_auto_tokenizer(tokenizer_path)
@@ -254,20 +259,9 @@ def run_benchmark(
     warmup_prompt = tokenizer.decode(base_ids[:-2], skip_special_tokens=True)
 
     def do_warmup() -> None:
-        t0 = time.perf_counter()
         w = post_completion(session, url, api_key, model, warmup_prompt, max_tokens)
-        elapsed_w = time.perf_counter() - t0
         if w.status_code != 200:
             raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
-        w_pt = get_int_header(w.headers, "prompt-tokens")
-        w_cached = get_int_header(w.headers, "cached-prompt-tokens")
-        print(
-            f"Warmup in {elapsed_w:.2f}s, prompt-tokens={w_pt}, cached={w_cached}",
-            file=sys.stderr,
-        )
-
-    print(f"Initial warmup, prompt tokens ~ {len(base_ids)} (max_prompt={max_seq})", file=sys.stderr)
-    do_warmup()
 
     results: list[PairBenchmarkResult] = []
     rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
@@ -276,48 +270,75 @@ def run_benchmark(
         if not (0 <= cached_tokens <= prompt_tokens):
             raise ValueError(f"Invalid pair ({prompt_tokens}, {cached_tokens}): need 0 <= cached <= prompt")
 
-        do_warmup()
+        for attempt in range(1, retries + 1):
+            try:
+                do_warmup()
 
-        prompt_texts: list[str] = []
-        batch_size = min_tokens_to_batch // prompt_tokens
-        for _ in range(batch_size):
-            pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
-            if len(pair_ids) != prompt_tokens:
-                raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
-            prompt_texts.append(tokenizer.decode(pair_ids[:-2], skip_special_tokens=True))
+                prompt_texts: list[str] = []
+                batch_size = min_tokens_to_batch // prompt_tokens
+                for _ in range(batch_size):
+                    pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
+                    if len(pair_ids) != prompt_tokens:
+                        raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
+                    prompt_texts.append(tokenizer.decode(pair_ids[:-2], skip_special_tokens=True))
 
-        print(
-            f"Pair ({prompt_tokens}, {cached_tokens}): sending {len(prompt_texts)} prompts in one request",
-            file=sys.stderr,
-        )
-        wall_start = time.perf_counter()
-        r = post_completion(session, url, api_key, model, prompt_texts, max_tokens)
-        if r.status_code != 200:
-            raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
-        wall = time.perf_counter() - wall_start
+                logger.info(
+                    "Pair (%d, %d): sending %d prompts in one request",
+                    prompt_tokens,
+                    cached_tokens,
+                    len(prompt_texts),
+                )
+                wall_start = time.perf_counter()
+                r = post_completion(session, url, api_key, model, prompt_texts, max_tokens)
+                if r.status_code != 200:
+                    raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
+                wall = time.perf_counter() - wall_start
 
-        fwp = get_int_header(r.headers, "prompt-tokens")
-        fwc = get_int_header(r.headers, "cached-prompt-tokens")
+                fwp = get_int_header(r.headers, "prompt-tokens")
+                fwc = get_int_header(r.headers, "cached-prompt-tokens")
 
-        server_processing = get_header(r.headers, "server-processing-time")
-        st = server_processing if server_processing is not None else sum_stage_seconds(r.headers)
-        if st is None:
-            raise RuntimeError(
-                "Missing Fireworks timing headers (need dedicated deployment?). "
-                f"Got keys: {list(r.headers.keys())[:30]}"
-            )
+                server_processing = get_header(r.headers, "server-processing-time")
+                st = server_processing if server_processing is not None else sum_stage_seconds(r.headers)
+                if st is None:
+                    raise RuntimeError(
+                        "Missing Fireworks timing headers (need dedicated deployment?). "
+                        f"Got keys: {list(r.headers.keys())[:30]}"
+                    )
 
-        results.append(
-            PairBenchmarkResult(
-                prompt_tokens=prompt_tokens,
-                cached_tokens=cached_tokens,
-                num_prompts=len(prompt_texts),
-                duration=st,
-                client_duration=wall,
-                mean_fireworks_prompt_tokens=fwp,
-                mean_fireworks_cached_prompt_tokens=fwc,
-            )
-        )
+                logger.info(
+                    "  -> server prompt-tokens=%s, cached=%s, server-duration=%.6fs, client=%.2fs",
+                    fwp,
+                    fwc,
+                    st,
+                    wall,
+                )
+
+                results.append(
+                    PairBenchmarkResult(
+                        prompt_tokens=prompt_tokens,
+                        cached_tokens=cached_tokens,
+                        num_prompts=len(prompt_texts),
+                        duration=st,
+                        client_duration=wall,
+                        mean_fireworks_prompt_tokens=fwp,
+                        mean_fireworks_cached_prompt_tokens=fwc,
+                    )
+                )
+                break
+            except Exception as e:
+                if attempt < retries:
+                    logger.warning(
+                        "Pair (%d, %d) failed (attempt %d/%d): %s. Retrying in %.0fs ...",
+                        prompt_tokens,
+                        cached_tokens,
+                        attempt,
+                        retries,
+                        e,
+                        retry_delay,
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    raise
 
     return results
 
@@ -387,6 +408,11 @@ def format_csv(rows: list[PairBenchmarkResult]) -> str:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
     parser = argparse.ArgumentParser(description="Prefill cache + mTPM benchmark (Fireworks completions).")
     parser.add_argument(
         "--tokenizer",
@@ -454,6 +480,18 @@ def main() -> None:
         default="table",
         help="Output format: pipe markdown table (default) or CSV.",
     )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=3,
+        help="Number of attempts per (prompt_tokens, cached_tokens) pair (default: 3).",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=30.0,
+        help="Seconds to sleep between retries (default: 30).",
+    )
 
     args = parser.parse_args()
     if not args.api_key:
@@ -461,7 +499,7 @@ def main() -> None:
 
     max_seq_len = args.max_seq_len
     hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
-    print(f"Resolved max_seq_len={max_seq_len} from HF config", file=sys.stderr)
+    logger.info("Resolved max_seq_len=%s from HF config", max_seq_len)
     if max_seq_len is None:
         max_seq_len = hf_max_seq_len
     else:
@@ -474,7 +512,7 @@ def main() -> None:
         pairs = parse_pairs_arg(args.seq_pairs)
     else:
         pairs = generate_pairs(max_seq_len, min_seq_len=min_seq_len, kv_cache_block_size=kv_cache_block_size)
-        print(f"Auto-generated {len(pairs)} pairs: {pairs}", file=sys.stderr)
+        logger.info("Auto-generated %d pairs: %s", len(pairs), pairs)
 
     rows = run_benchmark(
         tokenizer_path=args.tokenizer,
@@ -486,6 +524,8 @@ def main() -> None:
         min_tokens_to_batch=args.min_tokens_to_batch,
         max_tokens=args.max_tokens,
         rng_seed=args.seed,
+        retries=args.retries,
+        retry_delay=args.retry_delay,
     )
     if args.format == "csv":
         print(format_csv(rows))
