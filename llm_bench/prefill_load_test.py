@@ -62,7 +62,7 @@ def generate_pairs(max_seq_len: int, min_seq_len: int, kv_cache_block_size: int)
             c = step * multiplier
             if c <= s:
                 pairs.append((s, c))
-        if step < kv_cache_block_size and kv_cache_block_size <= s:
+        if kv_cache_block_size < step and kv_cache_block_size <= s:
             pairs.append((s, kv_cache_block_size))
             pairs.append((s, s - kv_cache_block_size))
         s *= 2
@@ -218,13 +218,17 @@ def post_completion(
     model: Optional[str],
     prompt: str | list[str],
     max_tokens: int,
+    prompt_cache_max_len: int | None = None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
         "prompt": prompt,
         "max_tokens": max_tokens,
         "stream": False,
         "temperature": 0.0,
+        "user": "0",  # NB: in case of DP w/ inline prefill we need to ensure generator stickiness
     }
+    if prompt_cache_max_len is not None:
+        payload["prompt_cache_max_len"] = prompt_cache_max_len
     if model is not None:
         payload["model"] = model
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -256,9 +260,8 @@ def run_benchmark(
     url = completions_url(base_url)
     session = requests.Session()
 
-    warmup_prompt = tokenizer.decode(base_ids[:-2], skip_special_tokens=True)
-
-    def do_warmup() -> None:
+    def do_warmup(cached_tokens: int) -> None:
+        warmup_prompt = tokenizer.decode(base_ids[:cached_tokens], skip_special_tokens=True)
         w = post_completion(session, url, api_key, model, warmup_prompt, max_tokens)
         if w.status_code != 200:
             raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
@@ -272,10 +275,11 @@ def run_benchmark(
 
         for attempt in range(1, retries + 1):
             try:
-                do_warmup()
+                if cached_tokens > 0:
+                    do_warmup(cached_tokens)
 
                 prompt_texts: list[str] = []
-                batch_size = min_tokens_to_batch // prompt_tokens
+                batch_size = max(1, min_tokens_to_batch // prompt_tokens)
                 for _ in range(batch_size):
                     pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
                     if len(pair_ids) != prompt_tokens:
@@ -289,7 +293,9 @@ def run_benchmark(
                     len(prompt_texts),
                 )
                 wall_start = time.perf_counter()
-                r = post_completion(session, url, api_key, model, prompt_texts, max_tokens)
+                r = post_completion(
+                    session, url, api_key, model, prompt_texts, max_tokens, prompt_cache_max_len=cached_tokens
+                )
                 if r.status_code != 200:
                     raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
                 wall = time.perf_counter() - wall_start
@@ -463,8 +469,8 @@ def main() -> None:
     parser.add_argument(
         "--min-tokens-to-batch",
         type=int,
-        default=131_072,
-        help="Minimum total prompt tokens to accumulate per batch (default 128K).",
+        default=65536,
+        help="Minimum total prompt tokens to accumulate per batch (default 64K).",
     )
     parser.add_argument("--max-tokens", type=int, default=0, help="max_tokens for completions (default 0).")
     parser.add_argument(
