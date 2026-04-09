@@ -199,6 +199,7 @@ def post_chat_completion(
     max_tokens: int,
     n: int,
     temperature: Optional[float] = None,
+    user: Optional[str] = None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
         "messages": [{"role": "user", "content": prompt}],
@@ -210,6 +211,8 @@ def post_chat_completion(
         payload["temperature"] = temperature
     if model is not None:
         payload["model"] = model
+    if user is not None:
+        payload["user"] = user
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     return session.post(url, headers=headers, json=payload, timeout=3600)
 
@@ -253,7 +256,10 @@ def _run_pair_n_mode(
     """Single request with n=batch_size."""
     logger.info(
         "Pair (seq_len=%d, batch_size=%d): n=%d, max_tokens=%d",
-        seq_len, batch_size, batch_size, max_tokens,
+        seq_len,
+        batch_size,
+        batch_size,
+        max_tokens,
     )
 
     wall_start = time.perf_counter()
@@ -286,7 +292,10 @@ def _run_pair_n_mode(
     fwp = get_int_header(r.headers, "prompt-tokens")
     logger.info(
         "  -> server prompt-tokens=%s, generation-duration=%.6fs, forward_passes=%s, client=%.2fs",
-        fwp, gen_dur, num_fwd, wall,
+        fwp,
+        gen_dur,
+        num_fwd,
+        wall,
     )
 
     return GenBenchmarkResult(
@@ -312,7 +321,10 @@ def _run_pair_separate_mode(
     """Send batch_size concurrent requests each with n=1."""
     logger.info(
         "Pair (seq_len=%d, batch_size=%d): %d separate requests, max_tokens=%d",
-        seq_len, batch_size, batch_size, max_tokens,
+        seq_len,
+        batch_size,
+        batch_size,
+        max_tokens,
     )
 
     def _single_request() -> requests.Response:
@@ -357,7 +369,11 @@ def _run_pair_separate_mode(
 
     logger.info(
         "  -> gen_dur avg=%.6fs  min=%.6fs  max=%.6fs, fwd_passes avg=%.0f, client=%.2fs",
-        avg_gen_dur, min(gen_durs), max(gen_durs), avg_fwd, wall,
+        avg_gen_dur,
+        min(gen_durs),
+        max(gen_durs),
+        avg_fwd,
+        wall,
     )
 
     return GenBenchmarkResult(
@@ -380,12 +396,17 @@ def run_benchmark(
     max_tokens: int,
     temperature: Optional[float] = None,
     separate_requests: bool = False,
+    warmup_requests: int = 1,
     retries: int = 3,
     retry_delay: float = 30.0,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(seq_len for seq_len, _ in pairs)
     chunks = load_chunks(dataset)
+    # permute chunks
+    import random
+
+    random.shuffle(chunks)
     suffix = _DATASET_SUFFIXES.get(dataset, "")
 
     suffix_ids = tokenizer.encode(suffix, add_special_tokens=False) if suffix else []
@@ -410,6 +431,35 @@ def run_benchmark(
     else:
         logger.info("Mode: single request with n=batch_size")
 
+    warmup_seq_len = max(seq_len for seq_len, _ in pairs)
+    warmup_prompt_ids = prefix_ids[: warmup_seq_len - chat_overhead - max_tokens - len(suffix_ids)] + suffix_ids
+    warmup_prompt_text = tokenizer.decode(warmup_prompt_ids, skip_special_tokens=True)
+    for i in range(1, warmup_requests + 1):
+        for attempt in range(1, retries + 1):
+            logger.info(
+                "Warmup %d/%d (seq_len=%d, attempt %d/%d) ...", i, warmup_requests, warmup_seq_len, attempt, retries
+            )
+            w = post_chat_completion(
+                session,
+                url,
+                api_key,
+                model,
+                warmup_prompt_text,
+                max_tokens=1,
+                n=1,
+                temperature=temperature,
+            )
+            if w.status_code == 200:
+                break
+            if attempt < retries:
+                logger.warning(
+                    "Warmup %d failed HTTP %d: %s. Retrying in %.0fs ...", i, w.status_code, w.text[:500], retry_delay
+                )
+                time.sleep(retry_delay)
+            else:
+                raise RuntimeError(f"Warmup {i} failed HTTP {w.status_code}: {w.text[:500]}")
+    logger.info("Warmup complete")
+
     results: list[GenBenchmarkResult] = []
 
     for seq_len, batch_size in pairs:
@@ -418,19 +468,6 @@ def run_benchmark(
 
         for attempt in range(1, retries + 1):
             try:
-                w = post_chat_completion(
-                    session,
-                    url,
-                    api_key,
-                    model,
-                    prompt_text,
-                    max_tokens=1,
-                    n=1,
-                    temperature=temperature,
-                )
-                if w.status_code != 200:
-                    raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
-
                 if separate_requests:
                     result = _run_pair_separate_mode(
                         url=url,
@@ -460,7 +497,12 @@ def run_benchmark(
                 if attempt < retries:
                     logger.warning(
                         "Pair seq_len=%d batch_size=%d failed (attempt %d/%d): %s. Retrying in %.0fs ...",
-                        seq_len, batch_size, attempt, retries, e, retry_delay,
+                        seq_len,
+                        batch_size,
+                        attempt,
+                        retries,
+                        e,
+                        retry_delay,
                     )
                     time.sleep(retry_delay)
                 else:
@@ -584,6 +626,13 @@ def main() -> None:
         "instead of a single request with n=batch_size.",
     )
     parser.add_argument(
+        "--warmup-requests",
+        type=int,
+        default=64,
+        help="Number of warmup requests to send before running pairs (default: 1). "
+        "Each warmup uses the max context length across all pairs. Keep it largs enough to make sure that all in case of inline DP all generators are warmed up",
+    )
+    parser.add_argument(
         "--retries",
         type=int,
         default=3,
@@ -623,6 +672,9 @@ def main() -> None:
     if len(pairs) == 0:
         raise RuntimeError("No seq:batch pairs")
 
+    # Sort by seq_len descending to guarantee full prompt cache hit rate.
+    pairs.sort(key=lambda p: p[0], reverse=True)
+
     logger.info("Using %d seq-batch pairs: %s", len(pairs), pairs)
 
     rows = run_benchmark(
@@ -635,6 +687,7 @@ def main() -> None:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         separate_requests=args.separate_requests,
+        warmup_requests=args.warmup_requests,
         retries=args.retries,
         retry_delay=args.retry_delay,
     )
