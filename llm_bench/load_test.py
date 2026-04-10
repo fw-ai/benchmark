@@ -832,8 +832,8 @@ class FireworksProvider(OpenAIProvider):
             return data
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
-        if self.parsed_options.prompt_cache_max_pct is not None:
-            data["prompt_cache_max_pct"] = int(self.parsed_options.prompt_cache_max_pct)
+        if self.parsed_options.prompt_cache_max_len:
+            data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
         if self._forced_generation_pool is not None:
@@ -1703,14 +1703,6 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
-    )
-    parser.add_argument(
-        "--prompt-cache-max-pct",
-        env_var="PROMPT_CACHE_MAX_PCT",
-        type=float,
-        default=None,
-        help="(Fireworks only) Maximum percentage of prompt tokens to use for prompt cache (0-100). "
-        "Passed as prompt_cache_max_pct in the API request. Ignored for other providers.",
     )
     parser.add_argument(
         "--acceptance-probs-override",
