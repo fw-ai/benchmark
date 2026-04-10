@@ -56,6 +56,9 @@ def get_profile_batch_sizes(max_batch_size: int) -> list[int]:
 
 def resolve_max_seq_len(tokenizer_path: str) -> int:
     config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
+    # For VLMs (e.g. Kimi K2.5, LLaMA Vision), max_position_embeddings lives
+    # under text_config rather than at the top level.
+    config = config.get_text_config()
     for name in (
         "max_position_embeddings",
         "model_max_length",
