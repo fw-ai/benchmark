@@ -1,8 +1,11 @@
-locust
-tabulate
-orjson
-pillow
+locust==2.18.1
+orjson==3.9.10
+pillow==10.0.0
+
 gevent
-transformers
 locust-plugins
+pandas
+python-dotenv
+tabulate
 tiktoken
+transformers

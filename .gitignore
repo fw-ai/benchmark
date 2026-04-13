@@ -4,3 +4,4 @@ __pycache__/
 llm_bench/results/
 .env
 env/
+.venv*/
