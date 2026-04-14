@@ -145,7 +145,7 @@ def build_ids_to_length(
     i = 0
     while len(ids) < target_len and i < 1_000_000:
         lim = chunks[i % len(chunks)]
-        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
+        ids.extend(tokenizer.encode(lim + "\n\n"))
         i += 1
     return ids[:target_len]
 
@@ -408,7 +408,7 @@ def run_benchmark(
     chunks = load_chunks(dataset)
     suffix = _DATASET_SUFFIXES.get(dataset, "")
 
-    suffix_ids = tokenizer.encode(suffix, add_special_tokens=False) if suffix else []
+    suffix_ids = tokenizer.encode(suffix) if suffix else []
     prefix_ids = build_ids_to_length(tokenizer, chunks, max_seq)
     if len(prefix_ids) + len(suffix_ids) < max_seq:
         raise RuntimeError(f"Could only build {len(prefix_ids) + len(suffix_ids)} tokens from dataset, need {max_seq}")
@@ -432,7 +432,7 @@ def run_benchmark(
 
     warmup_seq_len = max(seq_len for seq_len, _ in pairs)
     warmup_prompt_ids = prefix_ids[: warmup_seq_len - chat_overhead - max_tokens - len(suffix_ids)] + suffix_ids
-    warmup_prompt_text = tokenizer.decode(warmup_prompt_ids, skip_special_tokens=True)
+    warmup_prompt_text = tokenizer.decode(warmup_prompt_ids)
     for i in range(1, warmup_requests + 1):
         for attempt in range(1, retries + 1):
             logger.info(
@@ -463,7 +463,7 @@ def run_benchmark(
 
     for seq_len, batch_size in pairs:
         prompt_ids = prefix_ids[: seq_len - chat_overhead - max_tokens - len(suffix_ids)] + suffix_ids
-        prompt_text = tokenizer.decode(prompt_ids, skip_special_tokens=True)
+        prompt_text = tokenizer.decode(prompt_ids)
 
         for attempt in range(1, retries + 1):
             try:
