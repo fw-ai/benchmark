@@ -923,6 +923,101 @@ class TogetherProvider(OpenAIProvider):
         return super().parse_output_json(data)
 
 
+class TritonInferProvider(BaseProvider):
+    """Triton Inference Server — /v2/models/{model}/infer endpoint (non-streaming only)."""
+
+    DEFAULT_MODEL_NAME = "ensemble"
+
+    def get_url(self):
+        assert not self.parsed_options.chat, "Chat is not supported"
+        assert not self.parsed_options.stream, "Streaming is not supported"
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
+        return f"/v2/models/{self.model}/infer"
+
+    def format_payload(self, prompt, max_tokens, images):
+        assert isinstance(prompt, str), "prompt must be a string"
+        assert images is None, "images are not supported"
+        assert self.parsed_options.logprobs is None, "logprobs are not supported"
+        # Store prompt so parse_output_json can strip the echoed prefix from the response.
+        self._last_prompt = prompt
+        return {
+            "inputs": [
+                {"name": "text_input", "datatype": "BYTES", "shape": [1, 1], "data": [[prompt]]},
+                {"name": "max_tokens", "datatype": "UINT32", "shape": [1, 1], "data": [[max_tokens]]},
+                {"name": "bad_words", "datatype": "BYTES", "shape": [1, 1], "data": [[""]]},
+                {"name": "stop_words", "datatype": "BYTES", "shape": [1, 1], "data": [[""]]},
+                {"name": "temperature", "datatype": "FP32", "shape": [1, 1], "data": [[self.parsed_options.temperature]]},
+            ]
+        }
+
+    def parse_output_json(self, data):
+        prompt = getattr(self, "_last_prompt", "")
+        for output in data["outputs"]:
+            if output["name"] == "text_output":
+                assert output["datatype"] == "BYTES"
+                assert output["shape"] == [1]
+                text = output["data"][0]
+                # Triton echoes the prompt in the response; strip it.
+                text = text.removeprefix("<s> ")
+                if text.startswith(prompt):
+                    text = text[len(prompt):].removeprefix(" ")
+                else:
+                    print("WARNING: prompt not found in the output")
+                return ChunkMetadata(
+                    text=text,
+                    logprob_tokens=None,
+                    completion_tokens=None,
+                    prompt_tokens=None,
+                    cached_tokens=None,
+                )
+        raise ValueError("text_output not found in the response")
+
+
+class TritonGenerateProvider(BaseProvider):
+    """Triton Inference Server — /v2/models/{model}/generate[_stream] endpoint."""
+
+    DEFAULT_MODEL_NAME = "ensemble"
+
+    def get_url(self):
+        assert not self.parsed_options.chat, "Chat is not supported"
+        assert self.parsed_options.n == 1, "n > 1 is not supported"
+        stream_suffix = "_stream" if self.parsed_options.stream else ""
+        return f"/v2/models/{self.model}/generate{stream_suffix}"
+
+    def format_payload(self, prompt, max_tokens, images):
+        assert isinstance(prompt, str), "prompt must be a string"
+        assert images is None, "images are not supported"
+        assert self.parsed_options.logprobs is None, "logprobs are not supported"
+        # Store prompt so parse_output_json can strip the echoed prefix in non-streaming mode.
+        self._last_prompt = prompt
+        return {
+            "text_input": prompt,
+            "max_tokens": max_tokens,
+            "stream": self.parsed_options.stream,
+            "temperature": self.parsed_options.temperature,
+            "bad_words": "",
+            "stop_words": "",
+        }
+
+    def parse_output_json(self, data):
+        text = data["text_output"]
+        if not self.parsed_options.stream:
+            # Non-streaming: Triton echoes the prompt in the response; strip it.
+            prompt = getattr(self, "_last_prompt", "")
+            text = text.removeprefix("<s> ")
+            if text.startswith(prompt):
+                text = text[len(prompt):].removeprefix(" ")
+            else:
+                print("WARNING: prompt not found in the output")
+        return ChunkMetadata(
+            text=text,
+            logprob_tokens=None,
+            completion_tokens=None,
+            prompt_tokens=None,
+            cached_tokens=None,
+        )
+
+
 class TgiProvider(BaseProvider):
     DEFAULT_MODEL_NAME = "<unused>"
 
@@ -972,8 +1067,11 @@ PROVIDER_CLASS_MAP = {
     "vllm": VllmProvider,
     "sglang": VllmProvider,
     "openai": OpenAIProvider,
+    "anyscale": OpenAIProvider,
     "together": TogetherProvider,
     "tgi": TgiProvider,
+    "triton-infer": TritonInferProvider,
+    "triton-generate": TritonGenerateProvider,
 }
 
 
@@ -1812,7 +1910,7 @@ def _(environment, **kw):
             "num_tokens",
             "prompt_tokens",
         ]:
-            entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
+            entries[metric_name] = _avg(metric_name)
         if ("cached_tokens", "METRIC") in environment.stats.entries:
             entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
         if not environment.parsed_options.stream:
