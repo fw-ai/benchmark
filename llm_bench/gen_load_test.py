@@ -406,10 +406,6 @@ def run_benchmark(
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(seq_len for seq_len, _ in pairs)
     chunks = load_chunks(dataset)
-    # permute chunks
-    import random
-
-    random.shuffle(chunks)
     suffix = _DATASET_SUFFIXES.get(dataset, "")
 
     suffix_ids = tokenizer.encode(suffix, add_special_tokens=False) if suffix else []
@@ -659,11 +655,16 @@ def main() -> None:
             seq_lens = parse_int_list(args.seq_lens)
         else:
             max_seq_len = args.max_seq_len
-            hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
-            logger.info("Resolved max_seq_len=%d from HF config", hf_max_seq_len)
+            try:
+                hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
+                logger.info("Resolved max_seq_len=%d from HF config", hf_max_seq_len)
+            except ValueError:
+                hf_max_seq_len = None
+                if max_seq_len is None:
+                    parser.error("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
             if max_seq_len is None:
                 max_seq_len = hf_max_seq_len
-            else:
+            elif hf_max_seq_len is not None:
                 max_seq_len = min(max_seq_len, hf_max_seq_len)
             seq_lens = generate_seq_lens(args.min_seq_len, max_seq_len)
         batch_sizes = get_profile_batch_sizes(args.max_batch_size)

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 import requests
 import transformers
+
 from tabulate import tabulate
 
 FW_HEADER_PREFIX = "fireworks-"
@@ -56,7 +57,7 @@ def resolve_max_seq_len(tokenizer_path: str) -> int:
     raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
 
 
-def generate_pairs(max_seq_len: int, min_seq_len: int, kv_cache_block_size: int) -> list[tuple[int, int]]:
+def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
     pairs: list[tuple[int, int]] = []
     s = min_seq_len
     while s <= max_seq_len:
@@ -65,9 +66,6 @@ def generate_pairs(max_seq_len: int, min_seq_len: int, kv_cache_block_size: int)
             c = step * multiplier
             if c <= s:
                 pairs.append((s, c))
-        if kv_cache_block_size < step and kv_cache_block_size <= s:
-            pairs.append((s, kv_cache_block_size))
-            pairs.append((s, s - kv_cache_block_size))
         s *= 2
     return pairs
 
@@ -97,7 +95,7 @@ def build_ids_to_length(
     i = 0
     while len(ids) < target_len and i < 1_000_000:
         lim = chunks[i % len(chunks)]
-        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
+        ids.extend(tokenizer.encode(lim + "\n\n"))
         i += 1
     return ids[:target_len]
 
@@ -115,7 +113,7 @@ def build_random_suffix_ids(
     i = 0
     while len(ids) < need_len and i < 1_000_000:
         lim = rng.choice(chunks)
-        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
+        ids.extend(tokenizer.encode(lim + "\n\n"))
         i += 1
     return ids[:need_len]
 
@@ -507,11 +505,16 @@ def main() -> None:
         parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
 
     max_seq_len = args.max_seq_len
-    hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
-    logger.info("Resolved max_seq_len=%s from HF config", max_seq_len)
+    try:
+        hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
+        logger.info("Resolved max_seq_len=%s from HF config", hf_max_seq_len)
+    except ValueError:
+        hf_max_seq_len = None
+        if max_seq_len is None:
+            parser.error("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
     if max_seq_len is None:
         max_seq_len = hf_max_seq_len
-    else:
+    elif hf_max_seq_len is not None:
         max_seq_len = min(max_seq_len, hf_max_seq_len)
 
     kv_cache_block_size = args.kv_cache_block_size
@@ -520,7 +523,7 @@ def main() -> None:
     if args.seq_pairs is not None:
         pairs = parse_pairs_arg(args.seq_pairs)
     else:
-        pairs = generate_pairs(max_seq_len, min_seq_len=min_seq_len, kv_cache_block_size=kv_cache_block_size)
+        pairs = generate_pairs(max_seq_len, min_seq_len=min_seq_len)
         logger.info("Auto-generated %d pairs: %s", len(pairs), pairs)
 
     rows = run_benchmark(
