@@ -737,6 +737,18 @@ class OpenAIProvider(BaseProvider):
             )
         usage = data.get("usage", None)
 
+        # Trailing usage-only SSE chunk (choices absent or empty) — return metadata
+        # without trying to extract text from a missing choice.
+        if len(data.get("choices", [])) == 0:
+            prompt_tokens_details = (usage or {}).get("prompt_tokens_details") or {}
+            return ChunkMetadata(
+                text="",
+                logprob_tokens=None,
+                completion_tokens=usage.get("completion_tokens") if usage else None,
+                prompt_tokens=usage.get("prompt_tokens") if usage else None,
+                cached_tokens=prompt_tokens_details.get("cached_tokens"),
+            )
+
         assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
         choice = data["choices"][0]
         if self.parsed_options.chat:
@@ -1246,7 +1258,6 @@ class LLMUser(HttpUser):
             catch_response=True,
         ) as response:
             combined_text = ""
-            done_empty_chunk = False
             done = False
             completion_tokens = None
             total_logprob_tokens = None
@@ -1290,24 +1301,10 @@ class LLMUser(HttpUser):
                         if chunk.strip() == b"[DONE]":
                             done = True
                             continue
-                    if done_empty_chunk:
-                        print(f"WARNING: Received more chunks after the trailing last chunk: {chunk}")
                     data = orjson.loads(chunk)
                     # Capture perf_metrics if present (usually in final usage chunk)
                     if data.get("perf_metrics"):
                         perf_metrics = data["perf_metrics"]
-                    if not data.get("choices"):
-                        usage = data.get("usage")
-                        if usage and usage.get("completion_tokens"):
-                            completion_tokens = usage["completion_tokens"]
-                        if usage and usage.get("prompt_tokens"):
-                            prompt_tokens = usage["prompt_tokens"]
-                        if usage:
-                            prompt_tokens_details = usage.get("prompt_tokens_details") or {}
-                            if prompt_tokens_details.get("cached_tokens") is not None:
-                                cached_tokens = prompt_tokens_details["cached_tokens"]
-                        done_empty_chunk = True
-                        continue
                     out = self.provider_formatter.parse_output_json(data)
                     if out.completion_tokens:
                         completion_tokens = out.completion_tokens
@@ -1386,6 +1383,7 @@ class LLMUser(HttpUser):
                 if num_tokens != max_tokens:
                     print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
                 add_custom_metric("completion_tokens", num_tokens)
+                add_custom_metric("num_tokens", num_tokens)
                 add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
                 add_custom_metric(
                     "overall_latency_per_token",
@@ -1811,6 +1809,7 @@ def _(environment, **kw):
             "overall_latency_per_token",
             "total_latency",
             "completion_tokens",
+            "num_tokens",
             "prompt_tokens",
         ]:
             entries[metric_name] = environment.stats.entries[(metric_name, "METRIC")].avg_response_time
