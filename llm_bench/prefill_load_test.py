@@ -66,7 +66,7 @@ def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
             c = step * multiplier
             if c <= s:
                 pairs.append((s, c))
-        s *= 2
+        s *= 4
     return pairs
 
 
@@ -280,7 +280,8 @@ def run_benchmark(
                     do_warmup(cached_tokens)
 
                 prompt_texts: list[str] = []
-                batch_size = max(1, min_tokens_to_batch // prompt_tokens)
+                uncached_tokens = prompt_tokens - cached_tokens
+                batch_size = max(1, min_tokens_to_batch // uncached_tokens)
                 for _ in range(batch_size):
                     pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
                     if len(pair_ids) != prompt_tokens:
