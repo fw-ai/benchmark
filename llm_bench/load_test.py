@@ -587,6 +587,7 @@ class ChunkMetadata:
     completion_tokens: Optional[int]
     prompt_tokens: Optional[int]
     cached_tokens: Optional[int]
+    has_reasoning_only: bool = False  # chunk has reasoning/thinking content but no visible content
 
 
 class BaseProvider(abc.ABC):
@@ -756,12 +757,18 @@ class OpenAIProvider(BaseProvider):
                 block = choice["delta"]
             else:
                 block = choice["message"]
+            has_content = bool(block.get("content"))
+            has_reasoning = bool(block.get("reasoning_content") or block.get("reasoning"))
+            has_reasoning_only = has_reasoning and not has_content
             text = (
                 (block.get("reasoning", "") or "")
                 + (block.get("reasoning_content", "") or "")
                 + (block.get("content", "") or "")
             )
         else:
+            # Completions API: no reasoning_content field exists in the schema;
+            # thinking tokens (if any) appear raw in text and cannot be separated.
+            has_reasoning_only = False
             text = choice["text"]
 
         logprobs = choice.get("logprobs", None)
@@ -777,6 +784,7 @@ class OpenAIProvider(BaseProvider):
 
         return ChunkMetadata(
             text=text,
+            has_reasoning_only=has_reasoning_only,
             logprob_tokens=logprob_tokens,
             completion_tokens=usage["completion_tokens"] if usage else None,
             prompt_tokens=usage.get("prompt_tokens", None) if usage else None,
@@ -842,6 +850,8 @@ class FireworksProvider(OpenAIProvider):
         data = super().format_payload(prompt, max_tokens, images)
         if self.parsed_options.rerank:
             return data
+        if self.parsed_options.force_min_tokens:
+            data["min_tokens"] = max_tokens
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
         if self.parsed_options.prompt_cache_max_len:
@@ -1171,6 +1181,19 @@ class LLMUser(HttpUser):
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         self.prompt_images = None
+        if self.environment.parsed_options.first_visible_token:
+            if not self.environment.parsed_options.chat:
+                raise AssertionError(
+                    "--first-visible-token requires --chat. The completions API exposes thinking tokens "
+                    "inline in `text` without a separate `reasoning_content` field, so thinking and "
+                    "visible tokens cannot be distinguished."
+                )
+            if not self.environment.parsed_options.stream:
+                raise AssertionError(
+                    "--first-visible-token requires --stream. Non-streaming responses arrive all at once, "
+                    "so there is no per-chunk timestamp to distinguish thinking from visible tokens."
+                )
+
         if image_resolutions:
             if not self.environment.parsed_options.chat:
                 # Using regular /completions endpoint, each model has it's own image placeholder
@@ -1366,6 +1389,7 @@ class LLMUser(HttpUser):
             except Exception as e:
                 raise RuntimeError(f"Error in response: {response.text}") from e
             t_first_token = None
+            t_first_visible_token = None
             for chunk in response.iter_lines(delimiter=b"\n\n"):
                 if len(chunk) == 0:
                     continue  # come providers send empty lines between data chunks
@@ -1412,14 +1436,23 @@ class LLMUser(HttpUser):
                         cached_tokens = out.cached_tokens
                     combined_text += out.text
 
-                    # some providers (SGLang) send an empty chunk first skewing the TTFT
-                    if combined_text and t_first_token is None:
+                    # some providers (SGLang) send an empty chunk first skewing the TTFT;
+                    # completion_tokens handles invisible-token deployments where combined_text
+                    # stays empty but usage.completion_tokens is non-zero (e.g. Maverick-style)
+                    if (combined_text or completion_tokens) and t_first_token is None:
                         t_first_token = now
                         # Randomly cancel after first token if cancel_rate is set
                         cancel_rate = getattr(self.environment.parsed_options, "cancel_rate", 0.0)
                         if cancel_rate > 0.0 and random.random() < cancel_rate:
                             response.success()
                             return
+
+                    # Track first visible (non-reasoning) token separately.
+                    # has_reasoning_only is False for transition chunks (both reasoning + content),
+                    # so t_first_visible_token fires correctly at the end of the thinking phase.
+                    if combined_text and not out.has_reasoning_only and t_first_visible_token is None:
+                        t_first_visible_token = now
+
 
                     if out.logprob_tokens:
                         total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
@@ -1449,8 +1482,13 @@ class LLMUser(HttpUser):
             num_chars = len(combined_text)
             now = time.perf_counter()
             dur_total = now - t_start
-            dur_generation = now - t_first_token
-            dur_first_token = t_first_token - t_start
+
+            use_first_visible = getattr(self.environment.parsed_options, "first_visible_token", False)
+            # Fall back to t_first_token if no visible content ever arrived (e.g. all-thinking response)
+            t_effective_first = (t_first_visible_token or t_first_token) if use_first_visible else t_first_token
+
+            dur_generation = now - t_effective_first
+            dur_first_token = t_effective_first - t_start
 
             if not (
                 self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
@@ -1865,6 +1903,24 @@ def init_parser(parser):
         help="If the last message in the messages array is from the assistant role, remove it. "
         "This allows the model to generate new content instead of continuing from existing assistant content.",
     )
+    parser.add_argument(
+        "--force-min-tokens",
+        action="store_true",
+        default=False,
+        help="Set min_tokens = max_tokens in Fireworks requests to force exact output length. "
+        "This causes ignore_eos=True on the serving side, which can cause some models to "
+        "generate far more tokens than requested.",
+    )
+    parser.add_argument(
+        "--first-visible-token",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="When set, TTFT and latency_per_token measure from the first visible (non-reasoning) token. "
+        "By default, TTFT fires on the first thinking token for reasoning models, which is consistent "
+        "with how Customers measures TTFT. Use this flag to compare apples-to-apples TTFT across "
+        "reasoning and non-reasoning providers. Requires --chat and --stream.",
+    )
+
 
 
 @events.quitting.add_listener
