@@ -3,9 +3,11 @@ import argparse
 import csv
 from dataclasses import dataclass
 from functools import partial
+import logging
 import os
 import random
 import sys
+import threading
 import traceback
 from typing import Optional
 from locust import HttpUser, task, events, constant_pacing
@@ -22,10 +24,16 @@ import re
 import gevent
 from locust.util.timespan import parse_timespan as _locust_parse_timespan
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 try:
     import locust_plugins
 except ImportError:
-    print("locust-plugins is not installed, Grafana won't work")
+    logger.warning("locust-plugins is not installed, Grafana won't work")
 
 
 def _install_transformers_tokenizer_compat_shim():
@@ -142,12 +150,12 @@ class JsonlDataset:
         if self.shuffle_seed is not None:
             rng = random.Random(self.shuffle_seed)
             rng.shuffle(data)
-            print(f"Shuffled dataset with seed {self.shuffle_seed}")
+            logger.info(f"Shuffled dataset with seed {self.shuffle_seed}")
 
         # Limit dataset size if specified
         if self.dataset_limit is not None:
             data = data[: self.dataset_limit]
-            print(f"Limited dataset to first {len(data)} items")
+            logger.info(f"Limited dataset to first {len(data)} items")
 
         # Yield all items
         for item in data:
@@ -226,12 +234,12 @@ class DatasetHolder:
 
 class FixedQPSPacer:
     _instance = None
+    _lock = threading.Lock()
 
     def __init__(self, qps, distribution):
         self.qps = qps
         self.distribution = distribution
 
-        # It's kind of thread safe thanks to GIL as the only state is `t` - good enough for a loadtest
         def gen():
             t = time.time()
             mean_wait = 1 / self.qps
@@ -243,7 +251,7 @@ class FixedQPSPacer:
                 elif self.distribution == "constant":
                     wait = mean_wait
                 else:
-                    print("Unknown distribution {self.distribution}")
+                    logger.error(f"Unknown distribution {self.distribution}")
                     os._exit(1)
                 t += wait
                 yield t
@@ -252,19 +260,22 @@ class FixedQPSPacer:
 
     @classmethod
     def instance(cls, qps, distribution):
-        if cls._instance is None:
-            cls._instance = cls(qps, distribution)
-        else:
-            assert cls._instance.qps == qps
-            assert cls._instance.distribution == distribution
-        return cls._instance
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(qps, distribution)
+            else:
+                assert cls._instance.qps == qps
+                assert cls._instance.distribution == distribution
+            return cls._instance
 
     def wait_time_till_next(self):
-        t = next(self.iterator)
+        with self._lock:
+            t = next(self.iterator)
         now = time.time()
         if now > t:
-            print(
-                f"WARNING: not enough locust users to keep up with the desired QPS. Either the number of locust users is too low or the server is overloaded. Delay: {now-t:.3f}s"
+            logger.warning(
+                f"Not enough locust users to keep up with the desired QPS. "
+                f"Either the number of locust users is too low or the server is overloaded. Delay: {now-t:.3f}s"
             )
             return 0
         return t - now
@@ -304,7 +315,7 @@ class RampingPacer:
         # After warmup, increase users by pct every second
         if not self._warmup_complete:
             self._warmup_complete = True
-            print(f"RampingPacer: warmup complete, starting to increase concurrency from {self.min_users}")
+            logger.info(f"RampingPacer: warmup complete, starting to increase concurrency from {self.min_users}")
 
         # Calculate target users based on time since warmup ended
         seconds_since_warmup = now - (self.start_time + self.warmup_time)
@@ -322,7 +333,7 @@ class RampingPacer:
 
         # Log target changes
         if abs(target - self._logged_target) >= 0.5:
-            print(f"RampingPacer: target concurrency now at {target:.1f}, active: {self._active_requests}")
+            logger.info(f"RampingPacer: target concurrency now at {target:.1f}, active: {self._active_requests}")
             self._logged_target = target
 
         return target
@@ -443,9 +454,9 @@ class InitTracker:
         if cls.deferred_max_requests is None:
             return
         cls.request_count += 1
-        print(f"Request {cls.request_count}/{cls.deferred_max_requests} completed")
+        logger.info(f"Request {cls.request_count}/{cls.deferred_max_requests} completed")
         if cls.request_count >= cls.deferred_max_requests:
-            print(f"Reached max requests limit ({cls.deferred_max_requests}), stopping test")
+            logger.info(f"Reached max requests limit ({cls.deferred_max_requests}), stopping test")
             cls.stop_scheduled = True
             # Use a small delay to ensure the current request completes
             gevent.spawn_later(0.1, cls._do_quit)
@@ -454,10 +465,10 @@ class InitTracker:
     def _do_quit(cls):
         """Actually stop the runner."""
         if not cls.environment:
-            print("WARNING: environment is None, cannot stop")
+            logger.warning("environment is None, cannot stop")
             return
         if not cls.environment.runner:
-            print("WARNING: runner is None, cannot stop")
+            logger.warning("runner is None, cannot stop")
             return
 
         runner = cls.environment.runner
@@ -466,7 +477,7 @@ class InitTracker:
                 runner.stop()
             runner.quit()
         except Exception as e:
-            print(f"Failed to stop runner: {e}")
+            logger.error(f"Failed to stop runner: {e}")
 
     @classmethod
     def notify_spawning_complete(cls, user_count):
@@ -483,7 +494,7 @@ class InitTracker:
             and cls.environment.runner is not None
         ):
             delay = float(cls.deferred_run_time_seconds)
-            print(f"Scheduling stop {delay}s after spawning complete (deferred -t)")
+            logger.info(f"Scheduling stop {delay}s after spawning complete (deferred -t)")
             gevent.spawn_later(delay, cls.environment.runner.quit)
             cls.stop_scheduled = True
 
@@ -491,7 +502,7 @@ class InitTracker:
     def reset_stats(cls):
         if cls.environment is None or cls.environment.runner is None:
             return
-        print("Resetting stats after traffic reached a steady state")
+        logger.info("Resetting stats after traffic reached a steady state")
         cls.environment.events.reset_stats.fire()
         cls.environment.runner.stats.reset_all()
 
@@ -567,7 +578,7 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
             pass
         InitTracker.deferred_run_time_seconds = seconds
         InitTracker.environment = environment
-        print(f"Deferring -t/--run-time to start after spawning complete: {seconds}s")
+        logger.info(f"Deferring -t/--run-time to start after spawning complete: {seconds}s")
 
     # Capture max_requests if specified
     try:
@@ -577,7 +588,7 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
     if max_requests is not None:
         InitTracker.deferred_max_requests = max_requests
         InitTracker.environment = environment
-        print(f"Will stop after {max_requests} requests complete")
+        logger.info(f"Will stop after {max_requests} requests complete")
 
 
 @dataclass
@@ -843,7 +854,7 @@ class FireworksProvider(OpenAIProvider):
                     texts.append(line)
         if not texts:
             raise ValueError(f"--forced-generation-file '{path}' contains no text entries")
-        print(f"Loaded {len(texts)} forced generation texts from {path}")
+        logger.info(f"Loaded {len(texts)} forced generation texts from {path}")
         return texts
 
     def format_payload(self, prompt, max_tokens, images):
@@ -881,15 +892,15 @@ class FireworksProvider(OpenAIProvider):
         if perf_metrics:
             speculation_hit_rates = perf_metrics.get("speculation-acceptance")
             if self.parsed_options.show_response:
-                print(f"DEBUG: perf_metrics: {perf_metrics}")
+                logger.debug(f"perf_metrics: {perf_metrics}")
         if not speculation_hit_rates:
             speculation_hit_rates = headers.get("fireworks-speculation-acceptance")
             if self.parsed_options.show_response:
-                print(f"DEBUG: Response headers: {dict(headers)}")
+                logger.debug(f"Response headers: {dict(headers)}")
 
         if not speculation_hit_rates:
             if self.parsed_options.show_response:
-                print("DEBUG: speculation-acceptance not found in perf_metrics or headers")
+                logger.debug("speculation-acceptance not found in perf_metrics or headers")
             return
 
         try:
@@ -904,7 +915,7 @@ class FireworksProvider(OpenAIProvider):
                         hit_rate * 100,
                     )
         except Exception as e:
-            print(f"WARNING: Failed to parse speculation hit rates '{speculation_hit_rates}': {e}")
+            logger.warning(f"Failed to parse speculation hit rates '{speculation_hit_rates}': {e}")
 
 
 class VllmProvider(OpenAIProvider):
@@ -972,7 +983,7 @@ class TritonInferProvider(BaseProvider):
                 if text.startswith(prompt):
                     text = text[len(prompt):].removeprefix(" ")
                 else:
-                    print("WARNING: prompt not found in the output")
+                    logger.warning("prompt not found in the output")
                 return ChunkMetadata(
                     text=text,
                     logprob_tokens=None,
@@ -1018,7 +1029,7 @@ class TritonGenerateProvider(BaseProvider):
             if text.startswith(prompt):
                 text = text[len(prompt):].removeprefix(" ")
             else:
-                print("WARNING: prompt not found in the output")
+                logger.warning("prompt not found in the output")
         return ChunkMetadata(
             text=text,
             logprob_tokens=None,
@@ -1110,8 +1121,8 @@ class LLMUser(HttpUser):
         try:
             self._on_start()
         except Exception as e:
-            print(f"Failed to initialize: {repr(e)}")
-            print(traceback.format_exc())
+            logger.error(f"Failed to initialize: {repr(e)}")
+            logger.error(traceback.format_exc())
             sys.exit(1)
 
     def _guess_provider(self):
@@ -1170,7 +1181,7 @@ class LLMUser(HttpUser):
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
         self._guess_provider()
-        print(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
+        logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
 
         self.stream = self.environment.parsed_options.stream
@@ -1377,6 +1388,7 @@ class LLMUser(HttpUser):
             data=json.dumps(data),
             stream=True,
             catch_response=True,
+            timeout=60,
         ) as response:
             combined_text = ""
             done = False
@@ -1395,7 +1407,7 @@ class LLMUser(HttpUser):
                     continue  # come providers send empty lines between data chunks
                 if done:
                     if chunk != b"data: [DONE]":
-                        print(f"WARNING: Received more chunks after [DONE]: {chunk}")
+                        logger.warning(f"Received more chunks after [DONE]: {chunk}")
                 try:
                     now = time.perf_counter()
                     if self.provider_formatter.parsed_options.rerank:
@@ -1457,7 +1469,7 @@ class LLMUser(HttpUser):
                     if out.logprob_tokens:
                         total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
                 except Exception as e:
-                    print(f"Failed to parse response: {chunk} with error {repr(e)}")
+                    logger.error(f"Failed to parse response: {chunk} with error {repr(e)}")
                     response.failure(e)
                     return
             if t_first_token is None:
@@ -1472,7 +1484,7 @@ class LLMUser(HttpUser):
                 and (completion_tokens is not None)
                 and total_logprob_tokens != completion_tokens
             ):
-                print(f"WARNING: completion_tokens {completion_tokens} != logprob_tokens {total_logprob_tokens}")
+                logger.warning(f"completion_tokens {completion_tokens} != logprob_tokens {total_logprob_tokens}")
             if total_logprob_tokens is not None:
                 num_tokens = total_logprob_tokens
             else:
@@ -1503,7 +1515,7 @@ class LLMUser(HttpUser):
             token_parts.append(f"{num_tokens} completion")
             token_str = ", ".join(token_parts)
 
-            print(
+            logger.info(
                 f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
             )
             if self.environment.parsed_options.show_response:
@@ -1517,7 +1529,7 @@ class LLMUser(HttpUser):
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
                 if num_tokens != max_tokens:
-                    print(f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                    logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
                 add_custom_metric("completion_tokens", num_tokens)
                 add_custom_metric("num_tokens", num_tokens)
                 add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
@@ -1927,7 +1939,7 @@ def init_parser(parser):
 def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
     if environment.stats.total.num_failures > 0 or total_latency.num_requests == 0:
-        print("Test failed due to failed requests")
+        logger.error("Test failed due to failed requests")
         environment.process_exit_code = 1
         return
 
