@@ -735,7 +735,7 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data):
         if self.parsed_options.rerank:
             usage = data.get("usage", {})
-            scores = [f"{item['index']}:{item['relevance_score']:.4f}" for item in data.get("data", [])]
+            scores = [f"{item['index']}:{item['relevance_score']:.4f}" for item in data.get("results", data.get("data", []))]
             return ChunkMetadata(
                 text=", ".join(scores),
                 logprob_tokens=None,
@@ -1141,6 +1141,8 @@ class LLMUser(HttpUser):
                 self.provider = "together"
             elif "openai" in self.host:
                 self.provider = "openai"
+            elif "anyscale" in self.host:
+                self.provider = "anyscale"
 
         if (
             self.model is None
@@ -1918,7 +1920,8 @@ def init_parser(parser):
         "--reasoning-effort",
         type=str,
         default=None,
-        help="Set the reasoning_effort parameter for the API request (e.g., 'none', 'low', 'medium', 'high'). "
+        choices=["low", "medium", "high"],
+        help="Set the reasoning_effort parameter for the API request. "
         "If not specified and using a JSONL dataset, will use the value from the dataset if present.",
     )
     parser.add_argument(
