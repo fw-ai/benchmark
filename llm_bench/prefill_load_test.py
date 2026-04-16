@@ -34,6 +34,10 @@ STAGE_HEADER_KEYS = (
     "generation-queue-duration",
 )
 
+# NB: don't use power of 2 as we will use multiples of this to generate seq pairs
+# and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
+_DEFAULT_MIN_SEQ_LEN = 500
+
 
 def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenizer:
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
@@ -452,14 +456,8 @@ def main() -> None:
     parser.add_argument(
         "--min-seq-len",
         type=int,
-        default=None,
-        help="Min sequence length for auto-generated pairs (default: kv_cache_block_size * 8).",
-    )
-    parser.add_argument(
-        "--kv-cache-block-size",
-        type=int,
-        default=64,
-        help="KV cache block size (default: 64).",
+        default=_DEFAULT_MIN_SEQ_LEN,
+        help=f"Min sequence length for auto-generated pairs (default: {_DEFAULT_MIN_SEQ_LEN})",
     )
     parser.add_argument(
         "-s",
@@ -518,13 +516,10 @@ def main() -> None:
     elif hf_max_seq_len is not None:
         max_seq_len = min(max_seq_len, hf_max_seq_len)
 
-    kv_cache_block_size = args.kv_cache_block_size
-    min_seq_len = args.min_seq_len if args.min_seq_len is not None else kv_cache_block_size * 8
-
     if args.seq_pairs is not None:
         pairs = parse_pairs_arg(args.seq_pairs)
     else:
-        pairs = generate_pairs(max_seq_len, min_seq_len=min_seq_len)
+        pairs = generate_pairs(max_seq_len, min_seq_len=args.min_seq_len)
         logger.info("Auto-generated %d pairs: %s", len(pairs), pairs)
 
     rows = run_benchmark(
