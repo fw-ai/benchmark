@@ -29,7 +29,10 @@ from tabulate import tabulate
 FW_HEADER_PREFIX = "fireworks-"
 
 _FAST_BATCH_SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
-_DEFAULT_MIN_SEQ_LEN = 1024
+
+# NB: don't use power of 2 as we will use multiples of this to generate seq pairs
+# and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
+_DEFAULT_MIN_SEQ_LEN = 1000
 
 
 def get_profile_batch_sizes(max_batch_size: int) -> list[int]:
