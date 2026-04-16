@@ -48,9 +48,14 @@ def _install_transformers_tokenizer_compat_shim():
         gpt2_module.bytes_to_unicode = bytes_to_unicode
 
 
+DEFAULT_TOKENIZER = "NousResearch/Meta-Llama-3.1-8B"
+
+
 def _load_auto_tokenizer(tokenizer_path: str):
     _install_transformers_tokenizer_compat_shim()
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+
 
 
 def add_custom_metric(name, value, length_value=0):
@@ -73,12 +78,12 @@ class TranslationDataset:
         self,
         path: str,
         prompt: str,
-        tokenizer_path: str,
+        tokenizer,
         chat: bool,
         num_tokens: int,
         common_tokens: int,
     ):
-        self._tokenizer = _load_auto_tokenizer(tokenizer_path)
+        self._tokenizer = tokenizer
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -175,7 +180,6 @@ class DatasetHolder:
                 dataset_limit=getattr(options, "dataset_limit", None),
             )
         elif options.dataset in ("limericks", "code"):
-            assert options.tokenizer is not None, "--tokenizer is required for limericks or code dataset"
             if options.dataset == "limericks":
                 if options.prompt is None:
                     prompt = "Translate the limericks above to Spanish."
@@ -192,7 +196,7 @@ class DatasetHolder:
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
-                tokenizer_path=options.tokenizer,
+                tokenizer=InitTracker.load_tokenizer(options.tokenizer),
                 chat=options.chat and not getattr(options, "rerank", False),
                 num_tokens=options.prompt_tokens,
                 common_tokens=options.prompt_cache_max_len,
@@ -507,13 +511,14 @@ class InitTracker:
         cls.environment.runner.stats.reset_all()
 
     @classmethod
-    def load_tokenizer(cls, dir):
-        if not dir:
-            return None
+    def load_tokenizer(cls, explicit_path: str):
         if cls.tokenizer:
             return cls.tokenizer
 
-        cls.tokenizer = _load_auto_tokenizer(dir)
+        source = explicit_path or DEFAULT_TOKENIZER
+        if not explicit_path:
+            logger.warning(f"No --tokenizer specified, falling back to default: {DEFAULT_TOKENIZER}")
+        cls.tokenizer = _load_auto_tokenizer(source)
         cls.tokenizer.add_bos_token = False
         cls.tokenizer.add_eos_token = False
         return cls.tokenizer
@@ -1278,6 +1283,9 @@ class LLMUser(HttpUser):
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
+        tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
+        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
             getattr(self.environment.parsed_options, "num_documents", None) is not None
@@ -1612,7 +1620,12 @@ def init_parser(parser):
         "--tokenizer",
         env_var="TOKENIZER",
         type=str,
-        help="Specify HF tokenizer to use for validating the output of the model. It's optional, we're going to rely on 'usage' or 'logprobs' field to get token count information",
+        help=(
+            "Tokenizer for counting prompt tokens. Accepts a local directory path or a HuggingFace model ID "
+            f"(e.g. 'Qwen/Qwen3.5-9B' or './tokenizers/Llama-3.1-8B-Instruct'). "
+            f"If omitted, defaults to '{DEFAULT_TOKENIZER}' (downloaded from HF on first use and cached locally). "
+            "Use download_tokenizer.py to pre-download a tokenizer for offline or CI use."
+        ),
     )
     parser.add_argument(
         "--chat",
