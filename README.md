@@ -35,6 +35,24 @@ Captured metrics:
 
 Metrics summary can be exported to CSV. This way multiple configuration can be scripted over. CSV file can be imported to Google Sheets/Excel or Jupyter for further analysis.
 
+## Local Setup
+
+The fastest way to get started is with [uv](https://github.com/astral-sh/uv):
+
+```bash
+bash scripts/setup.sh
+```
+
+This will install `uv` (if needed), create a `.venv` with Python 3.11, and install all dependencies.
+
+Then activate the environment:
+
+```bash
+source .venv/bin/activate
+```
+
+## Usage
+
 See [`llm_bench`](llm_bench) folder for detailed usage.
 
 See [`llm_bench/benchmark_suite.ipynb`](llm_bench/benchmark_suite.ipynb) for a detailed example of how to use the load test script and run different types of benchmark suites.
