@@ -454,6 +454,7 @@ class InitTracker:
     logging_params = None
     environment = None
     tokenizer = None
+    _tokenizer_lock = threading.Lock()
     deferred_run_time_seconds = None
     deferred_max_requests = None
     request_count = 0
@@ -538,14 +539,16 @@ class InitTracker:
     def load_tokenizer(cls, explicit_path: str):
         if cls.tokenizer:
             return cls.tokenizer
-
-        source = explicit_path or DEFAULT_TOKENIZER
-        if not explicit_path:
-            logger.warning(f"No --tokenizer specified, falling back to default: {DEFAULT_TOKENIZER}")
-        cls.tokenizer = _load_auto_tokenizer(source)
-        cls.tokenizer.add_bos_token = False
-        cls.tokenizer.add_eos_token = False
-        return cls.tokenizer
+        with cls._tokenizer_lock:
+            if cls.tokenizer:
+                return cls.tokenizer
+            source = explicit_path or DEFAULT_TOKENIZER
+            if not explicit_path:
+                logger.warning(f"No --tokenizer specified, falling back to default: {DEFAULT_TOKENIZER}")
+            cls.tokenizer = _load_auto_tokenizer(source)
+            cls.tokenizer.add_bos_token = False
+            cls.tokenizer.add_eos_token = False
+            return cls.tokenizer
 
 
 events.spawning_complete.add_listener(InitTracker.notify_spawning_complete)
