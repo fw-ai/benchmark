@@ -48,7 +48,7 @@ def _install_transformers_tokenizer_compat_shim():
         gpt2_module.bytes_to_unicode = bytes_to_unicode
 
 
-DEFAULT_TOKENIZER = "NousResearch/Meta-Llama-3.1-8B"
+DEFAULT_TOKENIZER = "NousResearch/Meta-Llama-3.1-8B-Instruct"
 
 
 def _load_auto_tokenizer(tokenizer_path: str):
@@ -67,6 +67,30 @@ def add_custom_metric(name, value, length_value=0):
         exception=None,
         context=None,
     )
+
+
+def track_performance_metrics(response_time: float, token_count: int, char_count: int,
+                              prompt_tokens: int = None, ttft: float = None):
+    """Track comprehensive performance metrics for parity with Customers load_test.py."""
+    metrics = {
+        'response_time': response_time,
+        'token_count': token_count,
+        'char_count': char_count,
+        'tokens_per_second': token_count / response_time if response_time > 0 else 0,
+        'chars_per_second': char_count / response_time if response_time > 0 else 0,
+    }
+
+    if prompt_tokens:
+        metrics['total_tokens'] = prompt_tokens + token_count
+        metrics['efficiency'] = token_count / (prompt_tokens + token_count) if (prompt_tokens + token_count) > 0 else 0
+
+    if ttft:
+        metrics['ttft'] = ttft
+        metrics['generation_time'] = response_time - ttft
+        metrics['generation_tokens_per_second'] = token_count / (response_time - ttft) if (response_time - ttft) > 0 else 0
+
+    for metric_name, metric_value in metrics.items():
+        add_custom_metric(metric_name, metric_value, token_count)
 
 
 PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
@@ -1233,6 +1257,9 @@ class LLMUser(HttpUser):
             "provider": self.provider,
             "model": self.model,
             "prompt_tokens": self.environment.parsed_options.prompt_tokens,  # might be overwritten based on metric
+            # "generation_tokens" is a backward-compat alias for "completion_tokens";
+            # jarvis/perfagent/gcs.go reads the CSV column "Generation Tokens".
+            "generation_tokens": str(self.max_tokens_sampler),
             "completion_tokens": str(self.max_tokens_sampler),
             "stream": self.stream,
             "temperature": self.temperature,
@@ -1532,6 +1559,13 @@ class LLMUser(HttpUser):
                 print("---")
                 print(combined_text)
                 print("---")
+            track_performance_metrics(
+                response_time=dur_total,
+                token_count=num_tokens,
+                char_count=num_chars,
+                prompt_tokens=prompt_tokens,
+                ttft=dur_first_token,
+            )
             if num_chars:
                 add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
             if self.stream:
@@ -1540,6 +1574,7 @@ class LLMUser(HttpUser):
             if num_tokens:
                 if num_tokens != max_tokens:
                     logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
                 add_custom_metric("completion_tokens", num_tokens)
                 add_custom_metric("num_tokens", num_tokens)
                 add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
@@ -1990,6 +2025,7 @@ def _(environment, **kw):
             "latency_per_token",
             "overall_latency_per_token",
             "total_latency",
+            "generation_tokens",
             "completion_tokens",
             "num_tokens",
             "prompt_tokens",
