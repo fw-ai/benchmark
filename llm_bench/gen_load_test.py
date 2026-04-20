@@ -630,9 +630,10 @@ def main() -> None:
     parser.add_argument(
         "--warmup-requests",
         type=int,
-        default=64,
-        help="Number of warmup requests to send before running pairs (default: 1). "
-        "Each warmup uses the max context length across all pairs. Keep it largs enough to make sure that all in case of inline DP all generators are warmed up",
+        default=None,
+        help="Number of warmup requests to send before running pairs "
+        "(default: 64 if --separate-requests, else 4). "
+        "Each warmup uses the max context length across all pairs. Keep it large enough to make sure that all in case of inline DP all generators are warmed up",
     )
     parser.add_argument(
         "--retries",
@@ -672,6 +673,9 @@ def main() -> None:
             seq_lens = generate_seq_lens(args.min_seq_len, max_seq_len)
         batch_sizes = get_profile_batch_sizes(args.max_batch_size)
         pairs = [(s, b) for s in seq_lens for b in batch_sizes]
+
+    if args.warmup_requests is None:
+        args.warmup_requests = 64 if args.separate_requests else 4
 
     if args.max_kv_cache_entries is not None:
         pairs = [(s, b) for s, b in pairs if (s + args.max_tokens) * b <= args.max_kv_cache_entries]
