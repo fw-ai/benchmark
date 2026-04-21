@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Generation (decode) latency benchmark for Fireworks /v1/chat/completions.
+Generation (decode) latency benchmark for Fireworks /v1/completions.
 
-For each (seq_len, batch_size) pair, sends a single prompt of length seq_len
-with n=batch_size and max_tokens output tokens, then reports per-forward-pass
-generation latency derived from fireworks-generation-duration and the number
-of target-model forward passes (speculation-aware).
+For each (seq_len, batch_size) pair, builds a single user message wrapped in
+the model's chat template (applied client-side via the HF tokenizer), sends
+the resulting token-id prompt with n=batch_size and max_tokens output tokens,
+then reports per-forward-pass generation latency derived from
+fireworks-generation-duration and the number of target-model forward passes
+(speculation-aware).
 """
 
 from __future__ import annotations
@@ -88,36 +90,6 @@ def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenize
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
 
-def get_chat_template_overhead_tokens(
-    session: requests.Session,
-    url: str,
-    api_key: str,
-    model: Optional[str],
-    temperature: Optional[float],
-) -> int:
-    """Measure server-side chat template overhead via a single-token calibration request."""
-    r = post_chat_completion(
-        session,
-        url,
-        api_key,
-        model,
-        "x",
-        max_tokens=1,
-        n=1,
-        temperature=temperature,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"Calibration request failed HTTP {r.status_code}: {r.text[:500]}")
-
-    server_tokens = get_int_header(r.headers, "prompt-tokens")
-    if server_tokens is None:
-        raise RuntimeError(
-            "Missing fireworks-prompt-tokens header in calibration response; "
-            "cannot determine chat template overhead."
-        )
-    return server_tokens + 1
-
-
 def _dataset_path(dataset: str) -> str:
     name = "limericks.txt" if dataset == "limericks" else "code.txt"
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
@@ -139,18 +111,96 @@ _DATASET_SUFFIXES = {
 }
 
 
-def build_ids_to_length(
+def build_chunk_texts_to_length(
     tokenizer: transformers.PreTrainedTokenizer,
     chunks: list[str],
     target_len: int,
-) -> list[int]:
-    ids: list[int] = []
+) -> list[str]:
+    """Cycle chunks (each followed by `\\n\\n`) until total tokens reach `target_len`.
+
+    Returns one chunk text per element so callers can slice at chunk granularity
+    (never cutting a chunk mid-text).
+    """
+    out: list[str] = []
+    total = 0
     i = 0
-    while len(ids) < target_len and i < 1_000_000:
-        lim = chunks[i % len(chunks)]
-        ids.extend(tokenizer.encode(lim + "\n\n"))
+    while total < target_len and i < 1_000_000:
+        text = chunks[i % len(chunks)] + "\n\n"
+        out.append(text)
+        total += len(tokenizer.encode(text))
         i += 1
-    return ids[:target_len]
+    return out
+
+
+def apply_chat_template_ids(
+    tokenizer: transformers.PreTrainedTokenizer,
+    content_text: str,
+) -> list[int]:
+    """Apply the model's chat template to a single user message and return token ids."""
+    out = tokenizer.apply_chat_template(
+        [{"role": "user", "content": content_text}],
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    return _normalize_ids(out)
+
+
+def _normalize_ids(obj: Any) -> list[int]:
+    """Normalize tokenizer output (list, Encoding, BatchEncoding, tensor) to a plain list[int]."""
+    ids = getattr(obj, "ids", None)
+    if ids is not None:
+        return [int(t) for t in ids]
+    input_ids = getattr(obj, "input_ids", None)
+    if input_ids is not None:
+        seq = (
+            input_ids[0]
+            if hasattr(input_ids, "__len__") and len(input_ids) and hasattr(input_ids[0], "__iter__")
+            else input_ids
+        )
+        return [int(t) for t in seq]
+    tolist = getattr(obj, "tolist", None)
+    if callable(tolist):
+        flat = tolist()
+        if flat and isinstance(flat[0], list):
+            flat = flat[0]
+        return [int(t) for t in flat]
+    return [int(t) for t in obj]
+
+
+def build_chat_prompt_ids(
+    tokenizer: transformers.PreTrainedTokenizer,
+    suffix_text: str,
+    chunk_texts: list[str],
+    target_len: int,
+) -> list[int]:
+    """Build chat-templated prompt ids of at most `target_len` tokens, chunk-aligned.
+
+    Bisects on chunk count to find the largest k such that the chat-templated
+    tokenization of `chunks[:k] + suffix` stays within `target_len`. This is
+    exact (no token-count estimation drift from chat template wrapping) at the
+    cost of O(log n) chat template tokenizations.
+    """
+    if not chunk_texts:
+        raise ValueError("no chunks provided")
+
+    def length_for(k: int) -> int:
+        return len(apply_chat_template_ids(tokenizer, "".join(chunk_texts[:k]) + suffix_text))
+
+    if length_for(1) > target_len:
+        raise ValueError(f"target_len={target_len} too small to fit even one chunk")
+
+    n = len(chunk_texts)
+    if length_for(n) <= target_len:
+        return apply_chat_template_ids(tokenizer, "".join(chunk_texts) + suffix_text)
+
+    lo, hi = 1, n
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if length_for(mid) <= target_len:
+            lo = mid
+        else:
+            hi = mid - 1
+    return apply_chat_template_ids(tokenizer, "".join(chunk_texts[:lo]) + suffix_text)
 
 
 def get_header(headers: Mapping[str, str], short_key: str) -> Optional[float]:
@@ -175,8 +225,8 @@ def get_int_header(headers: Mapping[str, str], short_key: str) -> Optional[int]:
         return None
 
 
-def chat_completions_url(base_url: str) -> str:
-    return base_url.rstrip("/") + "/v1/chat/completions"
+def completions_url(base_url: str) -> str:
+    return base_url.rstrip("/") + "/v1/completions"
 
 
 def parse_pairs_arg(s: str) -> list[tuple[int, int]]:
@@ -196,19 +246,19 @@ def parse_int_list(s: str) -> list[int]:
     return [int(x.strip()) for x in s.split(",") if x.strip()]
 
 
-def post_chat_completion(
+def post_completion(
     session: requests.Session,
     url: str,
     api_key: str,
     model: Optional[str],
-    prompt: str,
+    prompt: list[int],
     max_tokens: int,
     n: int,
     temperature: Optional[float] = None,
     user: Optional[str] = None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
-        "messages": [{"role": "user", "content": prompt}],
+        "prompt": prompt,
         "max_tokens": max_tokens,
         "n": n,
         "stream": False,
@@ -253,7 +303,7 @@ def _run_pair_n_mode(
     url: str,
     api_key: str,
     model: Optional[str],
-    prompt_text: str,
+    prompt_ids: list[int],
     max_tokens: int,
     seq_len: int,
     batch_size: int,
@@ -269,12 +319,12 @@ def _run_pair_n_mode(
     )
 
     wall_start = time.perf_counter()
-    r = post_chat_completion(
+    r = post_completion(
         session,
         url,
         api_key,
         model,
-        prompt_text,
+        prompt_ids,
         max_tokens=max_tokens,
         n=batch_size,
         temperature=temperature,
@@ -318,7 +368,7 @@ def _run_pair_separate_mode(
     url: str,
     api_key: str,
     model: Optional[str],
-    prompt_text: str,
+    prompt_ids: list[int],
     max_tokens: int,
     seq_len: int,
     batch_size: int,
@@ -335,12 +385,12 @@ def _run_pair_separate_mode(
 
     def _single_request() -> requests.Response:
         s = requests.Session()
-        return post_chat_completion(
+        return post_completion(
             s,
             url,
             api_key,
             model,
-            prompt_text,
+            prompt_ids,
             max_tokens=max_tokens,
             n=1,
             temperature=temperature,
@@ -392,6 +442,63 @@ def _run_pair_separate_mode(
     )
 
 
+def _warmup_seq_len(
+    *,
+    url: str,
+    api_key: str,
+    model: Optional[str],
+    prompt_ids: list[int],
+    seq_len: int,
+    concurrency: int,
+    temperature: Optional[float],
+    retries: int,
+    retry_delay: float,
+) -> None:
+    """Issue `concurrency` warmup completions in parallel for the same prompt."""
+
+    def _single() -> requests.Response:
+        return post_completion(
+            requests.Session(),
+            url,
+            api_key,
+            model,
+            prompt_ids,
+            max_tokens=0,
+            n=1,
+            temperature=temperature,
+        )
+
+    for attempt in range(1, retries + 1):
+        logger.info(
+            "Warmup (seq_len=%d, concurrency=%d, attempt %d/%d) ...",
+            seq_len,
+            concurrency,
+            attempt,
+            retries,
+        )
+        if concurrency == 1:
+            responses = [_single()]
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                futures = [pool.submit(_single) for _ in range(concurrency)]
+                responses = [f.result() for f in as_completed(futures)]
+
+        bad = next((r for r in responses if r.status_code != 200), None)
+        if bad is None:
+            return
+        if attempt < retries:
+            logger.warning(
+                "Warmup seq_len=%d failed HTTP %d: %s. Retrying in %.0fs ...",
+                seq_len,
+                bad.status_code,
+                bad.text[:500],
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+        else:
+            raise RuntimeError(f"Warmup seq_len={seq_len} failed HTTP {bad.status_code}: {bad.text[:500]}")
+
+
 def run_benchmark(
     tokenizer_path: str,
     model: Optional[str],
@@ -402,7 +509,7 @@ def run_benchmark(
     max_tokens: int,
     temperature: Optional[float] = None,
     separate_requests: bool = False,
-    warmup_requests: int = 1,
+    warmup_concurrency: Optional[int] = None,
     retries: int = 3,
     retry_delay: float = 30.0,
 ) -> list[GenBenchmarkResult]:
@@ -411,62 +518,49 @@ def run_benchmark(
     chunks = load_chunks(dataset)
     suffix = _DATASET_SUFFIXES.get(dataset, "")
 
-    suffix_ids = tokenizer.encode(suffix) if suffix else []
-    prefix_ids = build_ids_to_length(tokenizer, chunks, max_seq)
-    if len(prefix_ids) + len(suffix_ids) < max_seq:
-        raise RuntimeError(f"Could only build {len(prefix_ids) + len(suffix_ids)} tokens from dataset, need {max_seq}")
+    chunk_texts = build_chunk_texts_to_length(tokenizer, chunks, max_seq)
 
-    url = chat_completions_url(base_url)
+    url = completions_url(base_url)
     session = requests.Session()
-
-    chat_overhead = get_chat_template_overhead_tokens(
-        session,
-        url,
-        api_key,
-        model,
-        temperature,
-    )
-    logger.info("Chat template overhead: %d tokens (server-calibrated)", chat_overhead)
 
     if separate_requests:
         logger.info("Mode: separate concurrent requests (no n>1)")
     else:
         logger.info("Mode: single request with n=batch_size")
 
-    warmup_seq_len = max(seq_len for seq_len, _ in pairs)
-    warmup_prompt_ids = prefix_ids[: warmup_seq_len - chat_overhead - max_tokens - len(suffix_ids)] + suffix_ids
-    warmup_prompt_text = tokenizer.decode(warmup_prompt_ids)
-    for i in range(1, warmup_requests + 1):
-        for attempt in range(1, retries + 1):
-            logger.info(
-                "Warmup %d/%d (seq_len=%d, attempt %d/%d) ...", i, warmup_requests, warmup_seq_len, attempt, retries
-            )
-            w = post_chat_completion(
-                session,
-                url,
-                api_key,
-                model,
-                warmup_prompt_text,
-                max_tokens=1,
-                n=1,
-                temperature=temperature,
-            )
-            if w.status_code == 200:
-                break
-            if attempt < retries:
-                logger.warning(
-                    "Warmup %d failed HTTP %d: %s. Retrying in %.0fs ...", i, w.status_code, w.text[:500], retry_delay
-                )
-                time.sleep(retry_delay)
-            else:
-                raise RuntimeError(f"Warmup {i} failed HTTP {w.status_code}: {w.text[:500]}")
-    logger.info("Warmup complete")
+    if warmup_concurrency is None:
+        warmup_concurrency = 64 if separate_requests else 1
+    logger.info("Warmup concurrency: %d", warmup_concurrency)
 
     results: list[GenBenchmarkResult] = []
+    prev_seq_len: Optional[int] = None
 
+    # Sort by seq_len descending so all batches for the same seq_len are grouped
+    # (one warmup per seq_len) and longer prompts come first for full prompt-cache hit rate.
+    pairs = sorted(pairs, key=lambda p: (-p[0], p[1]))
+
+    prompt_ids: list[int] = []
     for seq_len, batch_size in pairs:
-        prompt_ids = prefix_ids[: seq_len - chat_overhead - max_tokens - len(suffix_ids)] + suffix_ids
-        prompt_text = tokenizer.decode(prompt_ids)
+        if seq_len != prev_seq_len:
+            prompt_ids = build_chat_prompt_ids(
+                tokenizer,
+                suffix,
+                chunk_texts,
+                target_len=seq_len - max_tokens,
+            )
+            logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
+            _warmup_seq_len(
+                url=url,
+                api_key=api_key,
+                model=model,
+                prompt_ids=prompt_ids,
+                seq_len=seq_len,
+                concurrency=warmup_concurrency,
+                temperature=temperature,
+                retries=retries,
+                retry_delay=retry_delay,
+            )
+            prev_seq_len = seq_len
 
         for attempt in range(1, retries + 1):
             try:
@@ -475,7 +569,7 @@ def run_benchmark(
                         url=url,
                         api_key=api_key,
                         model=model,
-                        prompt_text=prompt_text,
+                        prompt_ids=prompt_ids,
                         max_tokens=max_tokens,
                         seq_len=seq_len,
                         batch_size=batch_size,
@@ -487,7 +581,7 @@ def run_benchmark(
                         url=url,
                         api_key=api_key,
                         model=model,
-                        prompt_text=prompt_text,
+                        prompt_ids=prompt_ids,
                         max_tokens=max_tokens,
                         seq_len=seq_len,
                         batch_size=batch_size,
@@ -539,7 +633,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    parser = argparse.ArgumentParser(description="Generation (decode) latency benchmark (Fireworks chat completions).")
+    parser = argparse.ArgumentParser(description="Generation (decode) latency benchmark (Fireworks completions).")
     parser.add_argument(
         "--tokenizer",
         required=True,
@@ -628,12 +722,11 @@ def main() -> None:
         "instead of a single request with n=batch_size.",
     )
     parser.add_argument(
-        "--warmup-requests",
+        "--warmup-concurrency",
         type=int,
         default=None,
-        help="Number of warmup requests to send before running pairs "
-        "(default: 64 if --separate-requests, else 4). "
-        "Each warmup uses the max context length across all pairs. Keep it large enough to make sure that all in case of inline DP all generators are warmed up",
+        help="Number of identical warmup requests to send in parallel before each new "
+        "seq_len group (default: 64 if --separate-requests, else 1).",
     )
     parser.add_argument(
         "--retries",
@@ -674,17 +767,11 @@ def main() -> None:
         batch_sizes = get_profile_batch_sizes(args.max_batch_size)
         pairs = [(s, b) for s in seq_lens for b in batch_sizes]
 
-    if args.warmup_requests is None:
-        args.warmup_requests = 64 if args.separate_requests else 4
-
     if args.max_kv_cache_entries is not None:
         pairs = [(s, b) for s, b in pairs if (s + args.max_tokens) * b <= args.max_kv_cache_entries]
 
     if len(pairs) == 0:
         raise RuntimeError("No seq:batch pairs")
-
-    # Sort by seq_len descending to guarantee full prompt cache hit rate.
-    pairs.sort(key=lambda p: p[0], reverse=True)
 
     logger.info("Using %d seq-batch pairs: %s", len(pairs), pairs)
 
@@ -698,7 +785,7 @@ def main() -> None:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         separate_requests=args.separate_requests,
-        warmup_requests=args.warmup_requests,
+        warmup_concurrency=args.warmup_concurrency,
         retries=args.retries,
         retry_delay=args.retry_delay,
     )

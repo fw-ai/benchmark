@@ -4,6 +4,12 @@ Prefill benchmark for Fireworks /v1/completions.
 
 For each (prompt_tokens, cached_tokens) pair, warms the KV cache and sends a batch
 of prompts as a single multi-prompt request, reporting server and client durations.
+
+Each prompt is wrapped client-side in the model's chat template (a single user
+message with the generation prompt appended) and sent as token ids. The chat
+template is split into prefix/suffix token lists so cached_tokens corresponds to
+the exact length of the shared head (chat_prefix + shared content) across all
+prompts in a batch and the warmup call.
 """
 
 from __future__ import annotations
@@ -122,7 +128,58 @@ def build_random_suffix_ids(
     return ids[:need_len]
 
 
+def _normalize_ids(obj: Any) -> list[int]:
+    """Normalize tokenizer output (list, Encoding, BatchEncoding, tensor) to a plain list[int]."""
+    ids = getattr(obj, "ids", None)
+    if ids is not None:
+        return [int(t) for t in ids]
+    input_ids = getattr(obj, "input_ids", None)
+    if input_ids is not None:
+        seq = (
+            input_ids[0]
+            if hasattr(input_ids, "__len__") and len(input_ids) and hasattr(input_ids[0], "__iter__")
+            else input_ids
+        )
+        return [int(t) for t in seq]
+    tolist = getattr(obj, "tolist", None)
+    if callable(tolist):
+        flat = tolist()
+        if flat and isinstance(flat[0], list):
+            flat = flat[0]
+        return [int(t) for t in flat]
+    return [int(t) for t in obj]
+
+
+def split_chat_template(
+    tokenizer: transformers.PreTrainedTokenizer,
+) -> tuple[list[int], list[int]]:
+    """Return (prefix_ids, suffix_ids) for the chat template wrapping a single user message.
+
+    Templates a multi-token sentinel content, locates it in the templated id sequence,
+    and returns the surrounding prefix and suffix token lists. Lets us compose
+    `prefix + content_ids + suffix` directly without round-tripping through text.
+    """
+    sentinel = "abcdefghij"
+    sentinel_ids = _normalize_ids(tokenizer.encode(sentinel, add_special_tokens=False))
+    if not sentinel_ids:
+        raise RuntimeError("Sentinel tokenized to empty id list; cannot split chat template.")
+    templated = _normalize_ids(
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": sentinel}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+    )
+    n = len(sentinel_ids)
+    for i in range(len(templated) - n + 1):
+        if templated[i : i + n] == sentinel_ids:
+            return templated[:i], templated[i + n :]
+    raise RuntimeError(f"Could not locate sentinel ids {sentinel_ids} in templated ids {templated}")
+
+
 def build_pair_ids(
+    chat_prefix_ids: list[int],
+    chat_suffix_ids: list[int],
     base_ids: list[int],
     tokenizer: transformers.PreTrainedTokenizer,
     chunks: list[str],
@@ -130,18 +187,52 @@ def build_pair_ids(
     cached_tokens: int,
     rng: random.Random,
 ) -> list[int]:
-    max_seq = len(base_ids)
-    if cached_tokens > max_seq:
-        raise ValueError(f"cached_tokens {cached_tokens} exceeds warmup length {max_seq}")
-    if prompt_tokens > max_seq:
-        raise ValueError(f"prompt_tokens {prompt_tokens} exceeds max_seq_len {max_seq}")
-    shared = base_ids[:cached_tokens]
-    need_suffix = prompt_tokens - cached_tokens
-    if need_suffix <= 0:
-        return shared[:prompt_tokens]
-    suffix_ids = build_random_suffix_ids(tokenizer, chunks, need_suffix, rng)
-    combined = shared + suffix_ids
-    return combined[:prompt_tokens]
+    """Build a chat-templated prompt id sequence of exactly `prompt_tokens` tokens.
+
+    Layout: chat_prefix_ids ++ shared_content ++ random_content ++ chat_suffix_ids,
+    truncated to `prompt_tokens`. The first `cached_tokens` ids are deterministically
+    shared across all prompts in the batch (and across warmup), so the prompt cache
+    hits exactly `cached_tokens` tokens.
+    """
+    chat_overhead = len(chat_prefix_ids) + len(chat_suffix_ids)
+    if prompt_tokens < chat_overhead:
+        raise ValueError(f"prompt_tokens {prompt_tokens} is smaller than chat overhead {chat_overhead}")
+    if cached_tokens > prompt_tokens:
+        raise ValueError(f"cached_tokens {cached_tokens} exceeds prompt_tokens {prompt_tokens}")
+
+    content_target = prompt_tokens - chat_overhead
+    shared_content_len = max(0, cached_tokens - len(chat_prefix_ids))
+    shared_content_len = min(shared_content_len, content_target)
+
+    if shared_content_len > len(base_ids):
+        raise ValueError(f"shared_content_len {shared_content_len} exceeds base_ids length {len(base_ids)}")
+
+    shared = base_ids[:shared_content_len]
+    need_random = content_target - shared_content_len
+    random_ids = build_random_suffix_ids(tokenizer, chunks, need_random, rng)
+    content = shared + random_ids
+    if len(content) < content_target:
+        raise RuntimeError(f"Could not build {content_target} content tokens from dataset (got {len(content)})")
+
+    return chat_prefix_ids + content[:content_target] + chat_suffix_ids
+
+
+def build_warmup_ids(
+    chat_prefix_ids: list[int],
+    base_ids: list[int],
+    cached_tokens: int,
+) -> list[int]:
+    """Warmup prompt = first `cached_tokens` of the shared template + content prefix.
+
+    Sending this as a /v1/completions prompt populates the prompt cache up to exactly
+    `cached_tokens` tokens, matching the head of every per-pair prompt built above.
+    """
+    if cached_tokens <= len(chat_prefix_ids):
+        return chat_prefix_ids[:cached_tokens]
+    extra = cached_tokens - len(chat_prefix_ids)
+    if extra > len(base_ids):
+        raise ValueError(f"cached_tokens {cached_tokens} exceeds chat_prefix + base_ids capacity")
+    return chat_prefix_ids + base_ids[:extra]
 
 
 def parse_pairs_arg(s: str) -> list[tuple[int, int]]:
@@ -258,6 +349,15 @@ def run_benchmark(
     max_seq = max(prompt_tokens for prompt_tokens, _ in pairs)
     chunks = load_chunks(dataset)
 
+    chat_prefix_ids, chat_suffix_ids = split_chat_template(tokenizer)
+    chat_overhead = len(chat_prefix_ids) + len(chat_suffix_ids)
+    logger.info(
+        "Chat template: %d prefix tokens + %d suffix tokens = %d overhead",
+        len(chat_prefix_ids),
+        len(chat_suffix_ids),
+        chat_overhead,
+    )
+
     base_ids = build_ids_to_length(tokenizer, chunks, max_seq)
     if len(base_ids) != max_seq:
         raise RuntimeError(f"Internal error: base_ids length {len(base_ids)} != max_seq {max_seq}")
@@ -266,7 +366,8 @@ def run_benchmark(
     session = requests.Session()
 
     def do_warmup(cached_tokens: int) -> None:
-        w = post_completion(session, url, api_key, model, base_ids[:cached_tokens], max_tokens)
+        warmup_ids = build_warmup_ids(chat_prefix_ids, base_ids, cached_tokens)
+        w = post_completion(session, url, api_key, model, warmup_ids, max_tokens)
         if w.status_code != 200:
             raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
 
@@ -276,6 +377,11 @@ def run_benchmark(
     for prompt_tokens, cached_tokens in pairs:
         if not (0 <= cached_tokens <= prompt_tokens):
             raise ValueError(f"Invalid pair ({prompt_tokens}, {cached_tokens}): need 0 <= cached <= prompt")
+        if prompt_tokens < chat_overhead:
+            raise ValueError(
+                f"prompt_tokens {prompt_tokens} smaller than chat template overhead {chat_overhead}; "
+                "skip this pair or raise the prompt length."
+            )
 
         for attempt in range(1, retries + 1):
             try:
@@ -286,12 +392,19 @@ def run_benchmark(
                 uncached_tokens = prompt_tokens - cached_tokens
                 batch_size = max(1, min_tokens_to_batch // uncached_tokens)
                 for _ in range(batch_size):
-                    pair_ids = build_pair_ids(base_ids, tokenizer, chunks, prompt_tokens, cached_tokens, rng)
+                    pair_ids = build_pair_ids(
+                        chat_prefix_ids,
+                        chat_suffix_ids,
+                        base_ids,
+                        tokenizer,
+                        chunks,
+                        prompt_tokens,
+                        cached_tokens,
+                        rng,
+                    )
                     if len(pair_ids) != prompt_tokens:
                         raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
-                    # Send pre-tokenized ids (drop trailing 2 ids to mirror the previous decode-then-retokenize
-                    # truncation, and to avoid feeding a partial last subword token to the model).
-                    prompt_token_ids.append(pair_ids[:-2])
+                    prompt_token_ids.append(pair_ids)
 
                 logger.info(
                     "Pair (%d, %d): sending %d prompts in one request",
@@ -477,8 +590,8 @@ def main() -> None:
     parser.add_argument(
         "--seed",
         type=int,
-        default=None,
-        help="RNG seed for random limericks/code draws in non-cached suffixes (default: nondeterministic).",
+        default=0,
+        help="RNG seed for random limericks/code draws in non-cached suffixes (default: 0).",
     )
     parser.add_argument(
         "-f",
