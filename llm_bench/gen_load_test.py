@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import random
 import sys
 import time
 from collections.abc import Mapping
@@ -364,6 +365,12 @@ def _run_pair_n_mode(
     )
 
 
+def _generate_users(seed: int, count: int) -> list[str]:
+    """Generate `count` deterministic user ids (random ints as strings) from `seed`."""
+    rng = random.Random(seed)
+    return [str(rng.randint(0, 2**63 - 1)) for _ in range(count)]
+
+
 def _run_pair_separate_mode(
     url: str,
     api_key: str,
@@ -373,6 +380,7 @@ def _run_pair_separate_mode(
     seq_len: int,
     batch_size: int,
     temperature: Optional[float],
+    users: list[str],
 ) -> GenBenchmarkResult:
     """Send batch_size concurrent requests each with n=1."""
     logger.info(
@@ -382,8 +390,9 @@ def _run_pair_separate_mode(
         batch_size,
         max_tokens,
     )
+    assert len(users) == batch_size, f"expected {batch_size} users, got {len(users)}"
 
-    def _single_request() -> requests.Response:
+    def _single_request(user: str) -> requests.Response:
         s = requests.Session()
         return post_completion(
             s,
@@ -394,11 +403,12 @@ def _run_pair_separate_mode(
             max_tokens=max_tokens,
             n=1,
             temperature=temperature,
+            user=user,
         )
 
     wall_start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=batch_size) as pool:
-        futures = [pool.submit(_single_request) for _ in range(batch_size)]
+        futures = [pool.submit(_single_request, u) for u in users]
         responses = []
         for fut in as_completed(futures):
             responses.append(fut.result())
@@ -453,10 +463,13 @@ def _warmup_seq_len(
     temperature: Optional[float],
     retries: int,
     retry_delay: float,
+    users: Optional[list[str]] = None,
 ) -> None:
     """Issue `concurrency` warmup completions in parallel for the same prompt."""
+    if users is not None:
+        assert len(users) == concurrency, f"expected {concurrency} users, got {len(users)}"
 
-    def _single() -> requests.Response:
+    def _single(user: Optional[str]) -> requests.Response:
         return post_completion(
             requests.Session(),
             url,
@@ -466,6 +479,7 @@ def _warmup_seq_len(
             max_tokens=0,
             n=1,
             temperature=temperature,
+            user=user,
         )
 
     for attempt in range(1, retries + 1):
@@ -476,11 +490,12 @@ def _warmup_seq_len(
             attempt,
             retries,
         )
+        request_users: list[Optional[str]] = list(users) if users is not None else [None] * concurrency
         if concurrency == 1:
-            responses = [_single()]
+            responses = [_single(request_users[0])]
         else:
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                futures = [pool.submit(_single) for _ in range(concurrency)]
+                futures = [pool.submit(_single, u) for u in request_users]
                 responses = [f.result() for f in as_completed(futures)]
 
         bad = next((r for r in responses if r.status_code != 200), None)
@@ -509,9 +524,9 @@ def run_benchmark(
     max_tokens: int,
     temperature: Optional[float] = None,
     separate_requests: bool = False,
-    warmup_concurrency: Optional[int] = None,
     retries: int = 3,
     retry_delay: float = 30.0,
+    seed: int = 0,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     max_seq = max(seq_len for seq_len, _ in pairs)
@@ -528,18 +543,16 @@ def run_benchmark(
     else:
         logger.info("Mode: single request with n=batch_size")
 
-    if warmup_concurrency is None:
-        warmup_concurrency = 64 if separate_requests else 1
-    logger.info("Warmup concurrency: %d", warmup_concurrency)
-
     results: list[GenBenchmarkResult] = []
     prev_seq_len: Optional[int] = None
 
-    # Sort by seq_len descending so all batches for the same seq_len are grouped
-    # (one warmup per seq_len) and longer prompts come first for full prompt-cache hit rate.
-    pairs = sorted(pairs, key=lambda p: (-p[0], p[1]))
+    # Sort by seq_len descending (longer prompts first for full prompt-cache
+    # hit rate) and batch_size descending so the largest batch for a given
+    # seq_len comes first.
+    pairs = sorted(pairs, key=lambda p: (-p[0], -p[1]))
 
     prompt_ids: list[int] = []
+    seq_users: list[str] = []
     for seq_len, batch_size in pairs:
         if seq_len != prev_seq_len:
             prompt_ids = build_chat_prompt_ids(
@@ -549,22 +562,66 @@ def run_benchmark(
                 target_len=seq_len - max_tokens,
             )
             logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
-            _warmup_seq_len(
-                url=url,
-                api_key=api_key,
-                model=model,
-                prompt_ids=prompt_ids,
-                seq_len=seq_len,
-                concurrency=warmup_concurrency,
-                temperature=temperature,
-                retries=retries,
-                retry_delay=retry_delay,
-            )
+            if separate_requests:
+                if prev_seq_len is None:
+                    # HACK: backend OOMs without this pre-warmup on the largest
+                    # seq_len; sending the same prompt 64 times sequentially
+                    # with a fresh random `user` each time primes the backend
+                    # across generators before the user-pinned warmup at full
+                    # batch_size. TODO: fix the backend OOM and remove this.
+                    logger.info(
+                        "Pre-warmup (seq_len=%d): 64 sequential requests with random users (HACK)",
+                        seq_len,
+                    )
+                    rng = random.Random(seed)
+                    for _ in range(64):
+                        _warmup_seq_len(
+                            url=url,
+                            api_key=api_key,
+                            model=model,
+                            prompt_ids=prompt_ids,
+                            seq_len=seq_len,
+                            concurrency=1,
+                            temperature=temperature,
+                            retries=retries,
+                            retry_delay=retry_delay,
+                            users=[str(rng.randint(0, 2**63 - 1))],
+                        )
+                seq_users = _generate_users(seq_len + seed, batch_size)
+                _warmup_seq_len(
+                    url=url,
+                    api_key=api_key,
+                    model=model,
+                    prompt_ids=prompt_ids,
+                    seq_len=seq_len,
+                    concurrency=len(seq_users),
+                    temperature=temperature,
+                    retries=retries,
+                    retry_delay=retry_delay,
+                    users=seq_users,
+                )
+            else:
+                _warmup_seq_len(
+                    url=url,
+                    api_key=api_key,
+                    model=model,
+                    prompt_ids=prompt_ids,
+                    seq_len=seq_len,
+                    concurrency=1,
+                    temperature=temperature,
+                    retries=retries,
+                    retry_delay=retry_delay,
+                )
             prev_seq_len = seq_len
+
+        users: Optional[list[str]] = None
+        if separate_requests:
+            users = seq_users[:batch_size]
 
         for attempt in range(1, retries + 1):
             try:
                 if separate_requests:
+                    assert users is not None
                     result = _run_pair_separate_mode(
                         url=url,
                         api_key=api_key,
@@ -574,6 +631,7 @@ def run_benchmark(
                         seq_len=seq_len,
                         batch_size=batch_size,
                         temperature=temperature,
+                        users=users,
                     )
                 else:
                     result = _run_pair_n_mode(
@@ -719,14 +777,13 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Send batch_size separate concurrent requests (each with n=1) "
-        "instead of a single request with n=batch_size.",
+        "instead of a single request with n=batch_size. Useful for testing LLMs in data parallel mode.",
     )
     parser.add_argument(
-        "--warmup-concurrency",
+        "--seed",
         type=int,
-        default=None,
-        help="Number of identical warmup requests to send in parallel before each new "
-        "seq_len group (default: 64 if --separate-requests, else 1).",
+        default=0,
+        help="Seed for deterministic per-request `user` ids in --separate-requests mode. Default: 0.",
     )
     parser.add_argument(
         "--retries",
@@ -785,9 +842,9 @@ def main() -> None:
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         separate_requests=args.separate_requests,
-        warmup_concurrency=args.warmup_concurrency,
         retries=args.retries,
         retry_delay=args.retry_delay,
+        seed=args.seed,
     )
     if args.format == "csv":
         print(format_csv(rows))
