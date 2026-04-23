@@ -56,8 +56,6 @@ def _load_auto_tokenizer(tokenizer_path: str):
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
 
-
-
 def add_custom_metric(name, value, length_value=0):
     events.request.fire(
         request_type="METRIC",
@@ -69,25 +67,28 @@ def add_custom_metric(name, value, length_value=0):
     )
 
 
-def track_performance_metrics(response_time: float, token_count: int, char_count: int,
-                              prompt_tokens: int = None, ttft: float = None):
+def track_performance_metrics(
+    response_time: float, token_count: int, char_count: int, prompt_tokens: int = None, ttft: float = None
+):
     """Track comprehensive performance metrics for parity with Customers load_test.py."""
     metrics = {
-        'response_time': response_time,
-        'token_count': token_count,
-        'char_count': char_count,
-        'tokens_per_second': token_count / response_time if response_time > 0 else 0,
-        'chars_per_second': char_count / response_time if response_time > 0 else 0,
+        "response_time": response_time,
+        "token_count": token_count,
+        "char_count": char_count,
+        "tokens_per_second": token_count / response_time if response_time > 0 else 0,
+        "chars_per_second": char_count / response_time if response_time > 0 else 0,
     }
 
     if prompt_tokens:
-        metrics['total_tokens'] = prompt_tokens + token_count
-        metrics['efficiency'] = token_count / (prompt_tokens + token_count) if (prompt_tokens + token_count) > 0 else 0
+        metrics["total_tokens"] = prompt_tokens + token_count
+        metrics["efficiency"] = token_count / (prompt_tokens + token_count) if (prompt_tokens + token_count) > 0 else 0
 
     if ttft:
-        metrics['ttft'] = ttft
-        metrics['generation_time'] = response_time - ttft
-        metrics['generation_tokens_per_second'] = token_count / (response_time - ttft) if (response_time - ttft) > 0 else 0
+        metrics["ttft"] = ttft
+        metrics["generation_time"] = response_time - ttft
+        metrics["generation_tokens_per_second"] = (
+            token_count / (response_time - ttft) if (response_time - ttft) > 0 else 0
+        )
 
     for metric_name, metric_value in metrics.items():
         add_custom_metric(metric_name, metric_value, token_count)
@@ -217,13 +218,16 @@ class DatasetHolder:
                     prompt = options.prompt
                 dataset_file = "code.txt"
 
+            common_tokens = options.prompt_cache_max_len
+            if common_tokens > options.prompt_tokens:
+                common_tokens = options.prompt_tokens
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
                 tokenizer=InitTracker.load_tokenizer(options.tokenizer),
                 chat=options.chat and not getattr(options, "rerank", False),
                 num_tokens=options.prompt_tokens,
-                common_tokens=options.prompt_cache_max_len,
+                common_tokens=common_tokens,
             )
         else:
             raise ValueError(f"Unknown dataset: {options.dataset}")
@@ -252,7 +256,7 @@ class DatasetHolder:
             cls._forced_generation_instance = TranslationDataset(
                 path=path,
                 prompt="",
-                tokenizer_path=tokenizer,
+                tokenizer=InitTracker.load_tokenizer(tokenizer),
                 chat=False,
                 num_tokens=max_tokens,
                 common_tokens=0,
@@ -762,7 +766,9 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data):
         if self.parsed_options.rerank:
             usage = data.get("usage", {})
-            scores = [f"{item['index']}:{item['relevance_score']:.4f}" for item in data.get("results", data.get("data", []))]
+            scores = [
+                f"{item['index']}:{item['relevance_score']:.4f}" for item in data.get("results", data.get("data", []))
+            ]
             return ChunkMetadata(
                 text=", ".join(scores),
                 logprob_tokens=None,
@@ -999,7 +1005,12 @@ class TritonInferProvider(BaseProvider):
                 {"name": "max_tokens", "datatype": "UINT32", "shape": [1, 1], "data": [[max_tokens]]},
                 {"name": "bad_words", "datatype": "BYTES", "shape": [1, 1], "data": [[""]]},
                 {"name": "stop_words", "datatype": "BYTES", "shape": [1, 1], "data": [[""]]},
-                {"name": "temperature", "datatype": "FP32", "shape": [1, 1], "data": [[self.parsed_options.temperature]]},
+                {
+                    "name": "temperature",
+                    "datatype": "FP32",
+                    "shape": [1, 1],
+                    "data": [[self.parsed_options.temperature]],
+                },
             ]
         }
 
@@ -1013,7 +1024,7 @@ class TritonInferProvider(BaseProvider):
                 # Triton echoes the prompt in the response; strip it.
                 text = text.removeprefix("<s> ")
                 if text.startswith(prompt):
-                    text = text[len(prompt):].removeprefix(" ")
+                    text = text[len(prompt) :].removeprefix(" ")
                 else:
                     logger.warning("prompt not found in the output")
                 return ChunkMetadata(
@@ -1059,7 +1070,7 @@ class TritonGenerateProvider(BaseProvider):
             prompt = getattr(self, "_last_prompt", "")
             text = text.removeprefix("<s> ")
             if text.startswith(prompt):
-                text = text[len(prompt):].removeprefix(" ")
+                text = text[len(prompt) :].removeprefix(" ")
             else:
                 logger.warning("prompt not found in the output")
         return ChunkMetadata(
@@ -1504,7 +1515,6 @@ class LLMUser(HttpUser):
                     # so t_first_visible_token fires correctly at the end of the thinking phase.
                     if combined_text and not out.has_reasoning_only and t_first_visible_token is None:
                         t_first_visible_token = now
-
 
                     if out.logprob_tokens:
                         total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
@@ -1986,7 +1996,6 @@ def init_parser(parser):
         "with how Customers measures TTFT. Use this flag to compare apples-to-apples TTFT across "
         "reasoning and non-reasoning providers. Requires --chat and --stream.",
     )
-
 
 
 @events.quitting.add_listener
