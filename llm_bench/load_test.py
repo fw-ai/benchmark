@@ -903,8 +903,7 @@ class FireworksProvider(OpenAIProvider):
             data["min_tokens"] = max_tokens
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
-        if self.parsed_options.prompt_cache_max_len:
-            data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
         if self._forced_generation_pool is not None:
