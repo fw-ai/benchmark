@@ -72,8 +72,12 @@ def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
     s = min_seq_len
     while s <= max_seq_len:
         step = s // 8
-        for multiplier in [0, 1, 3, 5, 7]:
-            c = step * multiplier
+        cached_points = [step * multiplier for multiplier in [0, 1, 3, 5, 7]]
+        if step >= 4000:
+            cached_points.extend([step // 4, s - step // 4])
+        if step >= 16000:
+            cached_points.extend([step // 16, s - step // 16])
+        for c in sorted(set(cached_points)):
             if c <= s:
                 pairs.append((s, c))
         s *= 4
