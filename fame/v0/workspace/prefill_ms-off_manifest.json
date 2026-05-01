@@ -1,0 +1,10 @@
+{
+  "mode": "prefill",
+  "T": 4096,
+  "T_kv": 4096,
+  "iters": 20,
+  "warmup": 5,
+  "multi_stream": "off",
+  "weights_dir": "/shared/data/minimax/m2p7/hf",
+  "layer": 0
+}
