@@ -2057,6 +2057,19 @@ def _(environment, **kw):
 
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
+
+    # Calculate TPS (tokens per second) - aggregate output throughput
+    # TPS = QPS * average_completion_tokens
+    if not getattr(environment.parsed_options, "embeddings", False) and not getattr(
+        environment.parsed_options, "rerank", False
+    ):
+        completion_tokens_entry = environment.stats.entries.get(("completion_tokens", "METRIC"))
+        if completion_tokens_entry and completion_tokens_entry.avg_response_time > 0:
+            avg_completion_tokens = completion_tokens_entry.avg_response_time
+            entries["output_tps"] = total_latency.total_rps * avg_completion_tokens
+        else:
+            entries["output_tps"] = ""
+
     percentile_to_report = [50, 90, 95, 99, 99.9]
     for percentile_metric in percentile_metrics:
         metric_entry = environment.stats.entries.get((percentile_metric, "METRIC"))
