@@ -904,9 +904,12 @@ class FireworksProvider(OpenAIProvider):
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
         prompt_cache_max_len = self.parsed_options.prompt_cache_max_len
-        if prompt_cache_max_len is None:
-            prompt_cache_max_len = self.parsed_options.prompt_prefix_len
-        data["prompt_cache_max_len"] = prompt_cache_max_len
+        # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
+        # default (0 = no caching) is a no-op for the server, but unconditionally
+        # adding the key breaks deployments whose OpenAI-compat schema is configured
+        # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
+        if prompt_cache_max_len and prompt_cache_max_len > 0:
+            data["prompt_cache_max_len"] = prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
         if self._forced_generation_pool is not None:
