@@ -1916,7 +1916,8 @@ def init_parser(parser):
         env_var="PROMPT_CACHE_MAX_LEN",
         type=int,
         default=None,
-        help="Fireworks prompt_cache_max_len request field. If omitted, defaults to --prompt-prefix-len.",
+        help="Fireworks prompt_cache_max_len request field, specifically only taking effect for FA. "
+        "If omitted or <= 0, the field is not sent.",
     )
     parser.add_argument(
         "--prompt-prefix-len",
