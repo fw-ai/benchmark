@@ -218,7 +218,7 @@ class DatasetHolder:
                     prompt = options.prompt
                 dataset_file = "code.txt"
 
-            common_tokens = options.prompt_cache_max_len
+            common_tokens = options.prompt_prefix_len
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
             return TranslationDataset(
@@ -903,6 +903,10 @@ class FireworksProvider(OpenAIProvider):
             data["min_tokens"] = max_tokens
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
+        prompt_cache_max_len = self.parsed_options.prompt_cache_max_len
+        if prompt_cache_max_len is None:
+            prompt_cache_max_len = self.parsed_options.prompt_prefix_len
+        data["prompt_cache_max_len"] = prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
         if self._forced_generation_pool is not None:
@@ -1908,8 +1912,15 @@ def init_parser(parser):
         "--prompt-cache-max-len",
         env_var="PROMPT_CACHE_MAX_LEN",
         type=int,
+        default=None,
+        help="Fireworks prompt_cache_max_len request field. If omitted, defaults to --prompt-prefix-len.",
+    )
+    parser.add_argument(
+        "--prompt-prefix-len",
+        env_var="PROMPT_PREFIX_LEN",
+        type=int,
         default=0,
-        help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+        help="Target shared-prefix token length for synthetic datasets. Defaults to 0.",
     )
     parser.add_argument(
         "--acceptance-probs-override",
