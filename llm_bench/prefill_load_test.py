@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import logging
 import os
 import random
@@ -71,9 +72,16 @@ def resolve_max_seq_len(tokenizer_path: str) -> int:
 
 
 def resolve_model_type(tokenizer_path: str) -> str:
-    config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
-    text_config = config.get_text_config()
-    return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
+    try:
+        config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
+        text_config = config.get_text_config()
+        return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
+    except ValueError:
+        config_path = hf_hub_download(repo_id=tokenizer_path, filename="config.json")
+        with open(config_path) as f:
+            config_json = json.load(f)
+        text_config = config_json.get("text_config") or {}
+        return text_config.get("model_type") or config_json.get("model_type", "")
 
 
 @lru_cache(maxsize=None)
