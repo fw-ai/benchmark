@@ -35,6 +35,68 @@ from tabulate import tabulate
 
 FW_HEADER_PREFIX = "fireworks-"
 
+_SERVICE_INDEX_HEADER = "x-fireworks-generator-worker-service-index"
+_LOCAL_INDEX_HEADER = "x-fireworks-generator-worker-local-index"
+
+
+@dataclass(frozen=True)
+class RoutingConfig:
+    """Generator-worker routing knobs for the benchmark client.
+
+    `num_servers` and `num_local` define the round-robin space across
+    (service-index, local-index) cells. Either dimension can be pinned to a
+    specific value via `pin_server` / `pin_local_index`.
+
+    Routing headers are only emitted when at least one knob is non-default;
+    otherwise existing benchmark runs are unchanged byte-for-byte.
+
+    Requires `enableGeneratorWorkerTargeting=true` on the deployment for the
+    headers to take effect; otherwise they are ignored by Envoy.
+    """
+
+    num_servers: int = 1
+    num_local: int = 1
+    pin_server: Optional[int] = None
+    pin_local_index: Optional[int] = None
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self.num_servers > 1
+            or self.num_local > 1
+            or self.pin_server is not None
+            or self.pin_local_index is not None
+        )
+
+    def describe(self) -> str:
+        if not self.enabled:
+            return "off"
+        if self.pin_server is not None and self.pin_local_index is not None:
+            return f"pinned (s={self.pin_server},l={self.pin_local_index})"
+        if self.pin_server is not None:
+            return f"pinned-server s={self.pin_server} x {self.num_local} locals"
+        if self.pin_local_index is not None:
+            return f"{self.num_servers} servers x pinned-local l={self.pin_local_index}"
+        return f"server-first {self.num_servers}x{self.num_local}"
+
+
+def routing_headers_for_slot(cfg: Optional[RoutingConfig], slot_idx: int) -> dict[str, str]:
+    """Return the routing headers to attach to the request for the given slot.
+
+    Server-first cycling keeps the per-server distribution balanced even when
+    `batch_size < num_servers * num_local`: e.g. with 2 servers x 4 locals and
+    batch=4, cells visited are (s0,l0),(s1,l0),(s0,l1),(s1,l1) so each server
+    gets two requests rather than one server eating the whole batch.
+    """
+    if cfg is None or not cfg.enabled:
+        return {}
+    total = cfg.num_servers * cfg.num_local
+    flat = slot_idx % total
+    server = cfg.pin_server if cfg.pin_server is not None else flat % cfg.num_servers
+    local = cfg.pin_local_index if cfg.pin_local_index is not None else flat // cfg.num_servers
+    return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
+
+
 _FAST_BATCH_SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
 
 # NB: don't use power of 2 as we will use multiples of this to generate seq pairs
@@ -293,6 +355,7 @@ def post_completion(
     n: int,
     temperature: Optional[float] = None,
     user: Optional[str] = None,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
         "prompt": prompt,
@@ -309,6 +372,8 @@ def post_completion(
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
     return session.post(url, headers=headers, json=payload, timeout=3600)
 
 
@@ -347,14 +412,26 @@ def _run_pair_n_mode(
     seq_len: int,
     batch_size: int,
     temperature: Optional[float],
+    routing: Optional[RoutingConfig] = None,
 ) -> GenBenchmarkResult:
     """Single request with n=batch_size."""
+    # n>1 mode runs the whole batch on one generator, so distribution across
+    # servers/locals is not meaningful here. We only attach routing headers
+    # when the caller has explicitly pinned both dimensions; otherwise we let
+    # the existing LB pick a generator.
+    pin_headers: dict[str, str] = {}
+    if routing is not None and routing.pin_server is not None and routing.pin_local_index is not None:
+        pin_headers = {
+            _SERVICE_INDEX_HEADER: str(routing.pin_server),
+            _LOCAL_INDEX_HEADER: str(routing.pin_local_index),
+        }
     logger.info(
-        "Pair (seq_len=%d, batch_size=%d): n=%d, max_tokens=%d",
+        "Pair (seq_len=%d, batch_size=%d): n=%d, max_tokens=%d, routing=%s",
         seq_len,
         batch_size,
         batch_size,
         max_tokens,
+        f"pinned (s={routing.pin_server},l={routing.pin_local_index})" if pin_headers else "off",
     )
 
     wall_start = time.perf_counter()
@@ -367,6 +444,7 @@ def _run_pair_n_mode(
         max_tokens=max_tokens,
         n=batch_size,
         temperature=temperature,
+        extra_headers=pin_headers or None,
     )
     wall = time.perf_counter() - wall_start
 
@@ -419,19 +497,27 @@ def _run_pair_separate_mode(
     batch_size: int,
     temperature: Optional[float],
     users: list[str],
+    routing: Optional[RoutingConfig] = None,
+    slot_offset: int = 0,
 ) -> GenBenchmarkResult:
     """Send batch_size concurrent requests each with n=1."""
     logger.info(
-        "Pair (seq_len=%d, batch_size=%d): %d separate requests, max_tokens=%d",
+        "Pair (seq_len=%d, batch_size=%d): %d separate requests, max_tokens=%d, routing=%s",
         seq_len,
         batch_size,
         batch_size,
         max_tokens,
+        (routing or RoutingConfig()).describe(),
     )
     assert len(users) == batch_size, f"expected {batch_size} users, got {len(users)}"
 
-    def _single_request(user: str) -> requests.Response:
+    def _single_request(slot_idx: int, user: str) -> requests.Response:
         s = requests.Session()
+        headers = routing_headers_for_slot(routing, slot_offset + slot_idx)
+        if headers and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "  slot=%d server=%s local=%s", slot_idx, headers.get(_SERVICE_INDEX_HEADER), headers.get(_LOCAL_INDEX_HEADER)
+            )
         return post_completion(
             s,
             url,
@@ -442,11 +528,12 @@ def _run_pair_separate_mode(
             n=1,
             temperature=temperature,
             user=user,
+            extra_headers=headers or None,
         )
 
     wall_start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=batch_size) as pool:
-        futures = [pool.submit(_single_request, u) for u in users]
+        futures = [pool.submit(_single_request, i, u) for i, u in enumerate(users)]
         responses = []
         for fut in as_completed(futures):
             responses.append(fut.result())
@@ -502,12 +589,15 @@ def _warmup_seq_len(
     retries: int,
     retry_delay: float,
     users: Optional[list[str]] = None,
+    routing: Optional[RoutingConfig] = None,
+    slot_offset: int = 0,
 ) -> None:
     """Issue `concurrency` warmup completions in parallel for the same prompt."""
     if users is not None:
         assert len(users) == concurrency, f"expected {concurrency} users, got {len(users)}"
 
-    def _single(user: Optional[str]) -> requests.Response:
+    def _single(slot_idx: int, user: Optional[str]) -> requests.Response:
+        headers = routing_headers_for_slot(routing, slot_offset + slot_idx)
         return post_completion(
             requests.Session(),
             url,
@@ -518,6 +608,7 @@ def _warmup_seq_len(
             n=1,
             temperature=temperature,
             user=user,
+            extra_headers=headers or None,
         )
 
     for attempt in range(1, retries + 1):
@@ -530,10 +621,10 @@ def _warmup_seq_len(
         )
         request_users: list[Optional[str]] = list(users) if users is not None else [None] * concurrency
         if concurrency == 1:
-            responses = [_single(request_users[0])]
+            responses = [_single(0, request_users[0])]
         else:
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                futures = [pool.submit(_single, u) for u in request_users]
+                futures = [pool.submit(_single, i, u) for i, u in enumerate(request_users)]
                 responses = [f.result() for f in as_completed(futures)]
 
         bad = next((r for r in responses if r.status_code != 200), None)
@@ -565,6 +656,7 @@ def run_benchmark(
     retries: int = 3,
     retry_delay: float = 30.0,
     seed: int = 0,
+    routing: Optional[RoutingConfig] = None,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     model_type = resolve_model_type(tokenizer_path)
@@ -583,6 +675,7 @@ def run_benchmark(
         logger.info("Mode: separate concurrent requests (no n>1)")
     else:
         logger.info("Mode: single request with n=batch_size")
+    logger.info("Routing: %s", (routing or RoutingConfig()).describe())
 
     results: list[GenBenchmarkResult] = []
     prev_seq_len: Optional[int] = None
@@ -612,12 +705,16 @@ def run_benchmark(
                     # with a fresh random `user` each time primes the backend
                     # across generators before the user-pinned warmup at full
                     # batch_size. TODO: fix the backend OOM and remove this.
+                    #
+                    # When routing is enabled we also round-robin the slot
+                    # index across all (server, local) cells so every DP group
+                    # gets primed by this hack instead of relying on the LB.
                     logger.info(
                         "Pre-warmup (seq_len=%d): 64 sequential requests with random users (HACK)",
                         seq_len,
                     )
                     rng = random.Random(seed)
-                    for _ in range(64):
+                    for i in range(64):
                         _warmup_seq_len(
                             url=url,
                             api_key=api_key,
@@ -629,6 +726,8 @@ def run_benchmark(
                             retries=retries,
                             retry_delay=retry_delay,
                             users=[str(rng.randint(0, 2**63 - 1))],
+                            routing=routing,
+                            slot_offset=i,
                         )
                 seq_users = _generate_users(seq_len + seed, batch_size)
                 _warmup_seq_len(
@@ -642,6 +741,7 @@ def run_benchmark(
                     retries=retries,
                     retry_delay=retry_delay,
                     users=seq_users,
+                    routing=routing,
                 )
             else:
                 _warmup_seq_len(
@@ -654,6 +754,7 @@ def run_benchmark(
                     temperature=temperature,
                     retries=retries,
                     retry_delay=retry_delay,
+                    routing=routing,
                 )
             prev_seq_len = seq_len
 
@@ -675,6 +776,7 @@ def run_benchmark(
                         batch_size=batch_size,
                         temperature=temperature,
                         users=users,
+                        routing=routing,
                     )
                 else:
                     result = _run_pair_n_mode(
@@ -687,6 +789,7 @@ def run_benchmark(
                         seq_len=seq_len,
                         batch_size=batch_size,
                         temperature=temperature,
+                        routing=routing,
                     )
                 results.append(result)
                 break
@@ -841,8 +944,54 @@ def main() -> None:
         default=30.0,
         help="Seconds to sleep between retries (default: 30).",
     )
+    parser.add_argument(
+        "--num-servers",
+        type=int,
+        default=1,
+        help="Number of generator servers to fan requests out across via "
+        "x-fireworks-generator-worker-service-index. Requires the deployment to "
+        "be rendered with enableGeneratorWorkerTargeting=true; otherwise the "
+        "header is ignored. Default: 1 (no service-index header sent).",
+    )
+    parser.add_argument(
+        "--num-generators-per-server",
+        type=int,
+        default=1,
+        help="Number of data-parallel generator groups per server, used as the "
+        "round-robin range for x-fireworks-generator-worker-local-index. "
+        "Default: 1.",
+    )
+    parser.add_argument(
+        "--pin-server",
+        type=int,
+        default=None,
+        help="Pin all requests to this service-index instead of round-robining. "
+        "Must be in [0, --num-servers).",
+    )
+    parser.add_argument(
+        "--pin-local-index",
+        type=int,
+        default=None,
+        help="Pin all requests to this local-index instead of round-robining. "
+        "Must be in [0, --num-generators-per-server).",
+    )
 
     args = parser.parse_args()
+
+    if args.num_servers < 1:
+        parser.error("--num-servers must be >= 1")
+    if args.num_generators_per_server < 1:
+        parser.error("--num-generators-per-server must be >= 1")
+    if args.pin_server is not None and not (0 <= args.pin_server < args.num_servers):
+        parser.error(f"--pin-server must be in [0, {args.num_servers})")
+    if args.pin_local_index is not None and not (0 <= args.pin_local_index < args.num_generators_per_server):
+        parser.error(f"--pin-local-index must be in [0, {args.num_generators_per_server})")
+    routing = RoutingConfig(
+        num_servers=args.num_servers,
+        num_local=args.num_generators_per_server,
+        pin_server=args.pin_server,
+        pin_local_index=args.pin_local_index,
+    )
 
     if args.seq_batch_pairs is not None:
         pairs = parse_pairs_arg(args.seq_batch_pairs)
@@ -887,6 +1036,7 @@ def main() -> None:
         retries=args.retries,
         retry_delay=args.retry_delay,
         seed=args.seed,
+        routing=routing,
     )
     if args.format == "csv":
         print(format_csv(rows))
