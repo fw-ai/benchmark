@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 import requests
 import transformers
+from dsv4_encoding import encode_messages
 
 from tabulate import tabulate
 
@@ -65,6 +66,12 @@ def resolve_max_seq_len(tokenizer_path: str) -> int:
         if isinstance(v, int) and v > 0:
             return v
     raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
+
+
+def resolve_model_type(tokenizer_path: str) -> str:
+    config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
+    text_config = config.get_text_config()
+    return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
 
 
 def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
@@ -157,6 +164,7 @@ def _normalize_ids(obj: Any) -> list[int]:
 
 def split_chat_template(
     tokenizer: transformers.PreTrainedTokenizer,
+    model_type: str,
 ) -> tuple[list[int], list[int]]:
     """Return (prefix_ids, suffix_ids) for the chat template wrapping a single user message.
 
@@ -168,13 +176,17 @@ def split_chat_template(
     sentinel_ids = _normalize_ids(tokenizer.encode(sentinel, add_special_tokens=False))
     if not sentinel_ids:
         raise RuntimeError("Sentinel tokenized to empty id list; cannot split chat template.")
-    templated = _normalize_ids(
-        tokenizer.apply_chat_template(
-            [{"role": "user", "content": sentinel}],
-            tokenize=True,
-            add_generation_prompt=True,
+    if model_type == "deepseek_v4":
+        prompt = encode_messages([{"role": "user", "content": sentinel}], thinking_mode="chat")
+        templated = _normalize_ids(tokenizer.encode(prompt, add_special_tokens=False))
+    else:
+        templated = _normalize_ids(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": sentinel}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
         )
-    )
     n = len(sentinel_ids)
     for i in range(len(templated) - n + 1):
         if templated[i : i + n] == sentinel_ids:
@@ -351,10 +363,13 @@ def run_benchmark(
 ) -> list[PairBenchmarkResult]:
     """Per-pair prefill benchmark with multi-prompt batching."""
     tokenizer = _load_auto_tokenizer(tokenizer_path)
+    model_type = resolve_model_type(tokenizer_path)
+    if model_type == "deepseek_v4":
+        logger.info("Using DeepSeek-V4 benchmark prompt encoder")
     max_seq = max(prompt_tokens for prompt_tokens, _ in pairs)
     chunks = load_chunks(dataset)
 
-    chat_prefix_ids, chat_suffix_ids = split_chat_template(tokenizer)
+    chat_prefix_ids, chat_suffix_ids = split_chat_template(tokenizer, model_type)
     chat_overhead = len(chat_prefix_ids) + len(chat_suffix_ids)
     logger.info(
         "Chat template: %d prefix tokens + %d suffix tokens = %d overhead",
