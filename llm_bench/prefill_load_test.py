@@ -15,6 +15,7 @@ prompts in a batch and the warmup call.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import os
 import random
@@ -22,13 +23,14 @@ import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 import requests
 import transformers
-from dsv4_encoding import encode_messages
+from huggingface_hub import hf_hub_download
 
 from tabulate import tabulate
 
@@ -72,6 +74,17 @@ def resolve_model_type(tokenizer_path: str) -> str:
     config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
     text_config = config.get_text_config()
     return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
+
+
+@lru_cache(maxsize=None)
+def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
+    path = hf_hub_download(repo_id=tokenizer_path, filename="encoding/encoding_dsv4.py")
+    spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load DSV4 encoding module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.encode_messages
 
 
 def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
@@ -164,6 +177,7 @@ def _normalize_ids(obj: Any) -> list[int]:
 
 def split_chat_template(
     tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
     model_type: str,
 ) -> tuple[list[int], list[int]]:
     """Return (prefix_ids, suffix_ids) for the chat template wrapping a single user message.
@@ -177,6 +191,7 @@ def split_chat_template(
     if not sentinel_ids:
         raise RuntimeError("Sentinel tokenized to empty id list; cannot split chat template.")
     if model_type == "deepseek_v4":
+        encode_messages = load_dsv4_encode_messages(tokenizer_path)
         prompt = encode_messages([{"role": "user", "content": sentinel}], thinking_mode="chat")
         templated = _normalize_ids(tokenizer.encode(prompt, add_special_tokens=False))
     else:
@@ -369,7 +384,7 @@ def run_benchmark(
     max_seq = max(prompt_tokens for prompt_tokens, _ in pairs)
     chunks = load_chunks(dataset)
 
-    chat_prefix_ids, chat_suffix_ids = split_chat_template(tokenizer, model_type)
+    chat_prefix_ids, chat_suffix_ids = split_chat_template(tokenizer, tokenizer_path, model_type)
     chat_overhead = len(chat_prefix_ids) + len(chat_suffix_ids)
     logger.info(
         "Chat template: %d prefix tokens + %d suffix tokens = %d overhead",
