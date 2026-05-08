@@ -66,6 +66,9 @@ Generation options:
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
 
+Fireworks-specific options:
+- `--fireworks-extras` (`auto`/`on`/`off`, default `auto`): controls whether the Fireworks-specific request body extras `perf_metrics_in_response` and `prompt_cache_max_len` are sent. Some serving images (notably TRT-LLM with strict OpenAI-compat schema configured with `extra="forbid"`) reject these fields with HTTP 400. The default `auto` mode sends them and silently disables them for the rest of the run if the deployment rejects them, retrying the offending request transparently so no metrics are lost. Use `off` to skip the one-failed-request auto-detect cost when you know up-front the deployment does not support them, or `on` to fail fast if you expect them to be supported. Also configurable via the `FIREWORKS_EXTRAS` environment variable.
+
 Embeddings and rerank options:
 - `--embeddings`: use the `/v1/embeddings` API instead of completions
 - `--rerank`: use the `/v1/rerank` API. The generated prompt text is split into documents (by paragraph), and `--rerank-query` is used as the query.

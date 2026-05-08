@@ -666,6 +666,18 @@ class BaseProvider(abc.ABC):
         """
         pass
 
+    def handle_request_failure(self, status_code: int, response_text: str) -> bool:
+        """Hook for provider-specific handling of failed requests.
+
+        Override to detect deployment-specific schema errors and silently disable
+        offending request body fields so the test caller can retry the request.
+
+        Returns:
+            True if the failure was recognized and the caller should retry the request
+            (with format_payload now producing a compatible body). False otherwise.
+        """
+        return False
+
 
 class OpenAIProvider(BaseProvider):
     def get_url(self):
@@ -842,8 +854,52 @@ class OpenAIProvider(BaseProvider):
 
 
 class FireworksProvider(OpenAIProvider):
+    # Class-level shared state for Fireworks-specific request body extras
+    # (perf_metrics_in_response, prompt_cache_max_len). Some serving images
+    # (e.g. TRT-LLM with strict OpenAI-compat schema configured with extra="forbid")
+    # reject these fields with HTTP 400. We auto-detect the rejection on the first
+    # failed request and disable the extras for all subsequent requests across all
+    # locust users in this process. Shared across users to avoid each user paying
+    # the one-failed-request cost individually.
+    _extras_lock = threading.Lock()
+    _extras_disabled = False
+    # Substrings we look for in 4xx response bodies to recognize a rejection of
+    # one of the Fireworks-specific request body extras. We match on the field
+    # names themselves to avoid coupling to a specific server's wording.
+    _EXTRA_FIELD_KEYS = ("perf_metrics_in_response", "prompt_cache_max_len")
+
+    @classmethod
+    def _disable_extras(cls, reason: str) -> None:
+        """Disable Fireworks-specific request body extras for the rest of the run.
+
+        Idempotent and thread-safe so repeated concurrent failures collapse to a
+        single warning.
+        """
+        with cls._extras_lock:
+            if cls._extras_disabled:
+                return
+            cls._extras_disabled = True
+            logger.warning(
+                "Fireworks request-body extras (perf_metrics_in_response, "
+                "prompt_cache_max_len) auto-disabled for the rest of the run. "
+                "Reason: %s. Override with --fireworks-extras=on if needed.",
+                reason,
+            )
+
+    def _extras_enabled(self) -> bool:
+        mode = getattr(self.parsed_options, "fireworks_extras", "auto")
+        if mode == "off":
+            return False
+        if mode == "on":
+            return True
+        return not type(self)._extras_disabled
+
     def __init__(self, model, parsed_options):
         super().__init__(model, parsed_options)
+        # Honor an explicit --fireworks-extras=off up-front so the very first
+        # request already drops the offending fields.
+        if getattr(parsed_options, "fireworks_extras", "auto") == "off":
+            type(self)._disable_extras("--fireworks-extras=off")
         raw = parsed_options.acceptance_probs_override
         if raw is not None:
             try:
@@ -901,19 +957,44 @@ class FireworksProvider(OpenAIProvider):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
-        # Enable perf_metrics_in_response to get speculation stats in streaming responses
-        data["perf_metrics_in_response"] = True
-        # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
-        # default (0 = no caching) is a no-op for the server, but unconditionally
-        # adding the key breaks deployments whose OpenAI-compat schema is configured
-        # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
-            data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        # Fireworks-specific request body extras. Some serving images (e.g. TRT-LLM
+        # with strict OpenAI-compat schema configured with extra="forbid") reject
+        # these fields with HTTP 400. We gate them on a runtime-controllable flag
+        # that auto-disables on the first such rejection so the rest of the run
+        # collects metrics cleanly without any preflight patching.
+        if self._extras_enabled():
+            # Enable perf_metrics_in_response to get speculation stats in streaming responses
+            data["perf_metrics_in_response"] = True
+            # Only send prompt_cache_max_len when the user explicitly opted in (>0).
+            # The default (0 = no caching) is a no-op for the server, but unconditionally
+            # adding the key breaks the same strict-schema deployments mentioned above.
+            if self.parsed_options.prompt_cache_max_len > 0:
+                data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
         if self._forced_generation_pool is not None:
             data["forced_generation"] = next(self._forced_generation_pool)
         return data
+
+    def handle_request_failure(self, status_code: int, response_text: str) -> bool:
+        # Only auto-disable in the default "auto" mode; respect explicit on/off.
+        mode = getattr(self.parsed_options, "fireworks_extras", "auto")
+        if mode != "auto":
+            return False
+        # Most strict-schema servers return 400, but accept any 4xx that names
+        # one of our extras in the body — the body match is the strong signal.
+        if not (400 <= int(status_code) < 500):
+            return False
+        if type(self)._extras_disabled:
+            # Already disabled — nothing more to do; the original failure must be
+            # something else (don't claim to handle it).
+            return False
+        body = response_text or ""
+        if not any(key in body for key in self._EXTRA_FIELD_KEYS):
+            return False
+        snippet = body[:200].replace("\n", " ")
+        type(self)._disable_extras(f"server returned HTTP 400: {snippet}")
+        return True
 
     def post_response_hook(self, headers, num_tokens, perf_metrics=None):
         """Process Fireworks-specific response for speculation hit rate tracking.
@@ -1419,7 +1500,7 @@ class LLMUser(HttpUser):
             if self.ramping_pacer:
                 self.ramping_pacer.request_end()
 
-    def _do_generate_text(self):
+    def _do_generate_text(self, _retry_attempt: int = 0):
         max_tokens = self.max_tokens_sampler.sample()
         is_embeddings = self.provider_formatter.parsed_options.embeddings
         batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
@@ -1454,6 +1535,19 @@ class LLMUser(HttpUser):
             try:
                 response.raise_for_status()
             except Exception as e:
+                # Give the provider a chance to recover from deployment-specific
+                # schema rejections (e.g. TRT-LLM rejecting Fireworks extras).
+                # If the provider auto-disables the offending field(s), retry the
+                # request once with the rebuilt payload so this request still
+                # contributes a clean metric instead of a recorded failure.
+                if _retry_attempt == 0 and self.provider_formatter.handle_request_failure(
+                    response.status_code, response.text
+                ):
+                    response.success()
+                    logger.info(
+                        "Retrying request after auto-disabling unsupported Fireworks request body extras"
+                    )
+                    return self._do_generate_text(_retry_attempt=1)
                 raise RuntimeError(f"Error in response: {response.text}") from e
             t_first_token = None
             t_first_visible_token = None
@@ -1999,6 +2093,20 @@ def init_parser(parser):
         "By default, TTFT fires on the first thinking token for reasoning models, which is consistent "
         "with how Customers measures TTFT. Use this flag to compare apples-to-apples TTFT across "
         "reasoning and non-reasoning providers. Requires --chat and --stream.",
+    )
+    parser.add_argument(
+        "--fireworks-extras",
+        env_var="FIREWORKS_EXTRAS",
+        type=str,
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="Control Fireworks-specific request body extras (perf_metrics_in_response, "
+        "prompt_cache_max_len). 'auto' (default) sends the extras and silently disables them "
+        "for the rest of the run if the deployment rejects them with HTTP 400 (e.g. some "
+        "TRT-LLM serving images that enforce strict OpenAI-compat schema with extra='forbid'). "
+        "'on' always sends them — use this to fail fast if you expect them to be supported. "
+        "'off' never sends them — use this to skip the one-failed-request auto-detect cost when "
+        "you know up-front that the deployment does not support them. Fireworks-specific.",
     )
 
 
