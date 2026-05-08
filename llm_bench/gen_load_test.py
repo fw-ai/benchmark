@@ -13,6 +13,8 @@ fireworks-generation-duration and the number of target-model forward passes
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
 import logging
 import os
 import random
@@ -21,12 +23,14 @@ import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 import requests
 import transformers
+from huggingface_hub import hf_hub_download
 from tabulate import tabulate
 
 FW_HEADER_PREFIX = "fireworks-"
@@ -76,6 +80,30 @@ def resolve_max_seq_len(tokenizer_path: str) -> int:
         if isinstance(v, int) and v > 0:
             return v
     raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
+
+
+def resolve_model_type(tokenizer_path: str) -> str:
+    try:
+        config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
+        text_config = config.get_text_config()
+        return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
+    except ValueError:
+        config_path = hf_hub_download(repo_id=tokenizer_path, filename="config.json")
+        with open(config_path) as f:
+            config_json = json.load(f)
+        text_config = config_json.get("text_config") or {}
+        return text_config.get("model_type") or config_json.get("model_type", "")
+
+
+@lru_cache(maxsize=None)
+def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
+    path = hf_hub_download(repo_id=tokenizer_path, filename="encoding/encoding_dsv4.py")
+    spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load DSV4 encoding module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.encode_messages
 
 
 def generate_seq_lens(min_seq_len: int, max_seq_len: int) -> list[int]:
@@ -135,9 +163,15 @@ def build_chunk_texts_to_length(
 
 def apply_chat_template_ids(
     tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
     content_text: str,
+    model_type: str,
 ) -> list[int]:
     """Apply the model's chat template to a single user message and return token ids."""
+    if model_type == "deepseek_v4":
+        encode_messages = load_dsv4_encode_messages(tokenizer_path)
+        prompt = encode_messages([{"role": "user", "content": content_text}], thinking_mode="chat")
+        return _normalize_ids(tokenizer.encode(prompt, add_special_tokens=False))
     out = tokenizer.apply_chat_template(
         [{"role": "user", "content": content_text}],
         tokenize=True,
@@ -170,6 +204,8 @@ def _normalize_ids(obj: Any) -> list[int]:
 
 def build_chat_prompt_ids(
     tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
+    model_type: str,
     suffix_text: str,
     chunk_texts: list[str],
     target_len: int,
@@ -185,14 +221,14 @@ def build_chat_prompt_ids(
         raise ValueError("no chunks provided")
 
     def length_for(k: int) -> int:
-        return len(apply_chat_template_ids(tokenizer, "".join(chunk_texts[:k]) + suffix_text))
+        return len(apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:k]) + suffix_text, model_type))
 
     if length_for(1) > target_len:
         raise ValueError(f"target_len={target_len} too small to fit even one chunk")
 
     n = len(chunk_texts)
     if length_for(n) <= target_len:
-        return apply_chat_template_ids(tokenizer, "".join(chunk_texts) + suffix_text)
+        return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts) + suffix_text, model_type)
 
     lo, hi = 1, n
     while lo < hi:
@@ -201,7 +237,7 @@ def build_chat_prompt_ids(
             lo = mid
         else:
             hi = mid - 1
-    return apply_chat_template_ids(tokenizer, "".join(chunk_texts[:lo]) + suffix_text)
+    return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:lo]) + suffix_text, model_type)
 
 
 def get_header(headers: Mapping[str, str], short_key: str) -> Optional[float]:
@@ -529,6 +565,9 @@ def run_benchmark(
     seed: int = 0,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
+    model_type = resolve_model_type(tokenizer_path)
+    if model_type == "deepseek_v4":
+        logger.info("Using DeepSeek-V4 benchmark prompt encoder")
     max_seq = max(seq_len for seq_len, _ in pairs)
     chunks = load_chunks(dataset)
     suffix = _DATASET_SUFFIXES.get(dataset, "")
@@ -557,6 +596,8 @@ def run_benchmark(
         if seq_len != prev_seq_len:
             prompt_ids = build_chat_prompt_ids(
                 tokenizer,
+                tokenizer_path,
+                model_type,
                 suffix,
                 chunk_texts,
                 target_len=seq_len - max_tokens,
