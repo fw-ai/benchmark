@@ -716,6 +716,7 @@ def run_benchmark(
                     routing=routing,
                 )
             else:
+                # n-mode measurement is unrouted; warmup must match or cache primes the wrong cell.
                 _warmup_seq_len(
                     url=url,
                     api_key=api_key,
@@ -726,7 +727,6 @@ def run_benchmark(
                     temperature=temperature,
                     retries=retries,
                     retry_delay=retry_delay,
-                    routing=routing,
                 )
             prev_seq_len = seq_len
 
