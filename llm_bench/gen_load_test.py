@@ -43,8 +43,8 @@ _LOCAL_INDEX_HEADER = "x-fireworks-generator-worker-local-index"
 class RoutingConfig:
     """Generator-worker routing knobs for the benchmark client.
 
-    `num_servers` and `num_local` define the round-robin space across
-    (service-index, local-index) cells. Routing headers are only emitted
+    `num_servers` and `num_gens` define the round-robin space across
+    (service-index, local-index) workers. Routing headers are only emitted
     when at least one dimension is greater than 1; otherwise existing
     benchmark runs are unchanged byte-for-byte.
 
@@ -53,30 +53,30 @@ class RoutingConfig:
     """
 
     num_servers: int = 1
-    num_local: int = 1
+    num_gens: int = 1
 
     @property
     def enabled(self) -> bool:
-        return self.num_servers > 1 or self.num_local > 1
+        return self.num_servers > 1 or self.num_gens > 1
 
     def describe(self) -> str:
         if not self.enabled:
             return "off"
-        return f"server-first {self.num_servers}x{self.num_local}"
+        return f"server-first {self.num_servers}x{self.num_gens}"
 
 
-def routing_headers_for_slot(cfg: Optional[RoutingConfig], slot_idx: int) -> dict[str, str]:
-    """Return the routing headers to attach to the request for the given slot.
+def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) -> dict[str, str]:
+    """Return the routing headers to attach to the request for the given worker.
 
     Server-first cycling keeps the per-server distribution balanced even when
-    `batch_size < num_servers * num_local`: e.g. with 2 servers x 4 locals and
-    batch=4, cells visited are (s0,l0),(s1,l0),(s0,l1),(s1,l1) so each server
+    `batch_size < num_servers * num_gens`: e.g. with 2 servers x 4 locals and
+    batch=4, workers visited are (s0,l0),(s1,l0),(s0,l1),(s1,l1) so each server
     gets two requests rather than one server eating the whole batch.
     """
     if cfg is None or not cfg.enabled:
         return {}
-    total = cfg.num_servers * cfg.num_local
-    flat = slot_idx % total
+    total = cfg.num_servers * cfg.num_gens
+    flat = worker_idx % total
     server = flat % cfg.num_servers
     local = flat // cfg.num_servers
     return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
@@ -470,7 +470,7 @@ def _run_pair_separate_mode(
     temperature: Optional[float],
     users: list[str],
     routing: Optional[RoutingConfig] = None,
-    slot_offset: int = 0,
+    worker_offset: int = 0,
 ) -> GenBenchmarkResult:
     """Send batch_size concurrent requests each with n=1."""
     logger.info(
@@ -483,12 +483,12 @@ def _run_pair_separate_mode(
     )
     assert len(users) == batch_size, f"expected {batch_size} users, got {len(users)}"
 
-    def _single_request(slot_idx: int, user: str) -> requests.Response:
+    def _single_request(worker_idx: int, user: str) -> requests.Response:
         s = requests.Session()
-        headers = routing_headers_for_slot(routing, slot_offset + slot_idx)
+        headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
         if headers and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "  slot=%d server=%s local=%s", slot_idx, headers.get(_SERVICE_INDEX_HEADER), headers.get(_LOCAL_INDEX_HEADER)
+                "  worker=%d server=%s local=%s", worker_idx, headers.get(_SERVICE_INDEX_HEADER), headers.get(_LOCAL_INDEX_HEADER)
             )
         return post_completion(
             s,
@@ -562,14 +562,14 @@ def _warmup_seq_len(
     retry_delay: float,
     users: Optional[list[str]] = None,
     routing: Optional[RoutingConfig] = None,
-    slot_offset: int = 0,
+    worker_offset: int = 0,
 ) -> None:
     """Issue `concurrency` warmup completions in parallel for the same prompt."""
     if users is not None:
         assert len(users) == concurrency, f"expected {concurrency} users, got {len(users)}"
 
-    def _single(slot_idx: int, user: Optional[str]) -> requests.Response:
-        headers = routing_headers_for_slot(routing, slot_offset + slot_idx)
+    def _single(worker_idx: int, user: Optional[str]) -> requests.Response:
+        headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
         return post_completion(
             requests.Session(),
             url,
@@ -678,8 +678,8 @@ def run_benchmark(
                     # across generators before the user-pinned warmup at full
                     # batch_size. TODO: fix the backend OOM and remove this.
                     #
-                    # When routing is enabled we also round-robin the slot
-                    # index across all (server, local) cells so every DP group
+                    # When routing is enabled we also round-robin the worker
+                    # index across all (server, local) workers so every DP group
                     # gets primed by this hack instead of relying on the LB.
                     logger.info(
                         "Pre-warmup (seq_len=%d): 64 sequential requests with random users (HACK)",
@@ -699,7 +699,7 @@ def run_benchmark(
                             retry_delay=retry_delay,
                             users=[str(rng.randint(0, 2**63 - 1))],
                             routing=routing,
-                            slot_offset=i,
+                            worker_offset=i,
                         )
                 seq_users = _generate_users(seq_len + seed, batch_size)
                 _warmup_seq_len(
@@ -716,7 +716,7 @@ def run_benchmark(
                     routing=routing,
                 )
             else:
-                # n-mode measurement is unrouted; warmup must match or cache primes the wrong cell.
+                # n-mode measurement is unrouted; warmup must match or cache primes the wrong worker.
                 _warmup_seq_len(
                     url=url,
                     api_key=api_key,
@@ -926,11 +926,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--num-generators-per-server",
+        "--num-gens",
+        dest="num_generators_per_server",
         type=int,
         default=1,
         help="Number of data-parallel generator groups per server, used as the "
         "round-robin range for x-fireworks-generator-worker-local-index. "
-        "Default: 1.",
+        "Alias matches fw-infer's --num-gens. Default: 1.",
     )
 
     args = parser.parse_args()
@@ -941,7 +943,7 @@ def main() -> None:
         parser.error("--num-generators-per-server must be >= 1")
     routing = RoutingConfig(
         num_servers=args.num_servers,
-        num_local=args.num_generators_per_server,
+        num_gens=args.num_generators_per_server,
     )
 
     if args.seq_batch_pairs is not None:

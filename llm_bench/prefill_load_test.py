@@ -53,11 +53,11 @@ _LOCAL_INDEX_HEADER = "x-fireworks-generator-worker-local-index"
 class RoutingConfig:
     """Generator-worker routing knobs for the benchmark client.
 
-    `num_servers` and `num_local` define the round-robin space across
-    (service-index, local-index) cells. When at least one dimension is greater
+    `num_servers` and `num_gens` define the round-robin space across
+    (service-index, local-index) workers. When at least one dimension is greater
     than 1, each pair's `batch_size` prompts are split round-robin across
-    `num_servers * num_local` cells (one multi-prompt HTTP request per cell,
-    all firing concurrently). Per-cell load is `batch_size / total_cells` prompts;
+    `num_servers * num_gens` workers (one multi-prompt HTTP request per worker,
+    all firing concurrently). Per-worker load is `batch_size / total_workers` prompts;
     total deployment-level load matches the no-routing baseline.
 
     Inline (non-disagg) deployments only: in tiered-disagg this only pins the
@@ -66,33 +66,33 @@ class RoutingConfig:
     """
 
     num_servers: int = 1
-    num_local: int = 1
+    num_gens: int = 1
 
     @property
     def enabled(self) -> bool:
-        return self.num_servers > 1 or self.num_local > 1
+        return self.num_servers > 1 or self.num_gens > 1
 
     @property
-    def total_cells(self) -> int:
-        return self.num_servers * self.num_local
+    def total_workers(self) -> int:
+        return self.num_servers * self.num_gens
 
     def describe(self) -> str:
         if not self.enabled:
             return "off"
-        return f"server-first {self.num_servers}x{self.num_local}"
+        return f"server-first {self.num_servers}x{self.num_gens}"
 
 
-def routing_headers_for_slot(cfg: Optional[RoutingConfig], slot_idx: int) -> dict[str, str]:
-    """Return the routing headers to attach to the request for the given slot.
+def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) -> dict[str, str]:
+    """Return the routing headers to attach to the request for the given worker.
 
-    Server-first cycling: with 2 servers x 4 locals and slot=2,4,6 the cells
+    Server-first cycling: with 2 servers x 4 locals and worker=2,4,6 the workers
     visited are (s0,l1),(s0,l2),(s0,l3) so the per-server distribution stays
-    balanced even at small slot counts.
+    balanced even at small worker counts.
     """
     if cfg is None or not cfg.enabled:
         return {}
-    total = cfg.num_servers * cfg.num_local
-    flat = slot_idx % total
+    total = cfg.num_servers * cfg.num_gens
+    flat = worker_idx % total
     server = flat % cfg.num_servers
     local = flat // cfg.num_servers
     return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
@@ -443,7 +443,7 @@ def _send_and_parse_measurement(
     return st, wall, fwp, fwc
 
 
-def _measure_pair_split_across_cells(
+def _measure_pair_split_across_workers(
     *,
     routing: RoutingConfig,
     url: str,
@@ -453,68 +453,68 @@ def _measure_pair_split_across_cells(
     max_tokens: int,
     cached_tokens: int,
 ) -> tuple[float, float, Optional[int], Optional[int]]:
-    """Split the multi-prompt batch across cells, fire one chunk per cell concurrently.
+    """Split the multi-prompt batch across workers, fire one chunk per worker concurrently.
 
-    Stride-slices `prompt_token_ids` into routing.total_cells chunks
-    (prompts[i::total_cells]) so each cell processes ~batch_size/total_cells prompts
+    Stride-slices `prompt_token_ids` into routing.total_workers chunks
+    (prompts[i::total_workers]) so each worker processes ~batch_size/total_workers prompts
     in its own multi-prompt request. Total deployment-level work matches the
-    no-routing baseline; per-cell pressure is divided across cells. When
-    batch_size < total_cells, some chunks are empty and those cells are skipped.
+    no-routing baseline; per-worker pressure is divided across workers. When
+    batch_size < total_workers, some chunks are empty and those workers are skipped.
 
-    Reports max(server_duration), max(client_duration) across cells (latency
-    bottlenecked by slowest cell). Token counts are summed across cells (each
-    cell processed a distinct slice).
+    Reports max(server_duration), max(client_duration) across workers (latency
+    bottlenecked by slowest worker). Token counts are summed across workers (each
+    worker processed a distinct slice).
     """
-    total_cells = routing.total_cells
+    total_workers = routing.total_workers
     # Stride-slice for even round-robin distribution. Uneven splits handled
     # naturally (e.g. 1985 / 4 -> [497, 496, 496, 496]).
     chunks: list[list[list[int]]] = [
-        prompt_token_ids[i::total_cells] for i in range(total_cells)
+        prompt_token_ids[i::total_workers] for i in range(total_workers)
     ]
-    active_slots = [i for i, c in enumerate(chunks) if c]
+    active_workers = [i for i, c in enumerate(chunks) if c]
 
-    def _run_slot(slot_idx: int) -> tuple[int, float, float, Optional[int], Optional[int]]:
-        # Distinct session per cell to avoid HTTP/2 multiplexing bias on a shared session.
+    def _run_worker(worker_idx: int) -> tuple[int, float, float, Optional[int], Optional[int]]:
+        # Distinct session per worker to avoid HTTP/2 multiplexing bias on a shared session.
         s = requests.Session()
         try:
-            headers = routing_headers_for_slot(routing, slot_idx)
+            headers = routing_headers_for_worker(routing, worker_idx)
             st, wall, fwp, fwc = _send_and_parse_measurement(
                 session=s,
                 url=url,
                 api_key=api_key,
                 model=model,
-                prompt_token_ids=chunks[slot_idx],
+                prompt_token_ids=chunks[worker_idx],
                 max_tokens=max_tokens,
                 cached_tokens=cached_tokens,
                 extra_headers=headers,
             )
-            return slot_idx, st, wall, fwp, fwc
+            return worker_idx, st, wall, fwp, fwc
         finally:
             s.close()
 
-    with ThreadPoolExecutor(max_workers=len(active_slots)) as pool:
-        futures = [pool.submit(_run_slot, i) for i in active_slots]
-        per_cell = [fut.result() for fut in as_completed(futures)]
+    with ThreadPoolExecutor(max_workers=len(active_workers)) as pool:
+        futures = [pool.submit(_run_worker, i) for i in active_workers]
+        per_worker = [fut.result() for fut in as_completed(futures)]
 
-    per_cell.sort(key=lambda r: r[0])
+    per_worker.sort(key=lambda r: r[0])
     if logger.isEnabledFor(logging.DEBUG):
-        for slot_idx, st, wall, fwp, fwc in per_cell:
+        for worker_idx, st, wall, fwp, fwc in per_worker:
             logger.debug(
-                "  cell=%d chunk=%d server-duration=%.6fs client=%.2fs fwp=%s fwc=%s",
-                slot_idx,
-                len(chunks[slot_idx]),
+                "  worker=%d chunk=%d server-duration=%.6fs client=%.2fs fwp=%s fwc=%s",
+                worker_idx,
+                len(chunks[worker_idx]),
                 st,
                 wall,
                 fwp,
                 fwc,
             )
 
-    server_durations = [row[1] for row in per_cell]
-    client_durations = [row[2] for row in per_cell]
-    fwps = [row[3] for row in per_cell if row[3] is not None]
-    fwcs = [row[4] for row in per_cell if row[4] is not None]
-    # max() for latency: server is bottlenecked by the slowest cell.
-    # sum() for token counts: each cell processed its own slice; sum reconstructs
+    server_durations = [row[1] for row in per_worker]
+    client_durations = [row[2] for row in per_worker]
+    fwps = [row[3] for row in per_worker if row[3] is not None]
+    fwcs = [row[4] for row in per_worker if row[4] is not None]
+    # max() for latency: server is bottlenecked by the slowest worker.
+    # sum() for token counts: each worker processed its own slice; sum reconstructs
     # the deployment-level total for cross-checking against expected
     # batch_size * prompt_tokens / batch_size * cached_tokens.
     fwp_agg = sum(fwps) if fwps else None
@@ -613,15 +613,15 @@ def run_benchmark(
 
         for attempt in range(1, retries + 1):
             try:
-                # Warmup: prime cache on every cell we're about to measure. In
-                # routing mode, each cell needs its own warmup or the
-                # measurement on that cell will see a cache miss.
+                # Warmup: prime cache on every worker we're about to measure. In
+                # routing mode, each worker needs its own warmup or the
+                # measurement on that worker will see a cache miss.
                 if cached_tokens > 0:
                     if routing.enabled:
-                        for slot_idx in range(routing.total_cells):
+                        for worker_idx in range(routing.total_workers):
                             do_warmup(
                                 cached_tokens,
-                                extra_headers=routing_headers_for_slot(routing, slot_idx),
+                                extra_headers=routing_headers_for_worker(routing, worker_idx),
                             )
                     else:
                         do_warmup(cached_tokens)
@@ -653,7 +653,7 @@ def run_benchmark(
                 )
 
                 if routing.enabled:
-                    st, wall, fwp, fwc = _measure_pair_split_across_cells(
+                    st, wall, fwp, fwc = _measure_pair_split_across_workers(
                         routing=routing,
                         url=url,
                         api_key=api_key,
@@ -867,15 +867,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--num-generators-per-server",
+        "--num-gens",
+        dest="num_generators_per_server",
         type=int,
         default=1,
         help="Number of data-parallel generators per server, used as the "
         "round-robin range for x-fireworks-generator-worker-local-index. When "
         "either this or --num-servers is greater than 1, each pair's batch_size "
-        "prompts are split round-robin across num_servers * num_local cells "
-        "(one multi-prompt request per cell, all firing concurrently); per-cell "
-        "load = batch_size / total_cells, total deployment load matches the "
-        "no-routing baseline. Default: 1.",
+        "prompts are split round-robin across num_servers * num_gens workers "
+        "(one multi-prompt request per worker, all firing concurrently); per-worker "
+        "load = batch_size / total_workers, total deployment load matches the "
+        "no-routing baseline. Alias matches fw-infer's --num-gens. Default: 1.",
     )
 
     args = parser.parse_args()
@@ -885,7 +887,7 @@ def main() -> None:
         parser.error("--num-generators-per-server must be >= 1")
     routing = RoutingConfig(
         num_servers=args.num_servers,
-        num_local=args.num_generators_per_server,
+        num_gens=args.num_generators_per_server,
     )
 
     max_seq_len = args.max_seq_len
