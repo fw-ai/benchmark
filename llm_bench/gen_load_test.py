@@ -44,11 +44,9 @@ class RoutingConfig:
     """Generator-worker routing knobs for the benchmark client.
 
     `num_servers` and `num_local` define the round-robin space across
-    (service-index, local-index) cells. Either dimension can be pinned to a
-    specific value via `pin_server` / `pin_local_index`.
-
-    Routing headers are only emitted when at least one knob is non-default;
-    otherwise existing benchmark runs are unchanged byte-for-byte.
+    (service-index, local-index) cells. Routing headers are only emitted
+    when at least one dimension is greater than 1; otherwise existing
+    benchmark runs are unchanged byte-for-byte.
 
     Requires `enableGeneratorWorkerTargeting=true` on the deployment for the
     headers to take effect; otherwise they are ignored by Envoy.
@@ -56,27 +54,14 @@ class RoutingConfig:
 
     num_servers: int = 1
     num_local: int = 1
-    pin_server: Optional[int] = None
-    pin_local_index: Optional[int] = None
 
     @property
     def enabled(self) -> bool:
-        return (
-            self.num_servers > 1
-            or self.num_local > 1
-            or self.pin_server is not None
-            or self.pin_local_index is not None
-        )
+        return self.num_servers > 1 or self.num_local > 1
 
     def describe(self) -> str:
         if not self.enabled:
             return "off"
-        if self.pin_server is not None and self.pin_local_index is not None:
-            return f"pinned (s={self.pin_server},l={self.pin_local_index})"
-        if self.pin_server is not None:
-            return f"pinned-server s={self.pin_server} x {self.num_local} locals"
-        if self.pin_local_index is not None:
-            return f"{self.num_servers} servers x pinned-local l={self.pin_local_index}"
         return f"server-first {self.num_servers}x{self.num_local}"
 
 
@@ -92,8 +77,8 @@ def routing_headers_for_slot(cfg: Optional[RoutingConfig], slot_idx: int) -> dic
         return {}
     total = cfg.num_servers * cfg.num_local
     flat = slot_idx % total
-    server = cfg.pin_server if cfg.pin_server is not None else flat % cfg.num_servers
-    local = cfg.pin_local_index if cfg.pin_local_index is not None else flat // cfg.num_servers
+    server = flat % cfg.num_servers
+    local = flat // cfg.num_servers
     return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
 
 
@@ -412,26 +397,14 @@ def _run_pair_n_mode(
     seq_len: int,
     batch_size: int,
     temperature: Optional[float],
-    routing: Optional[RoutingConfig] = None,
 ) -> GenBenchmarkResult:
     """Single request with n=batch_size."""
-    # n>1 mode runs the whole batch on one generator, so distribution across
-    # servers/locals is not meaningful here. We only attach routing headers
-    # when the caller has explicitly pinned both dimensions; otherwise we let
-    # the existing LB pick a generator.
-    pin_headers: dict[str, str] = {}
-    if routing is not None and routing.pin_server is not None and routing.pin_local_index is not None:
-        pin_headers = {
-            _SERVICE_INDEX_HEADER: str(routing.pin_server),
-            _LOCAL_INDEX_HEADER: str(routing.pin_local_index),
-        }
     logger.info(
-        "Pair (seq_len=%d, batch_size=%d): n=%d, max_tokens=%d, routing=%s",
+        "Pair (seq_len=%d, batch_size=%d): n=%d, max_tokens=%d",
         seq_len,
         batch_size,
         batch_size,
         max_tokens,
-        f"pinned (s={routing.pin_server},l={routing.pin_local_index})" if pin_headers else "off",
     )
 
     wall_start = time.perf_counter()
@@ -444,7 +417,6 @@ def _run_pair_n_mode(
         max_tokens=max_tokens,
         n=batch_size,
         temperature=temperature,
-        extra_headers=pin_headers or None,
     )
     wall = time.perf_counter() - wall_start
 
@@ -789,7 +761,6 @@ def run_benchmark(
                         seq_len=seq_len,
                         batch_size=batch_size,
                         temperature=temperature,
-                        routing=routing,
                     )
                 results.append(result)
                 break
@@ -961,20 +932,6 @@ def main() -> None:
         "round-robin range for x-fireworks-generator-worker-local-index. "
         "Default: 1.",
     )
-    parser.add_argument(
-        "--pin-server",
-        type=int,
-        default=None,
-        help="Pin all requests to this service-index instead of round-robining. "
-        "Must be in [0, --num-servers).",
-    )
-    parser.add_argument(
-        "--pin-local-index",
-        type=int,
-        default=None,
-        help="Pin all requests to this local-index instead of round-robining. "
-        "Must be in [0, --num-generators-per-server).",
-    )
 
     args = parser.parse_args()
 
@@ -982,15 +939,9 @@ def main() -> None:
         parser.error("--num-servers must be >= 1")
     if args.num_generators_per_server < 1:
         parser.error("--num-generators-per-server must be >= 1")
-    if args.pin_server is not None and not (0 <= args.pin_server < args.num_servers):
-        parser.error(f"--pin-server must be in [0, {args.num_servers})")
-    if args.pin_local_index is not None and not (0 <= args.pin_local_index < args.num_generators_per_server):
-        parser.error(f"--pin-local-index must be in [0, {args.num_generators_per_server})")
     routing = RoutingConfig(
         num_servers=args.num_servers,
         num_local=args.num_generators_per_server,
-        pin_server=args.pin_server,
-        pin_local_index=args.pin_local_index,
     )
 
     if args.seq_batch_pairs is not None:
