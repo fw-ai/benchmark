@@ -286,7 +286,7 @@ def parse_int_list(s: str) -> list[int]:
 def post_completion(
     session: requests.Session,
     url: str,
-    api_key: str,
+    api_key: Optional[str],
     model: Optional[str],
     prompt: list[int],
     max_tokens: int,
@@ -306,7 +306,9 @@ def post_completion(
         payload["model"] = model
     if user is not None:
         payload["user"] = user
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     return session.post(url, headers=headers, json=payload, timeout=3600)
 
 
@@ -338,7 +340,7 @@ class GenBenchmarkResult:
 def _run_pair_n_mode(
     session: requests.Session,
     url: str,
-    api_key: str,
+    api_key: Optional[str],
     model: Optional[str],
     prompt_ids: list[int],
     max_tokens: int,
@@ -409,7 +411,7 @@ def _generate_users(seed: int, count: int) -> list[str]:
 
 def _run_pair_separate_mode(
     url: str,
-    api_key: str,
+    api_key: Optional[str],
     model: Optional[str],
     prompt_ids: list[int],
     max_tokens: int,
@@ -491,7 +493,7 @@ def _run_pair_separate_mode(
 def _warmup_seq_len(
     *,
     url: str,
-    api_key: str,
+    api_key: Optional[str],
     model: Optional[str],
     prompt_ids: list[int],
     seq_len: int,
@@ -554,7 +556,7 @@ def run_benchmark(
     tokenizer_path: str,
     model: Optional[str],
     base_url: str,
-    api_key: str,
+    api_key: Optional[str],
     dataset: str,
     pairs: list[tuple[int, int]],
     max_tokens: int,
@@ -751,7 +753,8 @@ def main() -> None:
     parser.add_argument(
         "--api-key",
         default=os.environ.get("API_KEY") or os.environ.get("FIREWORKS_API_KEY"),
-        help="Bearer token (default: API_KEY or FIREWORKS_API_KEY).",
+        help="Bearer token (default: API_KEY or FIREWORKS_API_KEY). "
+        "Optional; omit for servers that don't require auth.",
     )
     parser.add_argument("--dataset", choices=("limericks", "code"), default="limericks")
     parser.add_argument(
@@ -840,8 +843,6 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    if not args.api_key:
-        parser.error("Pass --api-key or set API_KEY / FIREWORKS_API_KEY")
 
     if args.seq_batch_pairs is not None:
         pairs = parse_pairs_arg(args.seq_batch_pairs)
