@@ -23,6 +23,7 @@ import random
 import sys
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Optional
@@ -43,6 +44,58 @@ STAGE_HEADER_KEYS = (
     "prefill-duration",
     "generation-queue-duration",
 )
+
+_SERVICE_INDEX_HEADER = "x-fireworks-generator-worker-service-index"
+_LOCAL_INDEX_HEADER = "x-fireworks-generator-worker-local-index"
+
+
+@dataclass(frozen=True)
+class RoutingConfig:
+    """Generator-worker routing knobs for the benchmark client.
+
+    `num_servers` and `num_gens` define the round-robin space across
+    (service-index, local-index) workers. When at least one dimension is greater
+    than 1, each pair's `batch_size` prompts are split round-robin across
+    `num_servers * num_gens` workers (one multi-prompt HTTP request per worker,
+    all firing concurrently). Per-worker load is `batch_size / total_workers` prompts;
+    total deployment-level load matches the no-routing baseline.
+
+    Inline (non-disagg) deployments only: in tiered-disagg this only pins the
+    generator side, not the prefiller. Requires `enableGeneratorWorkerTargeting=true`
+    on the deployment for the headers to take effect.
+    """
+
+    num_servers: int = 1
+    num_gens: int = 1
+
+    @property
+    def enabled(self) -> bool:
+        return self.num_servers > 1 or self.num_gens > 1
+
+    @property
+    def total_workers(self) -> int:
+        return self.num_servers * self.num_gens
+
+    def describe(self) -> str:
+        if not self.enabled:
+            return "off"
+        return f"server-first {self.num_servers}x{self.num_gens}"
+
+
+def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) -> dict[str, str]:
+    """Return the routing headers to attach to the request for the given worker.
+
+    Server-first cycling: with 2 servers x 4 locals and worker=2,4,6 the workers
+    visited are (s0,l1),(s0,l2),(s0,l3) so the per-server distribution stays
+    balanced even at small worker counts.
+    """
+    if cfg is None or not cfg.enabled:
+        return {}
+    total = cfg.num_servers * cfg.num_gens
+    flat = worker_idx % total
+    server = flat % cfg.num_servers
+    local = flat // cfg.num_servers
+    return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
 
 # NB: don't use power of 2 as we will use multiples of this to generate seq pairs
 # and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
@@ -347,6 +400,128 @@ class PairBenchmarkResult:
     mean_fireworks_cached_prompt_tokens: Optional[float]
 
 
+def _send_and_parse_measurement(
+    *,
+    session: requests.Session,
+    url: str,
+    api_key: str,
+    model: Optional[str],
+    prompt_token_ids: list[list[int]],
+    max_tokens: int,
+    cached_tokens: int,
+    extra_headers: Optional[dict[str, str]] = None,
+) -> tuple[float, float, Optional[int], Optional[int]]:
+    """Send one multi-prompt prefill request, return (server_duration, client_duration, fwp, fwc).
+
+    Raises RuntimeError on non-200 or missing Fireworks timing headers.
+    """
+    wall_start = time.perf_counter()
+    r = post_completion(
+        session,
+        url,
+        api_key,
+        model,
+        prompt_token_ids,
+        max_tokens,
+        prompt_cache_max_len=cached_tokens,
+        extra_headers=extra_headers,
+    )
+    wall = time.perf_counter() - wall_start
+
+    if r.status_code != 200:
+        raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
+
+    fwp = get_int_header(r.headers, "prompt-tokens")
+    fwc = get_int_header(r.headers, "cached-prompt-tokens")
+    server_processing = get_header(r.headers, "server-processing-time")
+    st = server_processing if server_processing is not None else sum_stage_seconds(r.headers)
+    if st is None:
+        raise RuntimeError(
+            "Missing Fireworks timing headers (need dedicated deployment?). "
+            f"Got keys: {list(r.headers.keys())[:30]}"
+        )
+    return st, wall, fwp, fwc
+
+
+def _measure_pair_split_across_workers(
+    *,
+    routing: RoutingConfig,
+    url: str,
+    api_key: str,
+    model: Optional[str],
+    prompt_token_ids: list[list[int]],
+    max_tokens: int,
+    cached_tokens: int,
+) -> tuple[float, float, Optional[int], Optional[int]]:
+    """Split the multi-prompt batch across workers, fire one chunk per worker concurrently.
+
+    Stride-slices `prompt_token_ids` into routing.total_workers chunks
+    (prompts[i::total_workers]) so each worker processes ~batch_size/total_workers prompts
+    in its own multi-prompt request. Total deployment-level work matches the
+    no-routing baseline; per-worker pressure is divided across workers. When
+    batch_size < total_workers, some chunks are empty and those workers are skipped.
+
+    Reports max(server_duration), max(client_duration) across workers (latency
+    bottlenecked by slowest worker). Token counts are summed across workers (each
+    worker processed a distinct slice).
+    """
+    total_workers = routing.total_workers
+    # Stride-slice for even round-robin distribution. Uneven splits handled
+    # naturally (e.g. 1985 / 4 -> [497, 496, 496, 496]).
+    chunks: list[list[list[int]]] = [
+        prompt_token_ids[i::total_workers] for i in range(total_workers)
+    ]
+    active_workers = [i for i, c in enumerate(chunks) if c]
+
+    def _run_worker(worker_idx: int) -> tuple[int, float, float, Optional[int], Optional[int]]:
+        # Distinct session per worker to avoid HTTP/2 multiplexing bias on a shared session.
+        s = requests.Session()
+        try:
+            headers = routing_headers_for_worker(routing, worker_idx)
+            st, wall, fwp, fwc = _send_and_parse_measurement(
+                session=s,
+                url=url,
+                api_key=api_key,
+                model=model,
+                prompt_token_ids=chunks[worker_idx],
+                max_tokens=max_tokens,
+                cached_tokens=cached_tokens,
+                extra_headers=headers,
+            )
+            return worker_idx, st, wall, fwp, fwc
+        finally:
+            s.close()
+
+    with ThreadPoolExecutor(max_workers=len(active_workers)) as pool:
+        futures = [pool.submit(_run_worker, i) for i in active_workers]
+        per_worker = [fut.result() for fut in as_completed(futures)]
+
+    per_worker.sort(key=lambda r: r[0])
+    if logger.isEnabledFor(logging.DEBUG):
+        for worker_idx, st, wall, fwp, fwc in per_worker:
+            logger.debug(
+                "  worker=%d chunk=%d server-duration=%.6fs client=%.2fs fwp=%s fwc=%s",
+                worker_idx,
+                len(chunks[worker_idx]),
+                st,
+                wall,
+                fwp,
+                fwc,
+            )
+
+    server_durations = [row[1] for row in per_worker]
+    client_durations = [row[2] for row in per_worker]
+    fwps = [row[3] for row in per_worker if row[3] is not None]
+    fwcs = [row[4] for row in per_worker if row[4] is not None]
+    # max() for latency: server is bottlenecked by the slowest worker.
+    # sum() for token counts: each worker processed its own slice; sum reconstructs
+    # the deployment-level total for cross-checking against expected
+    # batch_size * prompt_tokens / batch_size * cached_tokens.
+    fwp_agg = sum(fwps) if fwps else None
+    fwc_agg = sum(fwcs) if fwcs else None
+    return max(server_durations), max(client_durations), fwp_agg, fwc_agg
+
+
 def post_completion(
     session: requests.Session,
     url: str,
@@ -355,6 +530,7 @@ def post_completion(
     prompt: str | list[str] | list[int] | list[list[int]],
     max_tokens: int,
     prompt_cache_max_len: int | None = None,
+    extra_headers: Optional[dict[str, str]] = None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
         "prompt": prompt,
@@ -370,6 +546,8 @@ def post_completion(
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
     return session.post(url, headers=headers, json=payload, timeout=3600)
 
 
@@ -385,8 +563,10 @@ def run_benchmark(
     rng_seed: Optional[int],
     retries: int = 3,
     retry_delay: float = 30.0,
+    routing: Optional[RoutingConfig] = None,
 ) -> list[PairBenchmarkResult]:
     """Per-pair prefill benchmark with multi-prompt batching."""
+    routing = routing or RoutingConfig()
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     model_type = resolve_model_type(tokenizer_path)
     if model_type == "deepseek_v4":
@@ -402,6 +582,7 @@ def run_benchmark(
         len(chat_suffix_ids),
         chat_overhead,
     )
+    logger.info("Routing: %s", routing.describe())
 
     base_ids = build_ids_to_length(tokenizer, chunks, max_seq)
     if len(base_ids) != max_seq:
@@ -410,9 +591,11 @@ def run_benchmark(
     url = completions_url(base_url)
     session = requests.Session()
 
-    def do_warmup(cached_tokens: int) -> None:
+    def do_warmup(cached_tokens: int, extra_headers: Optional[dict[str, str]] = None) -> None:
         warmup_ids = build_warmup_ids(chat_prefix_ids, base_ids, cached_tokens)
-        w = post_completion(session, url, api_key, model, warmup_ids, max_tokens)
+        w = post_completion(
+            session, url, api_key, model, warmup_ids, max_tokens, extra_headers=extra_headers
+        )
         if w.status_code != 200:
             raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
 
@@ -430,8 +613,18 @@ def run_benchmark(
 
         for attempt in range(1, retries + 1):
             try:
+                # Warmup: prime cache on every worker we're about to measure. In
+                # routing mode, each worker needs its own warmup or the
+                # measurement on that worker will see a cache miss.
                 if cached_tokens > 0:
-                    do_warmup(cached_tokens)
+                    if routing.enabled:
+                        for worker_idx in range(routing.total_workers):
+                            do_warmup(
+                                cached_tokens,
+                                extra_headers=routing_headers_for_worker(routing, worker_idx),
+                            )
+                    else:
+                        do_warmup(cached_tokens)
 
                 prompt_token_ids: list[list[int]] = []
                 uncached_tokens = prompt_tokens - cached_tokens
@@ -452,28 +645,32 @@ def run_benchmark(
                     prompt_token_ids.append(pair_ids)
 
                 logger.info(
-                    "Pair (%d, %d): sending %d prompts in one request",
+                    "Pair (%d, %d): sending %d prompts in one request, routing=%s",
                     prompt_tokens,
                     cached_tokens,
                     len(prompt_token_ids),
+                    routing.describe(),
                 )
-                wall_start = time.perf_counter()
-                r = post_completion(
-                    session, url, api_key, model, prompt_token_ids, max_tokens, prompt_cache_max_len=cached_tokens
-                )
-                if r.status_code != 200:
-                    raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
-                wall = time.perf_counter() - wall_start
 
-                fwp = get_int_header(r.headers, "prompt-tokens")
-                fwc = get_int_header(r.headers, "cached-prompt-tokens")
-
-                server_processing = get_header(r.headers, "server-processing-time")
-                st = server_processing if server_processing is not None else sum_stage_seconds(r.headers)
-                if st is None:
-                    raise RuntimeError(
-                        "Missing Fireworks timing headers (need dedicated deployment?). "
-                        f"Got keys: {list(r.headers.keys())[:30]}"
+                if routing.enabled:
+                    st, wall, fwp, fwc = _measure_pair_split_across_workers(
+                        routing=routing,
+                        url=url,
+                        api_key=api_key,
+                        model=model,
+                        prompt_token_ids=prompt_token_ids,
+                        max_tokens=max_tokens,
+                        cached_tokens=cached_tokens,
+                    )
+                else:
+                    st, wall, fwp, fwc = _send_and_parse_measurement(
+                        session=session,
+                        url=url,
+                        api_key=api_key,
+                        model=model,
+                        prompt_token_ids=prompt_token_ids,
+                        max_tokens=max_tokens,
+                        cached_tokens=cached_tokens,
                     )
 
                 logger.info(
@@ -658,8 +855,40 @@ def main() -> None:
         default=30.0,
         help="Seconds to sleep between retries (default: 30).",
     )
+    parser.add_argument(
+        "--num-servers",
+        type=int,
+        default=1,
+        help="Number of generator servers to fan requests out across via "
+        "x-fireworks-generator-worker-service-index. Inline (non-disagg) "
+        "deployments only - in tiered-disagg this only pins the generator side, "
+        "not the prefiller. Requires enableGeneratorWorkerTargeting=true on the "
+        "deployment; otherwise the header is ignored. Default: 1.",
+    )
+    parser.add_argument(
+        "--num-generators-per-server",
+        "--num-gens",
+        dest="num_generators_per_server",
+        type=int,
+        default=1,
+        help="Number of data-parallel generators per server, used as the "
+        "round-robin range for x-fireworks-generator-worker-local-index. When "
+        "either this or --num-servers is greater than 1, each pair's batch_size "
+        "prompts are split round-robin across num_servers * num_gens workers "
+        "(one multi-prompt request per worker, all firing concurrently); per-worker "
+        "load = batch_size / total_workers, total deployment load matches the "
+        "no-routing baseline. Alias matches fw-infer's --num-gens. Default: 1.",
+    )
 
     args = parser.parse_args()
+    if args.num_servers < 1:
+        parser.error("--num-servers must be >= 1")
+    if args.num_generators_per_server < 1:
+        parser.error("--num-generators-per-server must be >= 1")
+    routing = RoutingConfig(
+        num_servers=args.num_servers,
+        num_gens=args.num_generators_per_server,
+    )
 
     max_seq_len = args.max_seq_len
     try:
@@ -692,6 +921,7 @@ def main() -> None:
         rng_seed=args.seed,
         retries=args.retries,
         retry_delay=args.retry_delay,
+        routing=routing,
     )
     if args.format == "csv":
         print(format_csv(rows))
