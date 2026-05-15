@@ -624,7 +624,6 @@ def run_benchmark(
     pairs: list[tuple[int, int]],
     max_tokens: int,
     temperature: Optional[float] = None,
-    separate_requests: bool = False,
     retries: int = 3,
     retry_delay: float = 30.0,
     seed: int = 0,
@@ -643,11 +642,16 @@ def run_benchmark(
     url = completions_url(base_url)
     session = requests.Session()
 
+    # Mode is derived from routing: enabled (num_servers > 1 OR num_gens > 1)
+    # implies separate concurrent requests pinned to specific cells; disabled
+    # falls back to a single request with n=batch_size against the LB.
+    routing = routing or RoutingConfig()
+    separate_requests = routing.enabled
     if separate_requests:
         logger.info("Mode: separate concurrent requests (no n>1)")
     else:
         logger.info("Mode: single request with n=batch_size")
-    logger.info("Routing: %s", (routing or RoutingConfig()).describe())
+    logger.info("Routing: %s", routing.describe())
 
     results: list[GenBenchmarkResult] = []
     prev_seq_len: Optional[int] = None
@@ -891,17 +895,11 @@ def main() -> None:
         help="Sampling temperature (optional; omit to use server default).",
     )
     parser.add_argument(
-        "--separate-requests",
-        action="store_true",
-        default=False,
-        help="Send batch_size separate concurrent requests (each with n=1) "
-        "instead of a single request with n=batch_size. Useful for testing LLMs in data parallel mode.",
-    )
-    parser.add_argument(
         "--seed",
         type=int,
         default=0,
-        help="Seed for deterministic per-request `user` ids in --separate-requests mode. Default: 0.",
+        help="Seed for deterministic per-request `user` ids when routing is enabled "
+        "(--num-servers/--num-gens > 1). Default: 0.",
     )
     parser.add_argument(
         "--retries",
@@ -985,7 +983,6 @@ def main() -> None:
         pairs=pairs,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
-        separate_requests=args.separate_requests,
         retries=args.retries,
         retry_delay=args.retry_delay,
         seed=args.seed,
