@@ -2000,15 +2000,28 @@ def init_parser(parser):
         "with how Customers measures TTFT. Use this flag to compare apples-to-apples TTFT across "
         "reasoning and non-reasoning providers. Requires --chat and --stream.",
     )
+    parser.add_argument(
+        "--max-fail-ratio",
+        type=float,
+        default=0.01,
+        help="Maximum fraction of failed requests tolerated before the run is considered failed. "
+        "Defaults to 0.01 (1%%). Set to 0 to fail on any failed request.",
+    )
 
 
 @events.quitting.add_listener
 def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
-    if environment.stats.total.num_failures > 0 or total_latency.num_requests == 0:
-        logger.error("Test failed due to failed requests")
+    total = environment.stats.total
+    fail_ratio = (total.num_failures / total.num_requests) if total.num_requests > 0 else 1.0
+    if total_latency.num_requests == 0 or fail_ratio > environment.parsed_options.max_fail_ratio:
+        logger.error(f"Test failed: {total.num_failures}/{total.num_requests} requests failed ({fail_ratio:.2%})")
         environment.process_exit_code = 1
         return
+    # Explicitly set exit code 0 so that locust's default policy does not force
+    # a non-zero exit when runner.exceptions is non-empty (e.g. an unhandled
+    # task exception from a transient HTTP error in _do_generate_text).
+    environment.process_exit_code = 0
 
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
