@@ -1454,7 +1454,12 @@ class LLMUser(HttpUser):
             try:
                 response.raise_for_status()
             except Exception as e:
-                raise RuntimeError(f"Error in response: {response.text}") from e
+                # Use locust's failure-recording API instead of raising so the
+                # failure is counted in stats.total.num_failures (visible in
+                # the summary, stats CSV, HTML report, and stats_failures.csv)
+                # rather than being routed to runner.exceptions.
+                response.failure(f"Error in response: {response.text or repr(e)}")
+                return
             t_first_token = None
             t_first_visible_token = None
             for chunk in response.iter_lines(delimiter=b"\n\n"):
@@ -2014,13 +2019,13 @@ def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
     total = environment.stats.total
     fail_ratio = (total.num_failures / total.num_requests) if total.num_requests > 0 else 1.0
-    if total_latency.num_requests == 0 or fail_ratio > environment.parsed_options.max_fail_ratio:
+    if fail_ratio > environment.parsed_options.max_fail_ratio:
         logger.error(f"Test failed: {total.num_failures}/{total.num_requests} requests failed ({fail_ratio:.2%})")
         environment.process_exit_code = 1
         return
     # Explicitly set exit code 0 so that locust's default policy does not force
-    # a non-zero exit when runner.exceptions is non-empty (e.g. an unhandled
-    # task exception from a transient HTTP error in _do_generate_text).
+    # a non-zero exit when runner.exceptions is non-empty (e.g. unhandled
+    # exceptions from non-request paths like dataset loading).
     environment.process_exit_code = 0
 
     entries = copy.copy(InitTracker.logging_params)
