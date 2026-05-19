@@ -100,6 +100,28 @@ def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) ->
 # NB: don't use power of 2 as we will use multiples of this to generate seq pairs
 # and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
 _DEFAULT_MIN_SEQ_LEN = 500
+_MAX_SEQ_LEN_CONFIG_FIELDS = (
+    "max_position_embeddings",
+    "model_max_length",
+    "max_sequence_length",
+    "seq_length",
+    "n_positions",
+)
+
+
+def _tokenizer_asset_path(tokenizer_path: str, filename: str) -> str:
+    if os.path.isdir(tokenizer_path):
+        path = os.path.join(tokenizer_path, filename)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing {filename} in local tokenizer directory {tokenizer_path}")
+        return path
+    return hf_hub_download(repo_id=tokenizer_path, filename=filename)
+
+
+def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
+    config_path = _tokenizer_asset_path(tokenizer_path, "config.json")
+    with open(config_path) as f:
+        return json.load(f)
 
 
 def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenizer:
@@ -107,20 +129,20 @@ def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenize
 
 
 def resolve_max_seq_len(tokenizer_path: str) -> int:
-    config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
-    # For VLMs (e.g. Kimi K2.5, LLaMA Vision), max_position_embeddings lives
-    # under text_config rather than at the top level.
-    config = config.get_text_config()
-    for name in (
-        "max_position_embeddings",
-        "model_max_length",
-        "max_sequence_length",
-        "seq_length",
-        "n_positions",
-    ):
-        v = getattr(config, name, None)
-        if isinstance(v, int) and v > 0:
-            return v
+    try:
+        config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
+        # For VLMs (e.g. Kimi K2.5, LLaMA Vision), max_position_embeddings lives
+        # under text_config rather than at the top level.
+        configs: tuple[Any, ...] = (config.get_text_config(),)
+    except ValueError:
+        config_json = _read_config_json(tokenizer_path)
+        configs = (config_json.get("text_config") or {}, config_json)
+
+    for config in configs:
+        for name in _MAX_SEQ_LEN_CONFIG_FIELDS:
+            v = config.get(name) if isinstance(config, Mapping) else getattr(config, name, None)
+            if isinstance(v, int) and v > 0:
+                return v
     raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
 
 
@@ -130,16 +152,14 @@ def resolve_model_type(tokenizer_path: str) -> str:
         text_config = config.get_text_config()
         return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
     except ValueError:
-        config_path = hf_hub_download(repo_id=tokenizer_path, filename="config.json")
-        with open(config_path) as f:
-            config_json = json.load(f)
+        config_json = _read_config_json(tokenizer_path)
         text_config = config_json.get("text_config") or {}
         return text_config.get("model_type") or config_json.get("model_type", "")
 
 
 @lru_cache(maxsize=None)
 def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
-    path = hf_hub_download(repo_id=tokenizer_path, filename="encoding/encoding_dsv4.py")
+    path = _tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
     spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load DSV4 encoding module from {path}")
