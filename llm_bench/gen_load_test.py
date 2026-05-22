@@ -90,17 +90,17 @@ _DEFAULT_MIN_SEQ_LEN = 1000
 
 
 def get_profile_batch_sizes(max_batch_size: int, min_batch_size: int = 1) -> list[int]:
+    if min_batch_size > max_batch_size:
+        return []
+
     r = [b for b in _FAST_BATCH_SIZES if min_batch_size <= b <= max_batch_size]
     if not r:
-        if min_batch_size <= max_batch_size:
-            return [max_batch_size]
-        return []
+        r = [min_batch_size]
 
     step = 4
     b = r[-1] + step
     while b <= max_batch_size:
-        if b >= min_batch_size:
-            r.append(b)
+        r.append(b)
         if (b & (b - 1)) == 0:
             if 32 <= b < 128:
                 step = 16
@@ -108,7 +108,7 @@ def get_profile_batch_sizes(max_batch_size: int, min_batch_size: int = 1) -> lis
                 step = b // 2
         b += step
 
-    if r[-1] != max_batch_size and max_batch_size >= min_batch_size:
+    if r[-1] != max_batch_size:
         r.append(max_batch_size)
 
     return r
