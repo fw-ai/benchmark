@@ -111,10 +111,13 @@ def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
         return json.load(f)
 
 
-def get_profile_batch_sizes(max_batch_size: int) -> list[int]:
-    r = [b for b in _FAST_BATCH_SIZES if b <= max_batch_size]
+def get_profile_batch_sizes(max_batch_size: int, min_batch_size: int = 1) -> list[int]:
+    if min_batch_size > max_batch_size:
+        return []
+
+    r = [b for b in _FAST_BATCH_SIZES if min_batch_size <= b <= max_batch_size]
     if not r:
-        return [max_batch_size]
+        r = [min_batch_size]
 
     step = 4
     b = r[-1] + step
@@ -889,6 +892,12 @@ def main() -> None:
         help="Max batch size for auto-generated pairs (default: 128). " "Ignored when --seq-batch-pairs is given.",
     )
     parser.add_argument(
+        "--min-batch-size",
+        type=int,
+        default=1,
+        help="Min batch size for auto-generated pairs (default: 1). " "Ignored when --seq-batch-pairs is given.",
+    )
+    parser.add_argument(
         "--max-kv-cache-entries",
         type=int,
         default=None,
@@ -952,13 +961,16 @@ def main() -> None:
         "round-robin range for x-fireworks-generator-worker-local-index. "
         "Alias matches fw-infer's --num-gens. Default: 1.",
     )
-
     args = parser.parse_args()
 
     if args.num_servers < 1:
         parser.error("--num-servers must be >= 1")
     if args.num_generators_per_server < 1:
         parser.error("--num-generators-per-server must be >= 1")
+    if args.min_batch_size < 1:
+        parser.error("--min-batch-size must be >= 1")
+    if args.min_batch_size > args.max_batch_size:
+        parser.error("--min-batch-size must be <= --max-batch-size")
     routing = RoutingConfig(
         num_servers=args.num_servers,
         num_gens=args.num_generators_per_server,
@@ -983,7 +995,7 @@ def main() -> None:
             elif hf_max_seq_len is not None:
                 max_seq_len = min(max_seq_len, hf_max_seq_len)
             seq_lens = generate_seq_lens(args.min_seq_len, max_seq_len)
-        batch_sizes = get_profile_batch_sizes(args.max_batch_size)
+        batch_sizes = get_profile_batch_sizes(args.max_batch_size, args.min_batch_size)
         pairs = [(s, b) for s in seq_lens for b in batch_sizes]
 
     if args.max_kv_cache_entries is not None:
