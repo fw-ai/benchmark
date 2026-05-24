@@ -174,7 +174,15 @@ class JsonlDataset:
         data = []
         with open(self.path, "r") as f:
             for line in f:
-                data.append((json.loads(line), 0))
+                rec = json.loads(line)
+                # Local patch: if record has a 'prompt' string, yield the string so
+                # the downstream tokenizer warmup and `format_payload(str)` paths
+                # work for text-completion mode. Original behavior (whole dict)
+                # is preserved for records without a 'prompt' string.
+                if isinstance(rec, dict) and isinstance(rec.get("prompt"), str):
+                    data.append((rec["prompt"], 0))
+                else:
+                    data.append((rec, 0))
 
         # Shuffle if seed is provided
         if self.shuffle_seed is not None:
@@ -1438,12 +1446,35 @@ class LLMUser(HttpUser):
             print("---")
         t_start = time.perf_counter()
 
+        _req_timeout = getattr(self.environment.parsed_options, "request_timeout", 60)
+        _fail_log = getattr(self.environment.parsed_options, "failure_log_file", None)
+        _prompt_chars = 0
+        if isinstance(prompt, str):
+            _prompt_chars = len(prompt)
+        elif isinstance(data, dict):
+            try:
+                if "messages" in data and data["messages"]:
+                    _prompt_chars = sum(len((m.get("content") or "")) for m in data["messages"] if isinstance(m.get("content"), str))
+                elif "prompt" in data and isinstance(data["prompt"], str):
+                    _prompt_chars = len(data["prompt"])
+            except Exception:
+                _prompt_chars = 0
+
+        def _log_fail(err_class):
+            if not _fail_log:
+                return
+            try:
+                with open(_fail_log, "a") as _fh:
+                    _fh.write(f"{time.time():.3f},{err_class},{_prompt_chars},{_prompt_chars // 4}\n")
+            except Exception:
+                pass
+
         with self.client.post(
             self.provider_formatter.get_url(),
             data=json.dumps(data),
             stream=True,
             catch_response=True,
-            timeout=60,
+            timeout=_req_timeout,
         ) as response:
             combined_text = ""
             done = False
@@ -1458,6 +1489,7 @@ class LLMUser(HttpUser):
                 # failure is counted in stats.total.num_failures (visible in
                 # the summary, stats CSV, HTML report, and stats_failures.csv)
                 # rather than being routed to runner.exceptions.
+                _log_fail(type(e).__name__)
                 response.failure(f"Error in response: {response.text or repr(e)}")
                 return
             t_first_token = None
@@ -1529,12 +1561,14 @@ class LLMUser(HttpUser):
                         total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
                 except Exception as e:
                     logger.error(f"Failed to parse response: {chunk} with error {repr(e)}")
+                    _log_fail(type(e).__name__)
                     response.failure(e)
                     return
             if t_first_token is None:
                 if max_tokens == 0:
                     t_first_token = time.perf_counter()
                 else:
+                    _log_fail("empty_response")
                     response.failure(Exception("empty response received"))
                     return
 
@@ -1972,6 +2006,21 @@ def init_parser(parser):
         "--prompt",
         type=str,
         help="Prompt to use for the dataset. If not specified, a default prompt will be used.",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=60.0,
+        help="HTTPS client read/connect timeout per request, seconds. Default 60. "
+        "For long-prompt streaming workloads where prefill exceeds 60s, raise to 300+ "
+        "to avoid spurious client-side ReadTimeout errors that misrepresent server SLO.",
+    )
+    parser.add_argument(
+        "--failure-log-file",
+        type=str,
+        default=None,
+        help="Optional path to append per-failure rows (CSV: ts,error_class,prompt_chars,prompt_tok_est) "
+        "for post-run analysis. Tokens estimated as prompt_chars/4.",
     )
     parser.add_argument(
         "--reasoning-effort",
