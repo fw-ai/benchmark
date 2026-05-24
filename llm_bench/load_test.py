@@ -6,6 +6,7 @@ from functools import partial
 import logging
 import os
 import random
+import uuid
 import sys
 import threading
 import traceback
@@ -1361,8 +1362,17 @@ class LLMUser(HttpUser):
         img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
         return f"data:image/jpeg;base64,{img_str}"
 
+    def _apply_prompt_randomize(self, prompt):
+        """Prepend a unique nonce so repeated JSONL rows do not hit server prompt cache."""
+        if not getattr(self.environment.parsed_options, "prompt_randomize", False):
+            return prompt
+        if not isinstance(prompt, str):
+            return prompt
+        return f"[loadtest-nocache:{uuid.uuid4()}]\n{prompt}"
+
     def _get_input(self):
         prompt, prompt_tokens = next(self.dataset)
+        prompt = self._apply_prompt_randomize(prompt)
 
         if self.prompt_images:
             images = self.prompt_images
@@ -2006,6 +2016,13 @@ def init_parser(parser):
         "--prompt",
         type=str,
         help="Prompt to use for the dataset. If not specified, a default prompt will be used.",
+    )
+    parser.add_argument(
+        "--prompt-randomize",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Prepend a unique nonce to each request prompt to avoid server-side prompt cache "
+        "hits when the dataset cycles the same rows (SLA / cold-prefill tests).",
     )
     parser.add_argument(
         "--request-timeout",
