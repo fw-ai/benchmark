@@ -473,9 +473,17 @@ class InitTracker:
         if cls.logging_params is None:
             cls.logging_params = logging_params
         else:
+            # Multi-target runs intentionally use a different model per user;
+            # drop fields that are expected to differ across targets before comparing.
+            multi_target = bool(getattr(environment.parsed_options, "targets", None))
+            if multi_target:
+                existing = {k: v for k, v in cls.logging_params.items() if k != "model"}
+                incoming = {k: v for k, v in logging_params.items() if k != "model"}
+            else:
+                existing, incoming = cls.logging_params, logging_params
             assert (
-                cls.logging_params == logging_params
-            ), f"Inconsistent settings between workers: {cls.logging_params} != {logging_params}"
+                existing == incoming
+            ), f"Inconsistent settings between workers: {existing} != {incoming}"
 
     @classmethod
     def notify_first_request(cls):
