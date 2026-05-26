@@ -8,8 +8,8 @@ of prompts as a single multi-prompt request, reporting server and client duratio
 Each prompt is wrapped client-side in the model's chat template (a single user
 message with the generation prompt appended) and sent as token ids. The chat
 template is split into prefix/suffix token lists so cached_tokens corresponds to
-the exact length of the shared head (chat_prefix + shared content) across all
-prompts in a batch and the warmup call.
+the exact shareable prefix length across all prompts in a batch. Warmup sends
+cached_tokens + 1 raw ids (the server's last prompt token is not shareable).
 """
 
 from __future__ import annotations
@@ -335,14 +335,17 @@ def build_warmup_ids(
     base_ids: list[int],
     cached_tokens: int,
 ) -> list[int]:
-    """Warmup prompt = first `cached_tokens` of the shared template + content prefix.
+    """Warmup prompt = shared prefix through ``cached_tokens`` shareable tokens.
 
-    Sending this as a /v1/completions prompt populates the prompt cache up to exactly
-    `cached_tokens` tokens, matching the head of every per-pair prompt built above.
+    The server excludes the last prompt token from KV sharing (first decode slot),
+    so send ``cached_tokens + 1`` raw ids from the deterministic shared prefix.
     """
-    if cached_tokens <= len(chat_prefix_ids):
-        return chat_prefix_ids[:cached_tokens]
-    extra = cached_tokens - len(chat_prefix_ids)
+    if cached_tokens <= 0:
+        return []
+    raw_len = cached_tokens + 1
+    if raw_len <= len(chat_prefix_ids):
+        return chat_prefix_ids[:raw_len]
+    extra = raw_len - len(chat_prefix_ids)
     if extra > len(base_ids):
         raise ValueError(f"cached_tokens {cached_tokens} exceeds chat_prefix + base_ids capacity")
     return chat_prefix_ids + base_ids[:extra]
