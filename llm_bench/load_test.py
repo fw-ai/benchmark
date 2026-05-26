@@ -1205,12 +1205,23 @@ class LLMUser(HttpUser):
         default_host = environment.host
         default_model = environment.parsed_options.model
         default_api_key = environment.parsed_options.api_key
+        def _label(url, model):
+            # Make the label distinguish targets even when they share a URL but
+            # differ by model (common with Fireworks deployment-pinned model
+            # strings of the form 'accounts/x/models/y#accounts/x/deployments/z').
+            if model and "#" in model:
+                # Use the deployment id (right of '#') — short and human-recognizable.
+                return model.rsplit("/", 1)[-1]
+            if model:
+                return f"{url} {model}"
+            return url or "default"
+
         if not raw:
             return [{
                 "url": default_host,
                 "model": default_model,
                 "api_key": default_api_key,
-                "label": default_host or "default",
+                "label": _label(default_host, default_model),
             }]
         parsed = []
         for spec in raw:
@@ -1222,7 +1233,7 @@ class LLMUser(HttpUser):
                 "url": url,
                 "model": model,
                 "api_key": api_key,
-                "label": url,
+                "label": _label(url, model),
             })
         return parsed
 
