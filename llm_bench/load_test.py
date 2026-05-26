@@ -627,6 +627,30 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
         logger.info(f"Will stop after {max_requests} requests complete")
 
 
+@events.init.add_listener
+def _scale_users_by_targets(environment, **_kwargs):
+    """Multiply -u/--users and --spawn-rate by the number of --targets entries.
+
+    With this, -u 100 means "100 users per target": the user specifies per-target
+    load and the script scales the total locust user count up to match. spawn-rate
+    is multiplied proportionally so the ramp-up rate per target stays the same.
+    """
+    targets = getattr(environment.parsed_options, "targets", None) or []
+    n = len(targets)
+    if n <= 1:
+        return
+    num_users = getattr(environment.parsed_options, "num_users", None)
+    if num_users:
+        environment.parsed_options.num_users = num_users * n
+        logger.info(
+            f"Scaling --users by {n} targets: {num_users} -> {num_users * n} "
+            f"(stays {num_users} per target)"
+        )
+    spawn_rate = getattr(environment.parsed_options, "spawn_rate", None)
+    if spawn_rate:
+        environment.parsed_options.spawn_rate = spawn_rate * n
+
+
 @dataclass
 class ChunkMetadata:
     text: str
@@ -1727,7 +1751,8 @@ def init_parser(parser):
             "(pipe-separated, all but url optional). Repeat the flag for multiple targets. "
             "When set, users are assigned round-robin across targets; --host/--model/--api-key "
             "act as fallbacks for fields the per-target spec leaves blank. "
-            "To match load per target, pass --users N*<num_targets>. "
+            "-u/--users is interpreted per-target: -u 100 with two targets spawns 200 total "
+            "users (100 hitting each target). --spawn-rate is scaled the same way. "
             "Request stats are grouped per target via the request name prefix."
         ),
     )
