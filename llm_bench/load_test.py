@@ -1164,6 +1164,47 @@ def _load_curl_like_data(text):
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
 
+    _target_counter = 0
+    _target_counter_lock = threading.Lock()
+
+    @staticmethod
+    def _parse_targets(environment):
+        raw = environment.parsed_options.targets or []
+        default_host = environment.host
+        default_model = environment.parsed_options.model
+        default_api_key = environment.parsed_options.api_key
+        if not raw:
+            return [{
+                "url": default_host,
+                "model": default_model,
+                "api_key": default_api_key,
+                "label": default_host or "default",
+            }]
+        parsed = []
+        for spec in raw:
+            parts = spec.split("|")
+            url = parts[0] or default_host
+            model = (parts[1] if len(parts) > 1 and parts[1] else default_model)
+            api_key = (parts[2] if len(parts) > 2 and parts[2] else default_api_key)
+            parsed.append({
+                "url": url,
+                "model": model,
+                "api_key": api_key,
+                "label": url,
+            })
+        return parsed
+
+    def __init__(self, environment):
+        targets = self._parse_targets(environment)
+        with LLMUser._target_counter_lock:
+            idx = LLMUser._target_counter % len(targets)
+            LLMUser._target_counter += 1
+        self._target = targets[idx]
+        # Override self.host before HttpUser.__init__ creates the HttpSession
+        if self._target["url"]:
+            self.host = self._target["url"]
+        super().__init__(environment)
+
     def on_start(self):
         try:
             self._on_start()
@@ -1173,7 +1214,7 @@ class LLMUser(HttpUser):
             sys.exit(1)
 
     def _guess_provider(self):
-        self.model = self.environment.parsed_options.model
+        self.model = self._target.get("model") or self.environment.parsed_options.model
         self.provider = self.environment.parsed_options.provider
         # guess based on URL
         if self.provider is None:
@@ -1223,8 +1264,9 @@ class LLMUser(HttpUser):
 
     def _on_start(self):
         self.client.headers["Content-Type"] = "application/json"
-        if self.environment.parsed_options.api_key:
-            self.client.headers["Authorization"] = "Bearer " + self.environment.parsed_options.api_key
+        api_key = self._target.get("api_key") or self.environment.parsed_options.api_key
+        if api_key:
+            self.client.headers["Authorization"] = "Bearer " + api_key
         if self.environment.parsed_options.header:
             for header in self.environment.parsed_options.header:
                 key, val = header.split(":", 1)
@@ -1444,6 +1486,7 @@ class LLMUser(HttpUser):
             stream=True,
             catch_response=True,
             timeout=60,
+            name=f"[{self._target['label']}] {self.provider_formatter.get_url()}",
         ) as response:
             combined_text = ""
             done = False
@@ -1674,6 +1717,19 @@ def init_parser(parser):
         env_var="MODEL",
         type=str,
         help="The model to use for generating text. If not specified we will pick the first model from the service as returned by /v1/models",
+    )
+    parser.add_argument(
+        "--targets",
+        action="append",
+        default=[],
+        help=(
+            "Target deployment to forward traffic to. Format: 'url[|model][|api_key]' "
+            "(pipe-separated, all but url optional). Repeat the flag for multiple targets. "
+            "When set, users are assigned round-robin across targets; --host/--model/--api-key "
+            "act as fallbacks for fields the per-target spec leaves blank. "
+            "To match load per target, pass --users N*<num_targets>. "
+            "Request stats are grouped per target via the request name prefix."
+        ),
     )
     parser.add_argument(
         "--tokenizer",
