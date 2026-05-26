@@ -1747,13 +1747,9 @@ def init_parser(parser):
         action="append",
         default=[],
         help=(
-            "Target deployment to forward traffic to. Format: 'url[|model][|api_key]' "
-            "(pipe-separated, all but url optional). Repeat the flag for multiple targets. "
-            "When set, users are assigned round-robin across targets; --host/--model/--api-key "
-            "act as fallbacks for fields the per-target spec leaves blank. "
-            "-u/--users is interpreted per-target: -u 100 with two targets spawns 200 total "
-            "users (100 hitting each target). --spawn-rate is scaled the same way. "
-            "Request stats are grouped per target via the request name prefix."
+            "Target URL. Repeat for multiple targets. Format: 'url[|model][|api_key]' "
+            "(model and api_key optional, fall back to --model/--api-key). "
+            "With multiple targets, -u/--users is per-target (total = users * num_targets)."
         ),
     )
     parser.add_argument(
