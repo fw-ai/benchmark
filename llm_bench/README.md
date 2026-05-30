@@ -154,6 +154,46 @@ Benchmark OpenAI deployment reading prompts from a file at 1 QPS:
 locust --dataset '@input.jsonl' -u 1 -H https://api.openai.com -o 200 --api-key $OPENAI_API_KEY --model=gpt-3.5-turbo --chat
 ```
 
+## GLM 5.1 TPS Benchmarking
+
+For measuring tokens per second (TPS) throughput on GLM 5.1 deployments, use the dedicated configuration and benchmark suite.
+
+### Quick TPS measurement
+
+Use the GLM 5.1 configuration file for a quick TPS measurement:
+
+```bash
+locust --config locust-glm5p1.conf \
+  -H https://api.fireworks.ai/inference \
+  -k $FIREWORKS_API_KEY \
+  -m accounts/fireworks/models/glm-5p1 \
+  -u 16 -t 2min
+```
+
+The summary will include `Output Tps` which shows the aggregate output tokens per second.
+
+### Comprehensive TPS benchmark suite
+
+For a full TPS analysis including concurrency sweeps and token length testing:
+
+```bash
+python benchmark_glm5p1_tps.py \
+  --host https://api.fireworks.ai/inference \
+  --api-key $FIREWORKS_API_KEY \
+  --model accounts/fireworks/models/glm-5p1
+```
+
+Options:
+- `--quick`: Run a faster benchmark with fewer configurations
+- `--concurrency-only`: Only test different concurrency levels
+- `--duration`: Duration for each test (default: 1min)
+- `--output-dir`: Directory for results
+
+The suite will:
+1. Test different concurrency levels to find the saturation point
+2. Test different prompt/output token configurations
+3. Generate a report with TPS analysis and recommendations
+
 ## UI mode
 
 Instead of relying on textual data, it's also possible to plot the results in Grafana.
