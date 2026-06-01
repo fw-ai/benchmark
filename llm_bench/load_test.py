@@ -2162,7 +2162,25 @@ def _(environment, **kw):
             name = f"P{percentile}_{percentile_metric}"
             entries[name] = metric_entry.get_response_time_percentile(percentile / 100)
 
-    pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
+    ms_metrics = {
+        "time_to_first_token",
+        "latency_per_token",
+        "overall_latency_per_token",
+        "total_latency",
+        "latency_per_embedding",
+        "latency_per_char",
+    }
+    def pretty_name(s):
+        base = s
+        # Strip percentile prefix (e.g. "P50_total_latency" -> "total_latency")
+        for prefix in ("P50_", "P90_", "P95_", "P99_", "P99.9_"):
+            if s.startswith(prefix):
+                base = s[len(prefix):]
+                break
+        label = " ".join([w.capitalize() for w in s.split("_")])
+        if base in ms_metrics:
+            label += " (ms)"
+        return label
     entries = {pretty_name(k): v for k, v in entries.items()}
 
     # print in the final event handler to make sure our output is the last one
