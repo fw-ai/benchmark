@@ -2173,7 +2173,7 @@ def _(environment, **kw):
     def pretty_name(s):
         base = s
         # Strip percentile prefix (e.g. "P50_total_latency" -> "total_latency")
-        for prefix in ("P50_", "P90_", "P95_", "P99_", "P99.9_"):
+        for prefix in ("P50_", "P90_", "P95_", "P99.9_", "P99_"):
             if s.startswith(prefix):
                 base = s[len(prefix):]
                 break
