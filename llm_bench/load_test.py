@@ -979,13 +979,17 @@ class FireworksProvider(OpenAIProvider):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
-        # Enable perf_metrics_in_response to get speculation stats in streaming responses
-        data["perf_metrics_in_response"] = True
-        # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
-        # default (0 = no caching) is a no-op for the server, but unconditionally
-        # adding the key breaks deployments whose OpenAI-compat schema is configured
-        # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
+        # Enable perf_metrics_in_response to get speculation stats in streaming responses.
+        # Some TRT-LLM / strict OpenAI-compat schemas reject this field (extra="forbid").
+        if getattr(self.parsed_options, "perf_metrics_in_response", True):
+            data["perf_metrics_in_response"] = True
+        # The --prompt-cache-max-len CLI arg always drives client-side prefix/suffix
+        # construction (TranslationDataset common_tokens). Only send the API field when
+        # explicitly enabled; strict schemas (e.g. TRT-LLM) reject it even when >0.
+        if (
+            getattr(self.parsed_options, "api_prompt_cache_max_len", True)
+            and self.parsed_options.prompt_cache_max_len > 0
+        ):
             data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
@@ -2089,6 +2093,20 @@ def init_parser(parser):
         default=0.01,
         help="Maximum fraction of failed requests tolerated before the run is considered failed. "
         "Defaults to 0.01 (1%%). Set to 0 to fail on any failed request.",
+    )
+    parser.add_argument(
+        "--perf-metrics-in-response",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include perf_metrics_in_response in Fireworks request bodies. Disable for strict "
+        "OpenAI-compat schemas (e.g. some TRT-LLM images) that reject unknown fields.",
+    )
+    parser.add_argument(
+        "--api-prompt-cache-max-len",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Send prompt_cache_max_len in Fireworks request bodies. Disable for strict schemas; "
+        "the CLI --prompt-cache-max-len value still controls client-side cacheable prefix length.",
     )
 
 
