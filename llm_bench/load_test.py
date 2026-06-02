@@ -979,14 +979,18 @@ class FireworksProvider(OpenAIProvider):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
-        # Enable perf_metrics_in_response to get speculation stats in streaming responses
-        data["perf_metrics_in_response"] = True
-        # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
-        # default (0 = no caching) is a no-op for the server, but unconditionally
-        # adding the key breaks deployments whose OpenAI-compat schema is configured
-        # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
-            data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        # TRT-LLM and some vLLM images use extra="forbid" and reject these body fields.
+        # --client-side-prompt-cache-only keeps TranslationDataset common_tokens (shared
+        # prefix) while omitting forbidden API keys.
+        if not getattr(self.parsed_options, "client_side_prompt_cache_only", False):
+            # Enable perf_metrics_in_response to get speculation stats in streaming responses
+            data["perf_metrics_in_response"] = True
+            # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
+            # default (0 = no caching) is a no-op for the server, but unconditionally
+            # adding the key breaks deployments whose OpenAI-compat schema is configured
+            # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
+            if self.parsed_options.prompt_cache_max_len > 0:
+                data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
         if self._forced_generation_pool is not None:
@@ -1998,7 +2002,16 @@ def init_parser(parser):
         env_var="PROMPT_CACHE_MAX_LEN",
         type=int,
         default=0,
-        help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+        help="Maximum length of the prompt cache to use. Defaults to 0 (no caching). "
+        "For limericks/code datasets this also sets the shared-prefix token budget (client-side).",
+    )
+    parser.add_argument(
+        "--client-side-prompt-cache-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use --prompt-cache-max-len only for client-side shared-prefix simulation; do not "
+        "send prompt_cache_max_len or perf_metrics_in_response in the request body (required for "
+        "TRT-LLM and other extra=forbid serving schemas).",
     )
     parser.add_argument(
         "--acceptance-probs-override",
