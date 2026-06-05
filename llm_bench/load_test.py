@@ -26,6 +26,8 @@ import re
 import gevent
 from locust.util.timespan import parse_timespan as _locust_parse_timespan
 
+from prefill_load_test import build_ids_to_length, build_pair_ids, load_chunks, split_chat_template
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -175,105 +177,12 @@ PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 
-def _load_chunks(path: str) -> list[str]:
-    with open(path, "r") as f:
-        text = f.read()
-    chunks = [p for p in text.split("\n\n") if p.strip()]
-    if not chunks:
-        raise ValueError(f"No chunks in {path}")
-    return chunks
-
-
-def _build_ids_to_length(tokenizer, chunks: list[str], target_len: int) -> list[int]:
-    ids: list[int] = []
-    i = 0
-    while len(ids) < target_len and i < 1_000_000:
-        lim = chunks[i % len(chunks)]
-        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
-        i += 1
-    return ids[:target_len]
-
-
-def _build_random_suffix_ids(
-    tokenizer, chunks: list[str], need_len: int, rng: random.Random
-) -> list[int]:
-    if need_len <= 0:
-        return []
-    ids: list[int] = []
-    i = 0
-    while len(ids) < need_len and i < 1_000_000:
-        lim = rng.choice(chunks)
-        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
-        i += 1
-    return ids[:need_len]
-
-
-def _split_chat_template(
-    tokenizer, tokenizer_path: str, model_type: str
-) -> tuple[list[int], list[int]]:
-    sentinel = "abcdefghij"
-    sentinel_ids = _normalize_token_ids(tokenizer.encode(sentinel, add_special_tokens=False))
-    if not sentinel_ids:
-        raise RuntimeError("Sentinel tokenized to empty id list; cannot split chat template.")
-    if model_type == "deepseek_v4":
-        encode_messages = load_dsv4_encode_messages(tokenizer_path)
-        prompt = encode_messages([{"role": "user", "content": sentinel}], thinking_mode="chat")
-        templated = _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
-    else:
-        templated = _normalize_token_ids(
-            tokenizer.apply_chat_template(
-                [{"role": "user", "content": sentinel}],
-                tokenize=True,
-                add_generation_prompt=True,
-            )
-        )
-    n = len(sentinel_ids)
-    for i in range(len(templated) - n + 1):
-        if templated[i : i + n] == sentinel_ids:
-            return templated[:i], templated[i + n :]
-    raise RuntimeError(f"Could not locate sentinel ids {sentinel_ids} in templated ids {templated}")
-
-
-def _build_pair_ids(
-    chat_prefix_ids: list[int],
-    chat_suffix_ids: list[int],
-    base_ids: list[int],
-    tokenizer,
-    chunks: list[str],
-    prompt_tokens: int,
-    cached_tokens: int,
-    rng: random.Random,
-) -> list[int]:
-    chat_overhead = len(chat_prefix_ids) + len(chat_suffix_ids)
-    if prompt_tokens < chat_overhead:
-        raise ValueError(f"prompt_tokens {prompt_tokens} is smaller than chat overhead {chat_overhead}")
-    if cached_tokens > prompt_tokens:
-        raise ValueError(f"cached_tokens {cached_tokens} exceeds prompt_tokens {prompt_tokens}")
-
-    content_target = prompt_tokens - chat_overhead
-    shared_content_len = max(0, cached_tokens - len(chat_prefix_ids))
-    shared_content_len = min(shared_content_len, content_target)
-
-    if shared_content_len > len(base_ids):
-        raise ValueError(f"shared_content_len {shared_content_len} exceeds base_ids length {len(base_ids)}")
-
-    shared = base_ids[:shared_content_len]
-    need_random = content_target - shared_content_len
-    random_ids = _build_random_suffix_ids(tokenizer, chunks, need_random, rng)
-    content = shared + random_ids
-    if len(content) < content_target:
-        raise RuntimeError(f"Could not build {content_target} content tokens from dataset (got {len(content)})")
-
-    return chat_prefix_ids + content[:content_target] + chat_suffix_ids
-
-
 class TranslationDataset:
     """Build exact token-id prompts with a deterministic shared prefix."""
 
     def __init__(
         self,
-        path: str,
-        prompt: str,
+        dataset: str,
         tokenizer,
         tokenizer_path: str,
         chat: bool,
@@ -281,22 +190,20 @@ class TranslationDataset:
         common_tokens: int,
         seed: int = 0,
     ):
-        del prompt  # legacy arg; strict prompts are built from token ids only
         self._tokenizer = tokenizer
         self._num_tokens = num_tokens
         self._cached_tokens = min(common_tokens, num_tokens)
         self._rng = random.Random(seed)
-        chunks = _load_chunks(path)
-        self._chunks = chunks
-        self._base_ids = _build_ids_to_length(tokenizer, chunks, num_tokens)
+        self._chunks = load_chunks(dataset)
+        self._base_ids = build_ids_to_length(tokenizer, self._chunks, num_tokens)
         if chat:
             model_type = resolve_model_type(tokenizer_path)
-            self._chat_prefix, self._chat_suffix = _split_chat_template(tokenizer, tokenizer_path, model_type)
+            self._chat_prefix, self._chat_suffix = split_chat_template(tokenizer, tokenizer_path, model_type)
         else:
             self._chat_prefix, self._chat_suffix = [], []
 
     def __next__(self):
-        ids = _build_pair_ids(
+        ids = build_pair_ids(
             self._chat_prefix,
             self._chat_suffix,
             self._base_ids,
@@ -363,26 +270,12 @@ class DatasetHolder:
                 dataset_limit=getattr(options, "dataset_limit", None),
             )
         elif options.dataset in ("limericks", "code"):
-            if options.dataset == "limericks":
-                if options.prompt is None:
-                    prompt = "Translate the limericks above to Spanish."
-                else:
-                    prompt = options.prompt
-                dataset_file = "limericks.txt"
-            elif options.dataset == "code":
-                if options.prompt is None:
-                    prompt = "Translate the code above to C++."
-                else:
-                    prompt = options.prompt
-                dataset_file = "code.txt"
-
             common_tokens = options.prompt_cache_max_len
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
             tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
             return TranslationDataset(
-                path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
-                prompt="\n\n" + prompt,
+                dataset=options.dataset,
                 tokenizer=InitTracker.load_tokenizer(options.tokenizer),
                 tokenizer_path=tokenizer_path,
                 chat=options.chat and not getattr(options, "rerank", False),
@@ -406,16 +299,13 @@ class DatasetHolder:
                     "--forced-generation-from-dataset only works with 'limericks' or 'code' datasets, "
                     "not JSONL files. Use --forced-generation-file instead."
                 )
-            dataset_files = {"limericks": "limericks.txt", "code": "code.txt"}
-            if dataset not in dataset_files:
+            if dataset not in ("limericks", "code"):
                 raise ValueError(
                     f"--forced-generation-from-dataset requires --dataset to be one of "
-                    f"{list(dataset_files.keys())}, got '{dataset}'"
+                    f"['limericks', 'code'], got '{dataset}'"
                 )
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_files[dataset])
             cls._forced_generation_instance = TranslationDataset(
-                path=path,
-                prompt="",
+                dataset=dataset,
                 tokenizer=InitTracker.load_tokenizer(tokenizer),
                 tokenizer_path=tokenizer or DEFAULT_TOKENIZER,
                 chat=False,
@@ -829,14 +719,11 @@ class BaseProvider(abc.ABC):
 
 
 class OpenAIProvider(BaseProvider):
-    def get_url(self, prompt=None):
+    def get_url(self):
         if self.parsed_options.rerank:
             return "/v1/rerank"
         elif self.parsed_options.embeddings:
             return "/v1/embeddings"
-        elif isinstance(prompt, list) and prompt and isinstance(prompt[0], int):
-            # Chat template is applied client-side; token ids go to /v1/completions.
-            return "/v1/completions"
         elif self.parsed_options.chat:
             return "/v1/chat/completions"
         else:
@@ -1616,8 +1503,13 @@ class LLMUser(HttpUser):
             print("---")
         t_start = time.perf_counter()
 
+        url = self.provider_formatter.get_url()
+        # Chat template is applied client-side; token ids always use /v1/completions.
+        if isinstance(prompt, list) and prompt and isinstance(prompt[0], int):
+            url = "/v1/completions"
+
         with self.client.post(
-            self.provider_formatter.get_url(prompt),
+            url,
             data=json.dumps(data),
             stream=True,
             catch_response=True,
