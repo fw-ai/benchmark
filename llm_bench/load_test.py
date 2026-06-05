@@ -175,7 +175,101 @@ PROMPT_PREFIX_TOKEN = "Pad "  # exactly one token
 PROMPT_CHAT_IMAGE_PLACEHOLDER = "<image>"
 
 
+def _load_chunks(path: str) -> list[str]:
+    with open(path, "r") as f:
+        text = f.read()
+    chunks = [p for p in text.split("\n\n") if p.strip()]
+    if not chunks:
+        raise ValueError(f"No chunks in {path}")
+    return chunks
+
+
+def _build_ids_to_length(tokenizer, chunks: list[str], target_len: int) -> list[int]:
+    ids: list[int] = []
+    i = 0
+    while len(ids) < target_len and i < 1_000_000:
+        lim = chunks[i % len(chunks)]
+        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
+        i += 1
+    return ids[:target_len]
+
+
+def _build_random_suffix_ids(
+    tokenizer, chunks: list[str], need_len: int, rng: random.Random
+) -> list[int]:
+    if need_len <= 0:
+        return []
+    ids: list[int] = []
+    i = 0
+    while len(ids) < need_len and i < 1_000_000:
+        lim = rng.choice(chunks)
+        ids.extend(tokenizer.encode(lim + "\n\n", add_special_tokens=False))
+        i += 1
+    return ids[:need_len]
+
+
+def _split_chat_template(
+    tokenizer, tokenizer_path: str, model_type: str
+) -> tuple[list[int], list[int]]:
+    sentinel = "abcdefghij"
+    sentinel_ids = _normalize_token_ids(tokenizer.encode(sentinel, add_special_tokens=False))
+    if not sentinel_ids:
+        raise RuntimeError("Sentinel tokenized to empty id list; cannot split chat template.")
+    if model_type == "deepseek_v4":
+        encode_messages = load_dsv4_encode_messages(tokenizer_path)
+        prompt = encode_messages([{"role": "user", "content": sentinel}], thinking_mode="chat")
+        templated = _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
+    else:
+        templated = _normalize_token_ids(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": sentinel}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+        )
+    n = len(sentinel_ids)
+    for i in range(len(templated) - n + 1):
+        if templated[i : i + n] == sentinel_ids:
+            return templated[:i], templated[i + n :]
+    raise RuntimeError(f"Could not locate sentinel ids {sentinel_ids} in templated ids {templated}")
+
+
+def _build_pair_ids(
+    chat_prefix_ids: list[int],
+    chat_suffix_ids: list[int],
+    base_ids: list[int],
+    tokenizer,
+    chunks: list[str],
+    prompt_tokens: int,
+    cached_tokens: int,
+    rng: random.Random,
+) -> list[int]:
+    chat_overhead = len(chat_prefix_ids) + len(chat_suffix_ids)
+    if prompt_tokens < chat_overhead:
+        raise ValueError(f"prompt_tokens {prompt_tokens} is smaller than chat overhead {chat_overhead}")
+    if cached_tokens > prompt_tokens:
+        raise ValueError(f"cached_tokens {cached_tokens} exceeds prompt_tokens {prompt_tokens}")
+
+    content_target = prompt_tokens - chat_overhead
+    shared_content_len = max(0, cached_tokens - len(chat_prefix_ids))
+    shared_content_len = min(shared_content_len, content_target)
+
+    if shared_content_len > len(base_ids):
+        raise ValueError(f"shared_content_len {shared_content_len} exceeds base_ids length {len(base_ids)}")
+
+    shared = base_ids[:shared_content_len]
+    need_random = content_target - shared_content_len
+    random_ids = _build_random_suffix_ids(tokenizer, chunks, need_random, rng)
+    content = shared + random_ids
+    if len(content) < content_target:
+        raise RuntimeError(f"Could not build {content_target} content tokens from dataset (got {len(content)})")
+
+    return chat_prefix_ids + content[:content_target] + chat_suffix_ids
+
+
 class TranslationDataset:
+    """Build exact token-id prompts with a deterministic shared prefix."""
+
     def __init__(
         self,
         path: str,
@@ -185,46 +279,35 @@ class TranslationDataset:
         chat: bool,
         num_tokens: int,
         common_tokens: int,
+        seed: int = 0,
     ):
+        del prompt  # legacy arg; strict prompts are built from token ids only
         self._tokenizer = tokenizer
-        self._tokenizer_path = tokenizer_path
         self._num_tokens = num_tokens
-
-        self._all_limericks = []
-        with open(path, "r") as f:
-            text = f.read()
-            lims = text.split("\n\n")
-            for i, lim in enumerate(lims):
-                num_tokens = len(self._tokenizer.encode(lim, add_special_tokens=False))
-                self._all_limericks.append((lim, num_tokens))
-
-        self._prefix = ""
-        self._suffix = prompt
-        self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt, add_special_tokens=False))
-        # Use deterministic selection (sequential iteration) to ensure all workers
-        # get the same prefix for the same common_tokens value
-        idx = 0
-        while self._prefix_suffix_tokens < common_tokens:
-            lim, num_tokens = self._all_limericks[idx % len(self._all_limericks)]
-            self._prefix += lim + "\n\n"
-            self._prefix_suffix_tokens += num_tokens
-            idx += 1
-
+        self._cached_tokens = min(common_tokens, num_tokens)
+        self._rng = random.Random(seed)
+        chunks = _load_chunks(path)
+        self._chunks = chunks
+        self._base_ids = _build_ids_to_length(tokenizer, chunks, num_tokens)
         if chat:
-            empty_template_tokens = empty_chat_template_token_ids(self._tokenizer, self._tokenizer_path)
-            self._prefix_suffix_tokens += len(empty_template_tokens)
+            model_type = resolve_model_type(tokenizer_path)
+            self._chat_prefix, self._chat_suffix = _split_chat_template(tokenizer, tokenizer_path, model_type)
+        else:
+            self._chat_prefix, self._chat_suffix = [], []
 
     def __next__(self):
-        prompt_tokens = self._prefix_suffix_tokens
-        prompt = self._prefix
-        while prompt_tokens < self._num_tokens:
-            lim, num_tokens = self._all_limericks[random.randint(0, len(self._all_limericks) - 1)]
-
-            prompt += lim + "\n\n"
-            prompt_tokens += num_tokens
-        prompt += self._suffix
-
-        return prompt, prompt_tokens
+        ids = _build_pair_ids(
+            self._chat_prefix,
+            self._chat_suffix,
+            self._base_ids,
+            self._tokenizer,
+            self._chunks,
+            self._num_tokens,
+            self._cached_tokens,
+            self._rng,
+        )
+        assert len(ids) == self._num_tokens
+        return ids, self._num_tokens
 
     def __iter__(self):
         return self
@@ -746,11 +829,14 @@ class BaseProvider(abc.ABC):
 
 
 class OpenAIProvider(BaseProvider):
-    def get_url(self):
+    def get_url(self, prompt=None):
         if self.parsed_options.rerank:
             return "/v1/rerank"
         elif self.parsed_options.embeddings:
             return "/v1/embeddings"
+        elif isinstance(prompt, list) and prompt and isinstance(prompt[0], int):
+            # Chat template is applied client-side; token ids go to /v1/completions.
+            return "/v1/completions"
         elif self.parsed_options.chat:
             return "/v1/chat/completions"
         else:
@@ -805,7 +891,11 @@ class OpenAIProvider(BaseProvider):
             data["logprobs"] = self.parsed_options.logprobs
         if self.parsed_options.reasoning_effort is not None:
             data["reasoning_effort"] = self.parsed_options.reasoning_effort
-        if isinstance(prompt, str):
+        if isinstance(prompt, list) and prompt and isinstance(prompt[0], int):
+            if images is not None:
+                raise ValueError("images are not supported with token-id prompts")
+            data["prompt"] = prompt
+        elif isinstance(prompt, str):
             if self.parsed_options.chat:
                 if images is None:
                     data["messages"] = [{"role": "user", "content": prompt}]
@@ -943,12 +1033,13 @@ class FireworksProvider(OpenAIProvider):
             self._forced_generation_pool = itertools.cycle(self._load_forced_generation_texts(forced_gen_path))
         elif forced_gen_from_dataset:
             assert parsed_options.tokenizer is not None, "--tokenizer is required for --forced-generation-from-dataset"
+            tokenizer = InitTracker.load_tokenizer(parsed_options.tokenizer)
             ds = DatasetHolder.get_forced_generation_instance(
                 dataset=parsed_options.dataset,
                 tokenizer=parsed_options.tokenizer,
                 max_tokens=parsed_options.max_tokens,
             )
-            self._forced_generation_pool = (text for text, _tokens in ds)
+            self._forced_generation_pool = (tokenizer.decode(ids) for ids, _tokens in ds)
         else:
             self._forced_generation_pool = None
 
@@ -1338,6 +1429,11 @@ class LLMUser(HttpUser):
                 # e.g., <|image|> for Phi, <|image_pad|> for Qwen, <image> for Llava
                 # So using /completions endpoint requires a bit more work to support this
                 raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
+            if self.environment.parsed_options.dataset in ("limericks", "code"):
+                raise AssertionError(
+                    "--prompt-images-with-resolutions is not supported with limericks/code datasets "
+                    "(strict token-id prompts)."
+                )
             self.prompt_images = [self._create_base64_image(width, height) for width, height in image_resolutions]
 
         self.max_tokens_sampler = LengthSampler(
@@ -1409,7 +1505,11 @@ class LLMUser(HttpUser):
         self.dataset = iter(dataset)
 
         tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        sample_prompt = self._get_input()[0]
+        if isinstance(sample_prompt, list):
+            self.prompt_tokenizer_tokens = len(sample_prompt)
+        else:
+            self.prompt_tokenizer_tokens = len(tokenizer.encode(sample_prompt))
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
@@ -1517,7 +1617,7 @@ class LLMUser(HttpUser):
         t_start = time.perf_counter()
 
         with self.client.post(
-            self.provider_formatter.get_url(),
+            self.provider_formatter.get_url(prompt),
             data=json.dumps(data),
             stream=True,
             catch_response=True,
