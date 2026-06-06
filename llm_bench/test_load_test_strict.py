@@ -29,7 +29,6 @@ class StrictPromptTests(unittest.TestCase):
             chat=False,
             num_tokens=512,
             common_tokens=0,
-            strict=True,
             seed=1,
         )
         defaults.update(kwargs)
@@ -77,11 +76,18 @@ class StrictPromptTests(unittest.TestCase):
         instruction_ids = self.tokenizer.encode(custom, add_special_tokens=False)
         self.assertEqual(ids[-len(instruction_ids) :], instruction_ids)
 
-    def test_rerank_uses_legacy_text_prompts(self):
-        ds = self._make_dataset(strict=False, num_tokens=200, common_tokens=50, seed=5)
-        prompt, reported = next(iter(ds))
-        self.assertIsInstance(prompt, str)
-        self.assertGreater(reported, 0)
+    def test_rerank_decodes_token_id_prompts(self):
+        opts = mock.Mock(
+            rerank=True,
+            rerank_query=None,
+            rerank_top_n=None,
+            rerank_return_documents=True,
+            tokenizer="gpt2",
+        )
+        provider = OpenAIProvider("test-model", opts)
+        payload = provider.format_payload([10, 20, 30], max_tokens=16, images=None)
+        self.assertIn("documents", payload)
+        self.assertIsInstance(payload["documents"], list)
 
     def test_format_payload_accepts_token_ids(self):
         opts = mock.Mock(

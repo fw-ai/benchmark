@@ -187,40 +187,10 @@ class TranslationDataset:
         chat: bool,
         num_tokens: int,
         common_tokens: int,
-        strict: bool = True,
         seed: int = 0,
     ):
-        self._strict = strict
         self._tokenizer = tokenizer
-        self._tokenizer_path = tokenizer_path
         self._num_tokens = num_tokens
-
-        if not strict:
-            self._all_limericks = []
-            with open(path, "r") as f:
-                text = f.read()
-                lims = text.split("\n\n")
-                for i, lim in enumerate(lims):
-                    lim_tokens = len(self._tokenizer.encode(lim, add_special_tokens=False))
-                    self._all_limericks.append((lim, lim_tokens))
-
-            self._prefix = ""
-            self._suffix = prompt
-            self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt, add_special_tokens=False))
-            # Use deterministic selection (sequential iteration) to ensure all workers
-            # get the same prefix for the same common_tokens value
-            idx = 0
-            while self._prefix_suffix_tokens < common_tokens:
-                lim, lim_tokens = self._all_limericks[idx % len(self._all_limericks)]
-                self._prefix += lim + "\n\n"
-                self._prefix_suffix_tokens += lim_tokens
-                idx += 1
-
-            if chat:
-                empty_template_tokens = empty_chat_template_token_ids(self._tokenizer, self._tokenizer_path)
-                self._prefix_suffix_tokens += len(empty_template_tokens)
-            return
-
         dataset = os.path.basename(path).removesuffix(".txt")
         self._cached_tokens = min(common_tokens, num_tokens)
         self._rng = random.Random(seed)
@@ -234,16 +204,6 @@ class TranslationDataset:
             self._chat_prefix, self._chat_suffix = [], []
 
     def __next__(self):
-        if not self._strict:
-            prompt_tokens = self._prefix_suffix_tokens
-            prompt = self._prefix
-            while prompt_tokens < self._num_tokens:
-                lim, lim_tokens = self._all_limericks[random.randint(0, len(self._all_limericks) - 1)]
-                prompt += lim + "\n\n"
-                prompt_tokens += lim_tokens
-            prompt += self._suffix
-            return prompt, prompt_tokens
-
         body_tokens = self._num_tokens - len(self._instruction_ids)
         ids = build_pair_ids(
             self._chat_prefix,
@@ -342,7 +302,6 @@ class DatasetHolder:
                 chat=options.chat and not getattr(options, "rerank", False),
                 num_tokens=options.prompt_tokens,
                 common_tokens=common_tokens,
-                strict=not getattr(options, "rerank", False),
             )
         else:
             raise ValueError(f"Unknown dataset: {options.dataset}")
@@ -798,6 +757,10 @@ class OpenAIProvider(BaseProvider):
         if self.parsed_options.rerank:
             if isinstance(prompt, list) and prompt and isinstance(prompt[0], str):
                 documents = prompt
+            elif isinstance(prompt, list) and prompt and isinstance(prompt[0], int):
+                tokenizer = InitTracker.load_tokenizer(self.parsed_options.tokenizer)
+                text = tokenizer.decode(prompt)
+                documents = [doc.strip() for doc in text.split("\n\n") if doc.strip()]
             else:
                 documents = [doc.strip() for doc in prompt.split("\n\n") if doc.strip()]
             query = self.parsed_options.rerank_query or "Find the most relevant document."
