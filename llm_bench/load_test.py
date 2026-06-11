@@ -32,6 +32,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SCALING_UP_ERROR_CODE = "DEPLOYMENT_SCALING_UP"
+SCALING_UP_RETRY_METRIC_NAME = "[scaling-up-retry]"
+
+
+def _is_deployment_scaling_up(response: Any) -> bool:
+    if response.status_code != 503:
+        return False
+    try:
+        body = orjson.loads(response.content or response.text)
+    except Exception:
+        return False
+    if not isinstance(body, dict):
+        return False
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return False
+    return error.get("code") == SCALING_UP_ERROR_CODE
+
+
 try:
     import locust_plugins
 except ImportError:
@@ -1515,196 +1534,220 @@ class LLMUser(HttpUser):
             print(json.dumps(data, indent=2))
             print("---")
         t_start = time.perf_counter()
+        opts = self.environment.parsed_options
+        max_retries = opts.scaling_retry_max
+        delay = opts.scaling_retry_initial_delay
+        url = self.provider_formatter.get_url()
+        payload = json.dumps(data)
 
-        with self.client.post(
-            self.provider_formatter.get_url(),
-            data=json.dumps(data),
-            stream=True,
-            catch_response=True,
-            timeout=60,
-        ) as response:
-            combined_text = ""
-            done = False
-            completion_tokens = None
-            total_logprob_tokens = None
-            cached_tokens = None
-            perf_metrics = None  # Capture perf_metrics from response body (streaming)
-            try:
-                response.raise_for_status()
-            except Exception as e:
-                # Use locust's failure-recording API instead of raising so the
-                # failure is counted in stats.total.num_failures (visible in
-                # the summary, stats CSV, HTML report, and stats_failures.csv)
-                # rather than being routed to runner.exceptions.
-                response.failure(f"Error in response: {response.text or repr(e)}")
-                return
-            t_first_token = None
-            t_first_visible_token = None
-            for chunk in response.iter_lines(delimiter=b"\n\n"):
-                if len(chunk) == 0:
-                    continue  # come providers send empty lines between data chunks
-                if done:
-                    if chunk != b"data: [DONE]":
-                        logger.warning(f"Received more chunks after [DONE]: {chunk}")
+        for attempt in range(max_retries):
+            request_name = url if attempt == max_retries - 1 else SCALING_UP_RETRY_METRIC_NAME
+            with self.client.post(
+                url,
+                data=payload,
+                stream=True,
+                catch_response=True,
+                timeout=60,
+                name=request_name,
+            ) as response:
+                if _is_deployment_scaling_up(response):
+                    if attempt < max_retries - 1:
+                        logger.info(
+                            "Deployment scaling up (attempt %d/%d), retrying in %.1fs",
+                            attempt + 1,
+                            max_retries,
+                            delay,
+                        )
+                        response.success()
+                        gevent.sleep(delay)
+                        delay = min(delay * 1.5, 60.0)
+                        continue
+                    response.failure("Deployment did not scale up in time")
+                    return
+
+                combined_text = ""
+                done = False
+                completion_tokens = None
+                total_logprob_tokens = None
+                cached_tokens = None
+                perf_metrics = None  # Capture perf_metrics from response body (streaming)
                 try:
-                    now = time.perf_counter()
-                    if self.provider_formatter.parsed_options.rerank:
-                        t_first_token = now
-                        out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
+                    response.raise_for_status()
+                except Exception as e:
+                    # Use locust's failure-recording API instead of raising so the
+                    # failure is counted in stats.total.num_failures (visible in
+                    # the summary, stats CSV, HTML report, and stats_failures.csv)
+                    # rather than being routed to runner.exceptions.
+                    response.failure(f"Error in response: {response.text or repr(e)}")
+                    return
+                t_first_token = None
+                t_first_visible_token = None
+                for chunk in response.iter_lines(delimiter=b"\n\n"):
+                    if len(chunk) == 0:
+                        continue  # come providers send empty lines between data chunks
+                    if done:
+                        if chunk != b"data: [DONE]":
+                            logger.warning(f"Received more chunks after [DONE]: {chunk}")
+                    try:
+                        now = time.perf_counter()
+                        if self.provider_formatter.parsed_options.rerank:
+                            t_first_token = now
+                            out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
+                            if out.prompt_tokens:
+                                prompt_tokens = out.prompt_tokens
+                            if self.environment.parsed_options.show_response:
+                                combined_text = out.text
+                            break
+                        if self.provider_formatter.parsed_options.embeddings:
+                            t_first_token = now
+                            resp_data = orjson.loads(chunk)
+                            usage = resp_data.get("usage", {})
+                            if usage.get("prompt_tokens"):
+                                prompt_tokens = usage["prompt_tokens"]
+                            if self.environment.parsed_options.show_response:
+                                out = self.provider_formatter.parse_output_json(resp_data)
+                                combined_text = str(out.text)
+                            add_custom_metric("latency_per_embedding", (now - t_start) / batch_size * 1000)
+                            break
+                        if self.stream:
+                            assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
+                            chunk = chunk[len(b"data:") :]
+                            if chunk.strip() == b"[DONE]":
+                                done = True
+                                continue
+                        data = orjson.loads(chunk)
+                        # Capture perf_metrics if present (usually in final usage chunk)
+                        if data.get("perf_metrics"):
+                            perf_metrics = data["perf_metrics"]
+                        out = self.provider_formatter.parse_output_json(data)
+                        if out.completion_tokens:
+                            completion_tokens = out.completion_tokens
                         if out.prompt_tokens:
                             prompt_tokens = out.prompt_tokens
-                        if self.environment.parsed_options.show_response:
-                            combined_text = out.text
-                        break
-                    if self.provider_formatter.parsed_options.embeddings:
-                        t_first_token = now
-                        resp_data = orjson.loads(chunk)
-                        usage = resp_data.get("usage", {})
-                        if usage.get("prompt_tokens"):
-                            prompt_tokens = usage["prompt_tokens"]
-                        if self.environment.parsed_options.show_response:
-                            out = self.provider_formatter.parse_output_json(resp_data)
-                            combined_text = str(out.text)
-                        add_custom_metric("latency_per_embedding", (now - t_start) / batch_size * 1000)
-                        break
-                    if self.stream:
-                        assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
-                        chunk = chunk[len(b"data:") :]
-                        if chunk.strip() == b"[DONE]":
-                            done = True
-                            continue
-                    data = orjson.loads(chunk)
-                    # Capture perf_metrics if present (usually in final usage chunk)
-                    if data.get("perf_metrics"):
-                        perf_metrics = data["perf_metrics"]
-                    out = self.provider_formatter.parse_output_json(data)
-                    if out.completion_tokens:
-                        completion_tokens = out.completion_tokens
-                    if out.prompt_tokens:
-                        prompt_tokens = out.prompt_tokens
-                    if out.cached_tokens is not None:
-                        cached_tokens = out.cached_tokens
-                    combined_text += out.text
+                        if out.cached_tokens is not None:
+                            cached_tokens = out.cached_tokens
+                        combined_text += out.text
 
-                    # some providers (SGLang) send an empty chunk first skewing the TTFT;
-                    # completion_tokens handles invisible-token deployments where combined_text
-                    # stays empty but usage.completion_tokens is non-zero (e.g. Maverick-style)
-                    if (combined_text or completion_tokens) and t_first_token is None:
-                        t_first_token = now
-                        # Randomly cancel after first token if cancel_rate is set
-                        cancel_rate = getattr(self.environment.parsed_options, "cancel_rate", 0.0)
-                        if cancel_rate > 0.0 and random.random() < cancel_rate:
-                            response.success()
-                            return
+                        # some providers (SGLang) send an empty chunk first skewing the TTFT;
+                        # completion_tokens handles invisible-token deployments where combined_text
+                        # stays empty but usage.completion_tokens is non-zero (e.g. Maverick-style)
+                        if (combined_text or completion_tokens) and t_first_token is None:
+                            t_first_token = now
+                            # Randomly cancel after first token if cancel_rate is set
+                            cancel_rate = getattr(self.environment.parsed_options, "cancel_rate", 0.0)
+                            if cancel_rate > 0.0 and random.random() < cancel_rate:
+                                response.success()
+                                return
 
-                    # Track first visible (non-reasoning) token separately.
-                    # has_reasoning_only is False for transition chunks (both reasoning + content),
-                    # so t_first_visible_token fires correctly at the end of the thinking phase.
-                    if combined_text and not out.has_reasoning_only and t_first_visible_token is None:
-                        t_first_visible_token = now
+                        # Track first visible (non-reasoning) token separately.
+                        # has_reasoning_only is False for transition chunks (both reasoning + content),
+                        # so t_first_visible_token fires correctly at the end of the thinking phase.
+                        if combined_text and not out.has_reasoning_only and t_first_visible_token is None:
+                            t_first_visible_token = now
 
-                    if out.logprob_tokens:
-                        total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
-                except Exception as e:
-                    logger.error(f"Failed to parse response: {chunk} with error {repr(e)}")
-                    response.failure(e)
-                    return
-            if t_first_token is None:
-                if max_tokens == 0:
-                    t_first_token = time.perf_counter()
+                        if out.logprob_tokens:
+                            total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
+                    except Exception as e:
+                        logger.error(f"Failed to parse response: {chunk} with error {repr(e)}")
+                        response.failure(e)
+                        return
+                if t_first_token is None:
+                    if max_tokens == 0:
+                        t_first_token = time.perf_counter()
+                    else:
+                        response.failure(Exception("empty response received"))
+                        return
+
+                if (
+                    (total_logprob_tokens is not None)
+                    and (completion_tokens is not None)
+                    and total_logprob_tokens != completion_tokens
+                ):
+                    logger.warning(f"completion_tokens {completion_tokens} != logprob_tokens {total_logprob_tokens}")
+                if total_logprob_tokens is not None:
+                    num_tokens = total_logprob_tokens
                 else:
-                    response.failure(Exception("empty response received"))
-                    return
+                    num_tokens = completion_tokens
 
-            if (
-                (total_logprob_tokens is not None)
-                and (completion_tokens is not None)
-                and total_logprob_tokens != completion_tokens
-            ):
-                logger.warning(f"completion_tokens {completion_tokens} != logprob_tokens {total_logprob_tokens}")
-            if total_logprob_tokens is not None:
-                num_tokens = total_logprob_tokens
-            else:
-                num_tokens = completion_tokens
+                num_tokens = num_tokens or 0
+                num_chars = len(combined_text)
+                now = time.perf_counter()
+                dur_total = now - t_start
 
-            num_tokens = num_tokens or 0
-            num_chars = len(combined_text)
-            now = time.perf_counter()
-            dur_total = now - t_start
+                use_first_visible = getattr(self.environment.parsed_options, "first_visible_token", False)
+                # Fall back to t_first_token if no visible content ever arrived (e.g. all-thinking response)
+                t_effective_first = (t_first_visible_token or t_first_token) if use_first_visible else t_first_token
 
-            use_first_visible = getattr(self.environment.parsed_options, "first_visible_token", False)
-            # Fall back to t_first_token if no visible content ever arrived (e.g. all-thinking response)
-            t_effective_first = (t_first_visible_token or t_first_token) if use_first_visible else t_first_token
+                dur_generation = now - t_effective_first
+                dur_first_token = t_effective_first - t_start
 
-            dur_generation = now - t_effective_first
-            dur_first_token = t_effective_first - t_start
+                if not (
+                    self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
+                ):
+                    prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
 
-            if not (
-                self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
-            ):
-                prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
-
-            token_parts = []
-            if prompt_tokens:
-                token_parts.append(f"{prompt_tokens} prompt")
-            if cached_tokens is not None:
-                token_parts.append(f"{cached_tokens} cached")
-            token_parts.append(f"{num_tokens} completion")
-            token_str = ", ".join(token_parts)
-
-            logger.info(
-                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
-            )
-            if self.environment.parsed_options.show_response:
-                print("---")
-                print(combined_text)
-                print("---")
-            track_performance_metrics(
-                response_time=dur_total,
-                token_count=num_tokens,
-                char_count=num_chars,
-                prompt_tokens=prompt_tokens,
-                ttft=dur_first_token,
-            )
-            if num_chars:
-                add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
-            if self.stream:
-                add_custom_metric("time_to_first_token", dur_first_token * 1000)
-            add_custom_metric("total_latency", dur_total * 1000)
-            if num_tokens:
-                if num_tokens != max_tokens:
-                    logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
-                add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
-                add_custom_metric("completion_tokens", num_tokens)
-                add_custom_metric("num_tokens", num_tokens)
-                add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
-                add_custom_metric(
-                    "overall_latency_per_token",
-                    dur_total / num_tokens * 1000,
-                    num_tokens,
-                )
-
-            if self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank:
+                token_parts = []
                 if prompt_tokens:
-                    add_custom_metric("prompt_tokens", prompt_tokens)
-            else:
-                if prompt_tokens:
-                    add_custom_metric("prompt_tokens", prompt_tokens)
+                    token_parts.append(f"{prompt_tokens} prompt")
                 if cached_tokens is not None:
-                    add_custom_metric("cached_tokens", cached_tokens)
+                    token_parts.append(f"{cached_tokens} cached")
+                token_parts.append(f"{num_tokens} completion")
+                token_str = ", ".join(token_parts)
 
-            # Allow provider to process response (e.g., for custom metrics)
-            self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
+                logger.info(
+                    f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
+                )
+                if self.environment.parsed_options.show_response:
+                    print("---")
+                    print(combined_text)
+                    print("---")
+                track_performance_metrics(
+                    response_time=dur_total,
+                    token_count=num_tokens,
+                    char_count=num_chars,
+                    prompt_tokens=prompt_tokens,
+                    ttft=dur_first_token,
+                )
+                if num_chars:
+                    add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
+                if self.stream:
+                    add_custom_metric("time_to_first_token", dur_first_token * 1000)
+                add_custom_metric("total_latency", dur_total * 1000)
+                if num_tokens:
+                    if num_tokens != max_tokens:
+                        logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                    add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
+                    add_custom_metric("completion_tokens", num_tokens)
+                    add_custom_metric("num_tokens", num_tokens)
+                    add_custom_metric("latency_per_token", dur_generation / num_tokens * 1000, num_tokens)
+                    add_custom_metric(
+                        "overall_latency_per_token",
+                        dur_total / num_tokens * 1000,
+                        num_tokens,
+                    )
 
-            # Mark response as success (required when using catch_response=True)
-            response.success()
+                if self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank:
+                    if prompt_tokens:
+                        add_custom_metric("prompt_tokens", prompt_tokens)
+                else:
+                    if prompt_tokens:
+                        add_custom_metric("prompt_tokens", prompt_tokens)
+                    if cached_tokens is not None:
+                        add_custom_metric("cached_tokens", cached_tokens)
 
-            if not self.first_done:
-                self.first_done = True
-                InitTracker.notify_first_request()
+                # Allow provider to process response (e.g., for custom metrics)
+                self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
 
-            # Notify request completion and check if we should stop
-            InitTracker.notify_request_complete()
+                # Mark response as success (required when using catch_response=True)
+                response.success()
+
+                if not self.first_done:
+                    self.first_done = True
+                    InitTracker.notify_first_request()
+
+                # Notify request completion and check if we should stop
+                InitTracker.notify_request_complete()
+                break
 
 
 def parse_resolution(res_str):
@@ -2082,6 +2125,20 @@ def init_parser(parser):
         "By default, TTFT fires on the first thinking token for reasoning models, which is consistent "
         "with how Customers measures TTFT. Use this flag to compare apples-to-apples TTFT across "
         "reasoning and non-reasoning providers. Requires --chat and --stream.",
+    )
+    parser.add_argument(
+        "--scaling-retry-max",
+        type=int,
+        default=30,
+        help="Maximum number of attempts when the deployment returns 503 DEPLOYMENT_SCALING_UP. "
+        "Defaults to 30. Set to 1 to disable retries.",
+    )
+    parser.add_argument(
+        "--scaling-retry-initial-delay",
+        type=float,
+        default=5.0,
+        help="Initial backoff in seconds between DEPLOYMENT_SCALING_UP retries. "
+        "Doubles by 1.5x each attempt up to 60s. Defaults to 5.",
     )
     parser.add_argument(
         "--max-fail-ratio",
