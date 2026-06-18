@@ -1408,8 +1408,15 @@ class LLMUser(HttpUser):
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
-        tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        prompt0, prompt_tokens0, _ = self._get_input()
+        if isinstance(prompt0, dict):
+            # JSONL replay payloads are full request bodies (often multimodal chat dicts).
+            self.prompt_tokenizer_tokens = int(prompt_tokens0 or 0)
+        else:
+            tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
+            self.prompt_tokenizer_tokens = len(tokenizer.encode(prompt0))
+        # Re-create iterator so the initialization peek does not drop the first sample.
+        self.dataset = iter(dataset)
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
