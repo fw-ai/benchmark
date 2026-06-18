@@ -1523,12 +1523,13 @@ class LLMUser(HttpUser):
             print("---")
         t_start = time.perf_counter()
 
+        request_timeout = getattr(self.environment.parsed_options, "request_timeout", None) or 60
         with self.client.post(
             self.provider_formatter.get_url(),
             data=json.dumps(data),
             stream=True,
             catch_response=True,
-            timeout=60,
+            timeout=request_timeout,
         ) as response:
             combined_text = ""
             done = False
@@ -2045,6 +2046,12 @@ def init_parser(parser):
         default=1,
         type=int,
         help="How many sequences to generate (makes sense to use with non-zero temperature).",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=None,
+        help="Per-request client timeout in seconds (default: 60). Increase for long VLM/JSONL workloads.",
     )
     parser.add_argument(
         "--max-requests",
