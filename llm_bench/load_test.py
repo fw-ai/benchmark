@@ -985,7 +985,9 @@ class FireworksProvider(OpenAIProvider):
         # default (0 = no caching) is a no-op for the server, but unconditionally
         # adding the key breaks deployments whose OpenAI-compat schema is configured
         # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
+        # Chat-completions routes (e.g. TRT-LLM) also reject this field even when
+        # --prompt-cache-max-len is used client-side to build a shared prefix.
+        if self.parsed_options.prompt_cache_max_len > 0 and not self.parsed_options.chat:
             data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
