@@ -41,7 +41,6 @@ class KvModelBase(ABC):
         precision: PrecisionSelection,
         *,
         context_length: int,
-        max_active_sequences: int,
-        include_runtime_overhead: bool,
+        batch_size: int,
     ) -> dict[str, int]:
         """Return KV-cache bytes keyed by consumer name."""

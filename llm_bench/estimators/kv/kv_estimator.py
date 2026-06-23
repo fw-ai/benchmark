@@ -23,8 +23,7 @@ def estimate_kv_cache_memory_use(
     convert_to_precision: str | None = None,
     *,
     context_length: int | None = None,
-    max_active_sequences: int = 1,
-    include_runtime_overhead: bool = True,
+    batch_size: int = 1,
 ) -> dict[str, int]:
     """Return estimated KV-cache bytes keyed by attention consumer.
 
@@ -35,14 +34,11 @@ def estimate_kv_cache_memory_use(
             omitted, the selected model plugin may provide a default.
         context_length: Full-token capacity to estimate. Defaults to the model
             config's max context length.
-        max_active_sequences: Active state slots to reserve for model plugins
-            that have active rolling/state caches.
-        include_runtime_overhead: Include plugin-defined runtime-only cache
-            overheads when applicable.
+        batch_size: Number of independent sequences, each with ``context_length`` tokens.
     """
 
-    if max_active_sequences <= 0:
-        raise ValueError(f"max_active_sequences must be positive, got {max_active_sequences}")
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
 
     config = _load_model_config(hf_model_name)
     text_config = _text_config(config)
@@ -61,14 +57,14 @@ def estimate_kv_cache_memory_use(
             text_config,
             precision,
             context_length=effective_context,
-            max_active_sequences=max_active_sequences,
-            include_runtime_overhead=include_runtime_overhead,
+            batch_size=batch_size,
         )
 
     return _estimate_standard_attention(
         text_config,
         precision=precision,
         context_length=effective_context,
+        batch_size=batch_size,
     )
 
 
@@ -77,8 +73,7 @@ def estimate_kv_cache_memory_use_json(
     convert_to_precision: str | None = None,
     *,
     context_length: int | None = None,
-    max_active_sequences: int = 1,
-    include_runtime_overhead: bool = True,
+    batch_size: int = 1,
 ) -> str:
     """Return :func:`estimate_kv_cache_memory_use` encoded as JSON."""
 
@@ -87,8 +82,7 @@ def estimate_kv_cache_memory_use_json(
             hf_model_name=hf_model_name,
             convert_to_precision=convert_to_precision,
             context_length=context_length,
-            max_active_sequences=max_active_sequences,
-            include_runtime_overhead=include_runtime_overhead,
+            batch_size=batch_size,
         ),
         sort_keys=True,
     )
@@ -125,18 +119,19 @@ def _estimate_standard_attention(
     *,
     precision: PrecisionSelection,
     context_length: int,
+    batch_size: int,
 ) -> dict[str, int]:
     n_layers = int(config["num_hidden_layers"])
 
     if "kv_lora_rank" in config and "qk_rope_head_dim" in config:
         per_token_elements = int(config["kv_lora_rank"]) + int(config["qk_rope_head_dim"])
-        total = n_layers * context_length * per_token_elements * precision.kv_dtype_bytes
+        total = batch_size * n_layers * context_length * per_token_elements * precision.kv_dtype_bytes
         return {"mla": total, "total": total}
 
     num_attention_heads = int(config["num_attention_heads"])
     num_key_value_heads = int(config.get("num_key_value_heads", num_attention_heads))
     head_dim = int(config.get("head_dim", int(config["hidden_size"]) // num_attention_heads))
-    total = n_layers * context_length * num_key_value_heads * head_dim * 2 * precision.kv_dtype_bytes
+    total = batch_size * n_layers * context_length * num_key_value_heads * head_dim * 2 * precision.kv_dtype_bytes
     return {"attention": total, "total": total}
 
 
@@ -296,17 +291,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Capacity to estimate. Defaults to the model config max context.",
     )
     parser.add_argument(
-        "--max-active-sequences",
+        "--batch-size",
         type=int,
         default=1,
-        help="Active state sequences to reserve for model-specific estimators.",
+        help="Number of independent sequences, each with --context-length tokens.",
     )
     parser.add_argument(
-        "--no-runtime-overhead",
-        action="store_true",
-        help="Exclude model-specific runtime-only cache overhead.",
+        "-g", "--gib", action="store_true", help="Print values in GiB instead of bytes."
     )
-    parser.add_argument("-g", "--gib", action="store_true", help="Print values in GiB instead of bytes.")
     return parser.parse_args(argv)
 
 
@@ -316,8 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         hf_model_name=args.hf_model_name,
         convert_to_precision=args.convert_to_precision,
         context_length=args.context_length,
-        max_active_sequences=args.max_active_sequences,
-        include_runtime_overhead=not args.no_runtime_overhead,
+        batch_size=args.batch_size,
     )
     if args.gib:
         gib = 1024**3

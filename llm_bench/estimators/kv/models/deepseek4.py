@@ -50,18 +50,17 @@ class Deepseek4KvModel(KvModelBase):
         precision: PrecisionSelection,
         *,
         context_length: int,
-        max_active_sequences: int,
-        include_runtime_overhead: bool,
+        batch_size: int,
     ) -> dict[str, int]:
         n_layers = int(config["num_hidden_layers"])
         ratios = _compress_ratios(config=config, n_layers=n_layers)
         csa_layers = sum(1 for ratio in ratios if ratio == 4)
         hca_layers = sum(1 for ratio in ratios if ratio == 128)
 
-        num_blocks = _ceil_div(context_length, KV_CACHE_BLOCK_SIZE)
+        num_blocks = batch_size * _ceil_div(context_length, KV_CACHE_BLOCK_SIZE)
         head_dim = int(config["head_dim"])
         index_head_dim = int(config.get("index_head_dim") or config.get("indexer_head_dim") or 128)
-        pool_size = max_active_sequences + 1
+        pool_size = batch_size + 1
 
         csa = _compressed_paged_bytes(
             num_layers=csa_layers,
@@ -93,7 +92,7 @@ class Deepseek4KvModel(KvModelBase):
             per_entry_elements=head_dim,
             dtype_bytes=precision.kv_dtype_bytes,
         )
-        if include_runtime_overhead and precision.kv_dtype_name == "bf16":
+        if precision.kv_dtype_name == "bf16":
             swa += n_layers * pool_size * _sparse_fp8_padded_block_bytes(ROLLING_CACHE_PHYSICAL_SLOTS)
 
         csa_indexer = (
