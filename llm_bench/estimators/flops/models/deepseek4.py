@@ -116,12 +116,12 @@ class Deepseek4FlopsModel(FlopsModelBase):
             "indexer_proj": c4_layers * indexer_per_layer["proj"],
             "indexer_score": c4_layers * indexer_per_layer["score"],
             "swa_attn": c4_layers * swa_attn_per_layer,
-            "c4a_attn": c4_layers * c4_compressed_attn_per_layer,
+            "sparse_attn": c4_layers * c4_compressed_attn_per_layer,
         }
         c4a["total"] = (
             c4a["proj"]
             + c4a["swa_attn"]
-            + c4a["c4a_attn"]
+            + c4a["sparse_attn"]
             + c4a["compress_attn"]
             + c4a["compress_indexer"]
             + c4a["indexer_proj"]
@@ -132,12 +132,12 @@ class Deepseek4FlopsModel(FlopsModelBase):
             "proj": c128_layers * proj_per_layer,
             "compress_attn": c128_layers * c128_compressor_per_layer,
             "swa_attn": c128_layers * swa_attn_per_layer,
-            "c128_attn": c128_layers * c128_compressed_attn_per_layer,
+            "sparse_attn": c128_layers * c128_compressed_attn_per_layer,
         }
         c128a["total"] = (
             c128a["proj"]
             + c128a["swa_attn"]
-            + c128a["c128_attn"]
+            + c128a["sparse_attn"]
             + c128a["compress_attn"]
         )
 

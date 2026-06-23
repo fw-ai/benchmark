@@ -114,16 +114,16 @@ class Deepseek4KvModel(KvModelBase):
 
         c128a = {
             "swa_attn": c128_rolling_swa_attn,
-            "c128_attn": c128_attn,
+            "sparse_attn": c128_attn,
         }
-        c128a["total"] = c128a["swa_attn"] + c128a["c128_attn"]
+        c128a["total"] = c128a["swa_attn"] + c128a["sparse_attn"]
 
         c4a = {
             "swa_attn": c4a_rolling_swa_attn,
-            "c4a_attn": c4a_attn,
-            "c4a_indexer": c4a_indexer,
+            "sparse_attn": c4a_attn,
+            "indexer": c4a_indexer,
         }
-        c4a["total"] = c4a["swa_attn"] + c4a["c4a_attn"] + c4a["c4a_indexer"]
+        c4a["total"] = c4a["swa_attn"] + c4a["sparse_attn"] + c4a["indexer"]
 
         attention = {
             "c128a": c128a,
