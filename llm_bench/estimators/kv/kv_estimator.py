@@ -24,7 +24,7 @@ def estimate_kv_cache_memory_use(
     *,
     context_length: int | None = None,
     batch_size: int = 1,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Return estimated KV-cache bytes keyed by attention consumer.
 
     Args:
@@ -53,19 +53,21 @@ def estimate_kv_cache_memory_use(
         model_estimator=model_estimator,
     )
     if model_estimator is not None:
-        return model_estimator.estimate(
+        estimate = model_estimator.estimate(
             text_config,
             precision,
             context_length=effective_context,
             batch_size=batch_size,
         )
+        return _with_percentages(estimate)
 
-    return _estimate_standard_attention(
+    estimate = _estimate_standard_attention(
         text_config,
         precision=precision,
         context_length=effective_context,
         batch_size=batch_size,
     )
+    return _with_percentages(estimate)
 
 
 def estimate_kv_cache_memory_use_json(
@@ -83,8 +85,7 @@ def estimate_kv_cache_memory_use_json(
             convert_to_precision=convert_to_precision,
             context_length=context_length,
             batch_size=batch_size,
-        ),
-        sort_keys=True,
+        )
     )
 
 
@@ -120,19 +121,37 @@ def _estimate_standard_attention(
     precision: PrecisionSelection,
     context_length: int,
     batch_size: int,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     n_layers = int(config["num_hidden_layers"])
 
     if "kv_lora_rank" in config and "qk_rope_head_dim" in config:
         per_token_elements = int(config["kv_lora_rank"]) + int(config["qk_rope_head_dim"])
         total = batch_size * n_layers * context_length * per_token_elements * precision.kv_dtype_bytes
-        return {"mla": total, "total": total}
+        return {
+            "attention": {
+                "mla": {
+                    "kv_cache": total,
+                    "total": total,
+                },
+                "total": total,
+            },
+            "total": total,
+        }
 
     num_attention_heads = int(config["num_attention_heads"])
     num_key_value_heads = int(config.get("num_key_value_heads", num_attention_heads))
     head_dim = int(config.get("head_dim", int(config["hidden_size"]) // num_attention_heads))
     total = batch_size * n_layers * context_length * num_key_value_heads * head_dim * 2 * precision.kv_dtype_bytes
-    return {"attention": total, "total": total}
+    return {
+        "attention": {
+            "standard": {
+                "kv_cache": total,
+                "total": total,
+            },
+            "total": total,
+        },
+        "total": total,
+    }
 
 
 def _precision_selection(
@@ -312,9 +331,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if args.gib:
         gib = 1024**3
-        estimate = {key: value / gib for key, value in estimate.items()}
-    print(json.dumps(estimate, sort_keys=True))
+        estimate = _scale_estimate(estimate, gib)
+    print(json.dumps(estimate))
     return 0
+
+
+def _scale_estimate(estimate: dict[str, Any], factor: int) -> dict[str, Any]:
+    scaled: dict[str, Any] = {}
+    for key, value in estimate.items():
+        if isinstance(value, dict):
+            scaled[key] = _scale_estimate(value, factor)
+        elif key == "pct":
+            scaled[key] = value
+        else:
+            scaled[key] = value / factor
+    return scaled
+
+
+def _with_percentages(estimate: dict[str, Any]) -> dict[str, Any]:
+    total = int(estimate["total"])
+    return _add_percentages(estimate, global_total=total, is_root=True)
+
+
+def _add_percentages(
+    estimate: dict[str, Any],
+    *,
+    global_total: int,
+    is_root: bool,
+) -> dict[str, Any]:
+    ret: dict[str, Any] = {}
+    for key, value in estimate.items():
+        if isinstance(value, dict):
+            ret[key] = _add_percentages(value, global_total=global_total, is_root=False)
+        else:
+            ret[key] = value
+        if key == "total" and not is_root:
+            ret["pct"] = round(value / global_total * 100, 2) if global_total else 0.0
+    return ret
 
 
 if __name__ == "__main__":

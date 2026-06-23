@@ -42,5 +42,5 @@ class KvModelBase(ABC):
         *,
         context_length: int,
         batch_size: int,
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """Return KV-cache bytes keyed by consumer name."""

@@ -1,7 +1,6 @@
 # KV Cache Estimator
 
-Estimates KV/cache memory in bytes from a model `config.json`. Use exact,
-case-sensitive Hugging Face model names or a local config/model directory.
+Estimates KV/cache memory in bytes for the given model.
 
 ```bash
 python -m llm_bench.estimators.kv.kv_estimator \

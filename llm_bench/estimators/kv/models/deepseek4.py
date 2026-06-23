@@ -51,69 +51,89 @@ class Deepseek4KvModel(KvModelBase):
         *,
         context_length: int,
         batch_size: int,
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         n_layers = int(config["num_hidden_layers"])
         ratios = _compress_ratios(config=config, n_layers=n_layers)
-        csa_layers = sum(1 for ratio in ratios if ratio == 4)
-        hca_layers = sum(1 for ratio in ratios if ratio == 128)
+        c4_layers = sum(1 for ratio in ratios if ratio == 4)
+        c128_layers = sum(1 for ratio in ratios if ratio == 128)
 
         num_blocks = batch_size * _ceil_div(context_length, KV_CACHE_BLOCK_SIZE)
         head_dim = int(config["head_dim"])
         index_head_dim = int(config.get("index_head_dim") or config.get("indexer_head_dim") or 128)
         pool_size = batch_size + 1
 
-        csa = _compressed_paged_bytes(
-            num_layers=csa_layers,
+        c4a_attn = _compressed_paged_bytes(
+            num_layers=c4_layers,
             num_blocks=num_blocks,
             compress_ratio=4,
         )
-        csa += _rolling_cache_bytes(
+        c4a_attn += _rolling_cache_bytes(
             pool_size=pool_size,
-            num_layers=csa_layers,
+            num_layers=c4_layers,
             per_entry_elements=4 * head_dim,
             dtype_bytes=2,
         )
 
-        hca = _compressed_paged_bytes(
-            num_layers=hca_layers,
+        c128_attn = _compressed_paged_bytes(
+            num_layers=c128_layers,
             num_blocks=num_blocks,
             compress_ratio=128,
         )
-        hca += _rolling_cache_bytes(
+        c128_attn += _rolling_cache_bytes(
             pool_size=pool_size,
-            num_layers=hca_layers,
+            num_layers=c128_layers,
             per_entry_elements=2 * head_dim,
             dtype_bytes=2,
         )
 
-        swa = _rolling_cache_bytes(
+        c4a_rolling_swa_attn = _swa_rolling_bytes(
             pool_size=pool_size,
-            num_layers=n_layers,
-            per_entry_elements=head_dim,
-            dtype_bytes=precision.kv_dtype_bytes,
+            num_layers=c4_layers,
+            head_dim=head_dim,
+            precision=precision,
         )
-        if precision.kv_dtype_name == "bf16":
-            swa += n_layers * pool_size * _sparse_fp8_padded_block_bytes(ROLLING_CACHE_PHYSICAL_SLOTS)
+        c128_rolling_swa_attn = _swa_rolling_bytes(
+            pool_size=pool_size,
+            num_layers=c128_layers,
+            head_dim=head_dim,
+            precision=precision,
+        )
 
-        csa_indexer = (
-            csa_layers
+        c4a_indexer = (
+            c4_layers
             * num_blocks
             * _compressed_block_size(KV_CACHE_BLOCK_SIZE, 4)
             * _indexer_row_bytes(precision=precision, index_head_dim=index_head_dim)
         )
-        csa_indexer += _rolling_cache_bytes(
+        c4a_indexer += _rolling_cache_bytes(
             pool_size=pool_size,
-            num_layers=csa_layers,
+            num_layers=c4_layers,
             per_entry_elements=4 * index_head_dim,
             dtype_bytes=2,
         )
 
-        total = csa + hca + swa + csa_indexer
+        c128a = {
+            "swa_attn": c128_rolling_swa_attn,
+            "c128_attn": c128_attn,
+        }
+        c128a["total"] = c128a["swa_attn"] + c128a["c128_attn"]
+
+        c4a = {
+            "swa_attn": c4a_rolling_swa_attn,
+            "c4a_attn": c4a_attn,
+            "c4a_indexer": c4a_indexer,
+        }
+        c4a["total"] = c4a["swa_attn"] + c4a["c4a_attn"] + c4a["c4a_indexer"]
+
+        attention = {
+            "c128a": c128a,
+            "c4a": c4a,
+        }
+        attention["total"] = c128a["total"] + c4a["total"]
+
+        total = attention["total"]
         return {
-            "csa": csa,
-            "hca": hca,
-            "swa": swa,
-            "csa_indexer": csa_indexer,
+            "attention": attention,
             "total": total,
         }
 
@@ -145,6 +165,24 @@ def _rolling_cache_bytes(
     dtype_bytes: int,
 ) -> int:
     return pool_size * ROLLING_CACHE_PHYSICAL_SLOTS * num_layers * per_entry_elements * dtype_bytes
+
+
+def _swa_rolling_bytes(
+    *,
+    pool_size: int,
+    num_layers: int,
+    head_dim: int,
+    precision: PrecisionSelection,
+) -> int:
+    ret = _rolling_cache_bytes(
+        pool_size=pool_size,
+        num_layers=num_layers,
+        per_entry_elements=head_dim,
+        dtype_bytes=precision.kv_dtype_bytes,
+    )
+    if precision.kv_dtype_name == "bf16":
+        ret += num_layers * pool_size * _sparse_fp8_padded_block_bytes(ROLLING_CACHE_PHYSICAL_SLOTS)
+    return ret
 
 
 def _sparse_fp8_padded_block_bytes(block_size: int) -> int:
