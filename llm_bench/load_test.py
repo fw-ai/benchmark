@@ -1972,8 +1972,9 @@ def init_parser(parser):
         "--reasoning-effort",
         type=str,
         default=None,
-        choices=["low", "medium", "high"],
+        choices=["none", "low", "medium", "high"],
         help="Set the reasoning_effort parameter for the API request. "
+        "Use 'none' to disable thinking/reasoning where supported. "
         "If not specified and using a JSONL dataset, will use the value from the dataset if present.",
     )
     parser.add_argument(
