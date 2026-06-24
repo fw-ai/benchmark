@@ -979,11 +979,12 @@ class FireworksProvider(OpenAIProvider):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
-        # Only send prompt_cache_max_len / perf_metrics_in_response when the user
-        # explicitly opted into prompt caching (>0). Unconditionally adding these
-        # keys breaks deployments whose OpenAI-compat schema is configured with
-        # extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
+        # --prompt-cache-max-len controls dataset common_tokens (client-side shared
+        # prefix) always. Only send API fields for non-strict OpenAI-compat servers
+        # (FA/vLLM). TRT-LLM extra=forbid schemas reject these body fields; use
+        # STRICT_OPENAI_COMPAT=1 (see salesforce/scripts/load_test_trt.py).
+        strict_compat = os.environ.get("STRICT_OPENAI_COMPAT", "").lower() in ("1", "true", "yes")
+        if not strict_compat and self.parsed_options.prompt_cache_max_len > 0:
             data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
             # Enable perf_metrics_in_response to get speculation stats in streaming responses
             data["perf_metrics_in_response"] = True
