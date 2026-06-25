@@ -1002,6 +1002,32 @@ class FireworksProvider(OpenAIProvider):
         Only records speculation hit rates for generations with >= 30 tokens to ensure
         meaningful statistics.
         """
+        def get_perf_metric(name):
+            value = (perf_metrics or {}).get(name)
+            if value is None:
+                value = headers.get(f"fireworks-{name}")
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        # FireAttention and fw-proxy expose these in seconds. Record them as
+        # Locust metrics in milliseconds so they use the same units as existing
+        # client-side latency rows. This is best-effort: it runs before
+        # response.success() inside a catch_response block, so any failure here
+        # must never mark the request as failed or perturb the existing
+        # client-side tables.
+        try:
+            server_processing_time = get_perf_metric("server-processing-time")
+            if server_processing_time is not None:
+                add_custom_metric("server_side_total_latency", server_processing_time * 1000)
+
+            server_ttft = get_perf_metric("server-time-to-first-token")
+            if server_ttft is not None:
+                add_custom_metric("server_side_time_to_first_token", server_ttft * 1000)
+        except Exception as e:
+            logger.debug(f"Skipping server-side perf metrics: {e}")
+
         # Only track speculation hit rates for sufficiently long generations
         if num_tokens is None or num_tokens < 30:
             return
