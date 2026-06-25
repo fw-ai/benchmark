@@ -12,7 +12,7 @@ from typing import Any
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parents[3]))
 
-from llm_bench.estimators.bandwidth.modes.deepseek4 import (
+from llm_bench.estimators.bandwidth.models.deepseek4 import (
     DEFAULT_HF_MODEL_NAME,
     estimate_deepseek4_bandwidth,
 )
