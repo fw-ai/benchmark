@@ -1,0 +1,107 @@
+{
+  "K1_qkv": {
+    "n_iter": 11,
+    "kernels": {
+      "nvjet_sm100_tst_128x256_64x6_2x1_2cta_v_bz_TNT@stream7": {
+        "kernel": "nvjet_sm100_tst_128x256_64x6_2x1_2cta_v_bz_TNT",
+        "stream": 7,
+        "n": 11,
+        "sum_ns": 1317792,
+        "avg_us": 119.79927272727272
+      }
+    },
+    "total_us": 1317.792,
+    "avg_us_per_iter": 119.79927272727272
+  },
+  "K3_qnorm": {
+    "n_iter": 20,
+    "kernels": {
+      "_rms_norm@stream13": {
+        "kernel": "_rms_norm",
+        "stream": 13,
+        "n": 20,
+        "sum_ns": 386144,
+        "avg_us": 19.3072
+      }
+    },
+    "total_us": 386.144,
+    "avg_us_per_iter": 19.3072
+  },
+  "K4_knorm": {
+    "n_iter": 20,
+    "kernels": {
+      "_rms_norm@stream17": {
+        "kernel": "_rms_norm",
+        "stream": 17,
+        "n": 20,
+        "sum_ns": 123008,
+        "avg_us": 6.150399999999999
+      }
+    },
+    "total_us": 123.008,
+    "avg_us_per_iter": 6.150399999999999
+  },
+  "K5_rope": {
+    "n_iter": 4,
+    "kernels": {
+      "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)@stream7": {
+        "kernel": "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+        "stream": 7,
+        "n": 4,
+        "sum_ns": 54112,
+        "avg_us": 13.528
+      }
+    },
+    "total_us": 54.112,
+    "avg_us_per_iter": 13.528
+  },
+  "K6_paged_attn": {
+    "n_iter": 20,
+    "kernels": {
+      "mha_reshape_and_cache_kernel@stream7": {
+        "kernel": "mha_reshape_and_cache_kernel",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 362816,
+        "avg_us": 18.1408
+      },
+      "void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 12)]::operator ()() const::[lambda(c10::BFloat16) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)@stream7": {
+        "kernel": "void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 12)]::operator ()() const::[lambda(c10::BFloat16) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 928672,
+        "avg_us": 46.4336
+      },
+      "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP64VarSeqQ128Kv128PersistentContext@stream7": {
+        "kernel": "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP64VarSeqQ128Kv128PersistentContext",
+        "stream": 7,
+        "n": 19,
+        "sum_ns": 567040,
+        "avg_us": 28.351999999999997
+      },
+      "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)@stream7": {
+        "kernel": "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+        "stream": 7,
+        "n": 6,
+        "sum_ns": 81472,
+        "avg_us": 4.0736
+      }
+    },
+    "total_us": 1940.0,
+    "avg_us_per_iter": 97.0
+  },
+  "K7_oproj": {
+    "n_iter": 20,
+    "kernels": {
+      "nvjet_sm100_tst_128x256_64x6_2x2_2cta_h_bz_TNT@stream7": {
+        "kernel": "nvjet_sm100_tst_128x256_64x6_2x2_2cta_h_bz_TNT",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 1808094,
+        "avg_us": 90.4047
+      }
+    },
+    "total_us": 1808.094,
+    "avg_us_per_iter": 90.4047
+  }
+}
