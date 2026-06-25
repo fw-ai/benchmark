@@ -21,6 +21,9 @@ from llm_bench import gen_load_test, prefill_load_test
 from llm_bench.apis.base_api import BaseApi
 from llm_bench.apis.fireworks_api import FireworksApi
 from llm_bench.apis.sglang_api import SGLangApi
+from llm_bench.estimators.bandwidth.bandwidth_estimator import estimate_bandwidth
+from llm_bench.estimators.flops.flops_estimator import estimate_prefill_flops
+from llm_bench.estimators.gpu_specs import resolve_gpu_config
 from llm_bench.utils import log_utils
 
 logging.basicConfig(
@@ -40,15 +43,29 @@ SUMMARY_COLUMNS = [
     "batch size",
     "n_sequences",
     "success %",
-    "total_prefill_s",
-    "total_prefill_tps",
-    "total_decode_s",
-    "total_decode_tps",
+    "gpu_type",
+    "gpu_pflops_s",
+    "gpu_hbm_TBps",
+    "gpu_nvlink_GBps",
+    "prefill_s",
+    "prefill_toks",
+    "prefill_tps",
+    "prefill_pflops",
+    "prefill_mfu",
+    "decode_s",
+    "decode_toks",
+    "decode_tps",
+    "decode_hbm_bw_tb",
+    "decode_hbm_mbu",
+    "decode_nvlink_bw_mb",
+    "decode_nvlink_mbu",
     "req_decode_tps",
     "req_decode_tps_p90",
     "req_decode_tps_p99",
     "server_config",
 ]
+
+PETA = 10**15
 
 API_CLASSES: dict[str, type[BaseApi]] = {
     "fireworks": FireworksApi,
@@ -69,6 +86,8 @@ def round_float(value: float | None, digits: int = 3) -> float | None:
         return None
     if math.isnan(value):
         return value
+    if value != 0 and abs(value) < 10 ** (-digits):
+        return round(value, max(digits + 3, 6))
     return round(value, digits)
 
 
@@ -121,10 +140,22 @@ def normalize_summary_row(row: dict[str, Any]) -> dict[str, Any]:
         "batch size": row["batch_size"],
         "n_sequences": row["n_sequences"],
         "success %": row["success_pct"],
-        "total_prefill_s": row["total_prefill_s"],
-        "total_prefill_tps": row["total_prefill_tps"],
-        "total_decode_s": row["total_decode_s"],
-        "total_decode_tps": row["total_decode_tps"],
+        "gpu_type": row["gpu_type"],
+        "gpu_pflops_s": row["gpu_pflops_s"],
+        "gpu_hbm_TBps": row["gpu_hbm_TBps"],
+        "gpu_nvlink_GBps": row["gpu_nvlink_GBps"],
+        "prefill_s": row["prefill_s"],
+        "prefill_toks": row["prefill_toks"],
+        "prefill_tps": row["prefill_tps"],
+        "prefill_pflops": row["prefill_pflops"],
+        "prefill_mfu": row["prefill_mfu"],
+        "decode_s": row["decode_s"],
+        "decode_toks": row["decode_toks"],
+        "decode_tps": row["decode_tps"],
+        "decode_hbm_bw_tb": row["decode_hbm_bw_tb"],
+        "decode_hbm_mbu": row["decode_hbm_mbu"],
+        "decode_nvlink_bw_mb": row["decode_nvlink_bw_mb"],
+        "decode_nvlink_mbu": row["decode_nvlink_mbu"],
         "req_decode_tps": row["req_decode_tps"],
         "req_decode_tps_p90": row["req_decode_tps_p90"],
         "req_decode_tps_p99": row["req_decode_tps_p99"],
@@ -153,9 +184,9 @@ def write_summary_png(path: Path, rows: list[dict[str, Any]], *, show_prefill: b
 
     charts: list[tuple[str, str, str]] = []
     if show_prefill:
-        charts.append(("total_prefill_tps", "Prefill", "total_prefill_tps"))
+        charts.append(("prefill_tps", "Prefill", "prefill_tps"))
     if show_generation:
-        charts.append(("total_decode_tps", "Generation", "total_decode_tps"))
+        charts.append(("decode_tps", "Generation", "decode_tps"))
     if not charts:
         return
 
@@ -208,23 +239,175 @@ def resolve_api_model_id(api: BaseApi) -> str:
     return str(data[0]["id"])
 
 
+def estimate_prefill_flops_total(
+    model_path: str,
+    *,
+    prompt_tokens: int,
+    n_sequences: int,
+) -> int:
+    per_sequence = int(
+        estimate_prefill_flops(
+            model_path,
+            context_length=prompt_tokens,
+            batch_size=1,
+        )["total"]
+    )
+    return per_sequence * n_sequences
+
+
+def estimate_decode_bandwidth_bytes(
+    model_path: str,
+    *,
+    prompt_tokens: int,
+    max_tokens: int,
+    batch_size: int,
+    n_sequences: int,
+    world_size: int,
+    attn_sharding: str,
+    moe_sharding: str,
+    convert_to_precision: str | None = None,
+) -> dict[str, float]:
+    hbm_bytes = 0.0
+    nvlink_bytes = 0.0
+    for step in range(max_tokens):
+        context_length = prompt_tokens + step
+        if context_length <= 0:
+            continue
+        estimate = estimate_bandwidth(
+            hf_model_name=model_path,
+            context_length=context_length,
+            batch_size=batch_size,
+            n_sequences=n_sequences,
+            world_size=world_size,
+            attn_sharding=attn_sharding,
+            moe_sharding=moe_sharding,
+            convert_to_precision=convert_to_precision,
+        )
+        hbm_bytes += float(estimate["hbm"]["total"])
+        nvlink_bytes += float(estimate["nvlink"]["total"])
+    return {
+        "hbm": hbm_bytes,
+        "nvlink": nvlink_bytes,
+    }
+
+
+def compute_utilization_metrics(
+    *,
+    model_path: str,
+    gpu_cfg: dict[str, Any],
+    prompt_tokens: int,
+    max_tokens: int,
+    batch_size: int,
+    n_sequences: int,
+    prefill_s: float,
+    decode_s: float,
+    world_size: int,
+    attn_sharding: str,
+    moe_sharding: str,
+    convert_to_precision: str | None = None,
+) -> dict[str, float]:
+    num_gpus = int(gpu_cfg["num_gpus"])
+    peak_flops_per_s = float(gpu_cfg["gpu_pflops_s"]) * PETA * num_gpus
+    peak_hbm_tb_per_s = float(gpu_cfg["gpu_hbm_TBps"]) * world_size
+    peak_nvlink_mb_per_s = float(gpu_cfg["gpu_nvlink_GBps"]) * 1000.0 * world_size
+
+    prefill_flops = estimate_prefill_flops_total(
+        model_path,
+        prompt_tokens=prompt_tokens,
+        n_sequences=n_sequences,
+    )
+    prefill_mfu = (
+        100.0 * prefill_flops / prefill_s / peak_flops_per_s if prefill_s > 0 and peak_flops_per_s > 0 else float("nan")
+    )
+
+    decode_bytes = estimate_decode_bandwidth_bytes(
+        model_path,
+        prompt_tokens=prompt_tokens,
+        max_tokens=max_tokens,
+        batch_size=batch_size,
+        n_sequences=n_sequences,
+        world_size=world_size,
+        attn_sharding=attn_sharding,
+        moe_sharding=moe_sharding,
+        convert_to_precision=convert_to_precision,
+    )
+    decode_hbm_bw_tb = decode_bytes["hbm"] / decode_s / 1e12 if decode_s > 0 else float("nan")
+    decode_hbm_mbu = (
+        100.0 * decode_hbm_bw_tb / peak_hbm_tb_per_s if decode_s > 0 and peak_hbm_tb_per_s > 0 else float("nan")
+    )
+    decode_nvlink_bw_mb = decode_bytes["nvlink"] / decode_s / 1e6 if decode_s > 0 else float("nan")
+    decode_nvlink_mbu = (
+        100.0 * decode_nvlink_bw_mb / peak_nvlink_mb_per_s
+        if decode_s > 0 and peak_nvlink_mb_per_s > 0
+        else float("nan")
+    )
+
+    return {
+        "prefill_pflops": prefill_flops / PETA,
+        "prefill_mfu": prefill_mfu,
+        "decode_hbm_bw_tb": decode_hbm_bw_tb,
+        "decode_hbm_mbu": decode_hbm_mbu,
+        "decode_nvlink_bw_mb": decode_nvlink_bw_mb,
+        "decode_nvlink_mbu": decode_nvlink_mbu,
+    }
+
+
 def summary_row_from_load_tests(
     *,
     api_name: str,
     batch_size: int,
+    model_path: str,
+    gpu_cfg: dict[str, Any],
+    prompt_tokens: int,
+    max_tokens: int,
+    world_size: int,
+    attn_sharding: str,
+    moe_sharding: str,
+    convert_to_precision: str | None,
     prefill_result: prefill_load_test.PairBenchmarkResult,
     gen_result: gen_load_test.GenBenchmarkResult,
     server_config: str,
 ) -> dict[str, Any]:
+    n_sequences = prefill_result.num_prompts
+    prefill_s = prefill_result.duration
+    decode_s = gen_result.generation_duration
+    prefill_toks = prompt_tokens * n_sequences
+    decode_toks = max_tokens * gen_result.num_sequences
+    util = compute_utilization_metrics(
+        model_path=model_path,
+        gpu_cfg=gpu_cfg,
+        prompt_tokens=prompt_tokens,
+        max_tokens=max_tokens,
+        batch_size=batch_size,
+        n_sequences=n_sequences,
+        prefill_s=prefill_s,
+        decode_s=decode_s,
+        world_size=world_size,
+        attn_sharding=attn_sharding,
+        moe_sharding=moe_sharding,
+        convert_to_precision=convert_to_precision,
+    )
     row: dict[str, Any] = {
         "api": api_name,
         "batch_size": batch_size,
-        "n_sequences": prefill_result.num_prompts,
+        "n_sequences": n_sequences,
         "success_pct": 100.0,
-        "total_prefill_s": round_float(prefill_result.duration, 3),
-        "total_prefill_tps": round_float(prefill_result.total_prefill_tps, 3),
-        "total_decode_s": round_float(gen_result.generation_duration, 3),
-        "total_decode_tps": round_float(gen_result.total_decode_tps, 3),
+        "gpu_type": gpu_cfg["gpu_type"],
+        "gpu_pflops_s": round_float(gpu_cfg["gpu_pflops_s"], 3),
+        "gpu_hbm_TBps": round_float(gpu_cfg["gpu_hbm_TBps"], 3),
+        "gpu_nvlink_GBps": round_float(gpu_cfg["gpu_nvlink_GBps"], 3),
+        "prefill_s": round_float(prefill_s, 3),
+        "prefill_toks": prefill_toks,
+        "prefill_tps": round_float(prefill_toks / prefill_s if prefill_s > 0 else float("nan"), 3),
+        "prefill_pflops": round_float(util["prefill_pflops"], 3),
+        "prefill_mfu": round_float(util["prefill_mfu"], 3),
+        "decode_s": round_float(decode_s, 3),
+        "decode_toks": decode_toks,
+        "decode_tps": round_float(decode_toks / decode_s if decode_s > 0 else float("nan"), 3),
+        "decode_hbm_bw_tb": round_float(util["decode_hbm_bw_tb"], 3),
+        "decode_hbm_mbu": round_float(util["decode_hbm_mbu"], 3),
+        "decode_nvlink_bw_mb": round_float(util["decode_nvlink_bw_mb"], 3),
+        "decode_nvlink_mbu": round_float(util["decode_nvlink_mbu"], 3),
         "req_decode_tps": round_float(gen_result.req_decode_tps, 3),
         "req_decode_tps_p90": round_float(gen_result.req_decode_tps_p90, 3),
         "req_decode_tps_p99": round_float(gen_result.req_decode_tps_p99, 3),
@@ -239,6 +422,7 @@ def run_load_test_benchmark(
     api: BaseApi,
     model_path: str,
     bench_cfg: dict[str, Any],
+    gpu_cfg: dict[str, Any],
     batch_sizes: list[int],
     out_dir: Path,
     server_config: str,
@@ -253,6 +437,15 @@ def run_load_test_benchmark(
     temperature = float(bench_cfg.get("temperature", 0.0))
     prefill_max_tokens = int(bench_cfg.get("prefill_max_tokens", 1 if api_name == "sglang" else 0))
     decode_warmup_max_tokens = int(bench_cfg.get("decode_warmup_max_tokens", 1 if api_name == "sglang" else 0))
+    convert_to_precision = bench_cfg.get("convert_to_precision")
+    try:
+        world_size = int(bench_cfg["world_size"])
+        attn_sharding = str(bench_cfg["attn_sharding"])
+        moe_sharding = str(bench_cfg["moe_sharding"])
+    except KeyError as exc:
+        raise ValueError(
+            "benchmark.world_size, benchmark.attn_sharding, and benchmark.moe_sharding must be set"
+        ) from exc
     logging.info(f"resolving model id {api_name=} base_url={api.get_hostname()}")
     resolve_start = time.perf_counter()
     model_id = resolve_api_model_id(api)
@@ -325,6 +518,14 @@ def run_load_test_benchmark(
         summary_row_from_load_tests(
             api_name=api_name,
             batch_size=batch_size,
+            model_path=model_path,
+            gpu_cfg=gpu_cfg,
+            prompt_tokens=prompt_tokens,
+            max_tokens=max_tokens,
+            world_size=world_size,
+            attn_sharding=attn_sharding,
+            moe_sharding=moe_sharding,
+            convert_to_precision=str(convert_to_precision) if convert_to_precision is not None else None,
             prefill_result=prefill_by_batch[batch_size],
             gen_result=gen_by_batch[batch_size],
             server_config=server_config,
@@ -351,6 +552,7 @@ async def run_one_api(
         raise ValueError(f"Unsupported api type {api_type!r}") from exc
     api_dir = run_dir / "apis" / api_name
     model_path = str(config["model_path"])
+    gpu_cfg = resolve_gpu_config(bench_cfg, api_config)
 
     logging.info(f"api startup start {api_name=} {api_dir=}")
     startup_start = time.perf_counter()
@@ -368,6 +570,7 @@ async def run_one_api(
             api=api,
             model_path=model_path,
             bench_cfg=bench_cfg,
+            gpu_cfg=gpu_cfg,
             batch_sizes=batch_sizes,
             out_dir=api_dir,
             server_config=api.server_config,

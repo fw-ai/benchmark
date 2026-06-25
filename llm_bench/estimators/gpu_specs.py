@@ -6,15 +6,16 @@ import re
 import subprocess
 from typing import Any
 
-# FP8 tensor-core peaks (petaFLOP/s per GPU) and HBM bandwidth (TB/s per GPU).
+# FP8 tensor-core peaks (petaFLOP/s per GPU), HBM bandwidth (TB/s per GPU),
+# and NVLink/NVSwitch bandwidth (GB/s per GPU).
 GPU_SPECS: dict[str, dict[str, float]] = {
-    "b300": {"pflops_s": 4.5, "bw_tbs": 8.0},
-    "gb300": {"pflops_s": 4.5, "bw_tbs": 8.0},
-    "b200": {"pflops_s": 4.5, "bw_tbs": 8.0},
-    "gb200": {"pflops_s": 4.5, "bw_tbs": 8.0},
-    "h200": {"pflops_s": 2.0, "bw_tbs": 4.8},
-    "h100": {"pflops_s": 2.0, "bw_tbs": 3.35},
-    "a100": {"pflops_s": 1.0, "bw_tbs": 2.0},
+    "b300": {"pflops_s": 4.5, "hbm_TBps": 8.0, "nvlink_GBps": 1800.0},
+    "gb300": {"pflops_s": 4.5, "hbm_TBps": 8.0, "nvlink_GBps": 1800.0},
+    "b200": {"pflops_s": 4.5, "hbm_TBps": 8.0, "nvlink_GBps": 1800.0},
+    "gb200": {"pflops_s": 4.5, "hbm_TBps": 8.0, "nvlink_GBps": 1800.0},
+    "h200": {"pflops_s": 2.0, "hbm_TBps": 4.8, "nvlink_GBps": 900.0},
+    "h100": {"pflops_s": 2.0, "hbm_TBps": 3.35, "nvlink_GBps": 900.0},
+    "a100": {"pflops_s": 1.0, "hbm_TBps": 2.0, "nvlink_GBps": 600.0},
 }
 
 
@@ -97,13 +98,17 @@ def resolve_gpu_config(
     gpu_pflops_s = bench_cfg.get("gpu_pflops_s")
     if gpu_pflops_s is None:
         gpu_pflops_s = specs["pflops_s"]
-    gpu_bw_tbs = bench_cfg.get("gpu_bw_tbs")
-    if gpu_bw_tbs is None:
-        gpu_bw_tbs = specs["bw_tbs"]
+    gpu_hbm_TBps = bench_cfg.get("gpu_hbm_TBps", bench_cfg.get("gpu_bw_tbs"))
+    if gpu_hbm_TBps is None:
+        gpu_hbm_TBps = specs["hbm_TBps"]
+    gpu_nvlink_GBps = bench_cfg.get("gpu_nvlink_GBps")
+    if gpu_nvlink_GBps is None:
+        gpu_nvlink_GBps = specs["nvlink_GBps"]
 
     return {
         "gpu_type": gpu_type,
         "gpu_pflops_s": float(gpu_pflops_s),
-        "gpu_bw_tbs": float(gpu_bw_tbs),
+        "gpu_hbm_TBps": float(gpu_hbm_TBps),
+        "gpu_nvlink_GBps": float(gpu_nvlink_GBps),
         "num_gpus": infer_num_gpus(api_config, bench_cfg),
     }

@@ -11,8 +11,11 @@ benchmark:
   timeout: 3600.0
   connector_limit: 10000
   n_sequences: 500
-  batch_sizes: [100, 200]
-  # batch_sizes: [100, 200, 500, 1000, 2000]
+  attn_sharding: dp
+  moe_sharding: ep
+  world_size: 8
+  batch_sizes: [100, 200, 500, 1000, 2000]
+  # batch_sizes: [100]
   # batch_sizes: [100, 200, 500, 1000, 2000, 4000, 6000, 8000, 10000]
 
 apis:
