@@ -14,6 +14,8 @@ from typing import Any
 
 from huggingface_hub import hf_hub_download
 
+from llm_bench.estimators.bandwidth.models.bandwidth_model_base import BandwidthModelBase
+
 DEFAULT_HF_MODEL_NAME = "deepseek-ai/DeepSeek-V4-Pro"
 DEFAULT_CONVERT_TO_PRECISION = "bf16,moe=mxfp8_mxfp4_ll,indexer=mxfp4,mm=mxfp8"
 
@@ -21,6 +23,64 @@ KV_CACHE_BLOCK_SIZE = 256
 ROLLING_CACHE_PHYSICAL_SLOTS = 256
 FLASH_MLA_SPARSE_K_BYTES = 584
 MXFP4_QUANT_BLOCK = 32
+
+
+class Deepseek4BandwidthModel(BandwidthModelBase):
+    name = "deepseek_v4"
+
+    def matches(self, config: dict[str, Any]) -> bool:
+        model_type = str(config["model_type"])
+        return model_type == "deepseek_v4" or "compress_ratios" in config and "index_head_dim" in config
+
+    def estimate(
+        self,
+        config: dict[str, Any],
+        *,
+        context_length: int,
+        batch_size: int,
+        n_sequences: int,
+        world_size: int,
+        attn_sharding: str,
+        moe_sharding: str,
+        convert_to_precision: str | None,
+        activation_dtype: str,
+    ) -> dict[str, Any]:
+        if context_length <= 0:
+            raise ValueError(f"context_length must be positive, got {context_length}")
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        if n_sequences <= 0:
+            raise ValueError(f"n_sequences must be positive, got {n_sequences}")
+        if world_size <= 0:
+            raise ValueError(f"world_size must be positive, got {world_size}")
+        if attn_sharding != "dp":
+            raise ValueError(f"Unsupported attn_sharding {attn_sharding!r}; currently only 'dp' is supported")
+        if moe_sharding != "ep":
+            raise ValueError(f"Unsupported moe_sharding {moe_sharding!r}; currently only 'ep' is supported")
+
+        precision = _parse_precision(convert_to_precision or DEFAULT_CONVERT_TO_PRECISION)
+        activation_bytes = _dtype_bytes(activation_dtype)
+
+        total = _empty_estimate()
+        remaining = n_sequences
+        while remaining > 0:
+            current_batch = min(batch_size, remaining)
+            total = _add_estimates(
+                total,
+                _estimate_round(
+                    config=config,
+                    precision=precision,
+                    context_length=context_length,
+                    batch_size=current_batch,
+                    world_size=world_size,
+                    attn_sharding=attn_sharding,
+                    moe_sharding=moe_sharding,
+                    activation_bytes=activation_bytes,
+                ),
+            )
+            remaining -= current_batch
+
+        return _with_totals_and_percentages(total)
 
 
 def estimate_deepseek4_bandwidth(
@@ -35,43 +95,18 @@ def estimate_deepseek4_bandwidth(
     convert_to_precision: str | None = None,
     activation_dtype: str = "bf16",
 ) -> dict[str, Any]:
-    if context_length <= 0:
-        raise ValueError(f"context_length must be positive, got {context_length}")
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
-    if n_sequences <= 0:
-        raise ValueError(f"n_sequences must be positive, got {n_sequences}")
-    if world_size <= 0:
-        raise ValueError(f"world_size must be positive, got {world_size}")
-    if attn_sharding != "dp":
-        raise ValueError(f"Unsupported attn_sharding {attn_sharding!r}; currently only 'dp' is supported")
-    if moe_sharding != "ep":
-        raise ValueError(f"Unsupported moe_sharding {moe_sharding!r}; currently only 'ep' is supported")
-
     config = _text_config(_load_model_config(hf_model_name))
-    precision = _parse_precision(convert_to_precision or DEFAULT_CONVERT_TO_PRECISION)
-    activation_bytes = _dtype_bytes(activation_dtype)
-
-    total = _empty_estimate()
-    remaining = n_sequences
-    while remaining > 0:
-        current_batch = min(batch_size, remaining)
-        total = _add_estimates(
-            total,
-            _estimate_round(
-                config=config,
-                precision=precision,
-                context_length=context_length,
-                batch_size=current_batch,
-                world_size=world_size,
-                attn_sharding=attn_sharding,
-                moe_sharding=moe_sharding,
-                activation_bytes=activation_bytes,
-            ),
-        )
-        remaining -= current_batch
-
-    return _with_totals_and_percentages(total)
+    return Deepseek4BandwidthModel().estimate(
+        config,
+        context_length=context_length,
+        batch_size=batch_size,
+        n_sequences=n_sequences,
+        world_size=world_size,
+        attn_sharding=attn_sharding,
+        moe_sharding=moe_sharding,
+        convert_to_precision=convert_to_precision,
+        activation_dtype=activation_dtype,
+    )
 
 
 def _estimate_round(
@@ -150,8 +185,8 @@ def _attention_hbm_bytes(
     q_lora_rank = int(config["q_lora_rank"])
     o_lora_rank = int(config["o_lora_rank"])
     o_groups = int(config["o_groups"])
-    index_head_dim = int(config.get("index_head_dim") or config.get("indexer_head_dim") or 128)
-    index_n_heads = int(config.get("index_n_heads", 64))
+    index_head_dim = int(config["index_head_dim"])
+    index_n_heads = int(config["index_n_heads"])
 
     q_width = num_attention_heads * head_dim
     common_projection_elems = (
@@ -232,7 +267,7 @@ def _moe_hbm_bytes(
     intermediate_size = int(config["moe_intermediate_size"])
     n_routed_experts = int(config["n_routed_experts"])
     num_experts_per_tok = int(config["num_experts_per_tok"])
-    n_shared_experts = int(config.get("n_shared_experts", 0))
+    n_shared_experts = int(config["n_shared_experts"])
 
     expert_weight_elems = 3 * hidden_size * intermediate_size
     moe_weight_bytes = _component_dtype_bytes(precision, "moe")
@@ -273,8 +308,8 @@ def _kv_moved_bytes(
     c128_layers = sum(1 for ratio in ratios if ratio == 128)
 
     head_dim = int(config["head_dim"])
-    index_head_dim = int(config.get("index_head_dim") or config.get("indexer_head_dim") or 128)
-    index_topk = int(config.get("index_topk", 1024))
+    index_head_dim = int(config["index_head_dim"])
+    index_topk = int(config["index_topk"])
     kv_dtype_bytes = _kv_dtype_bytes(precision, config=config)
     indexer_row_bytes = _indexer_row_bytes(precision=precision, index_head_dim=index_head_dim)
 
@@ -445,7 +480,7 @@ def _load_model_config(hf_model_name: str) -> dict[str, Any]:
 
 
 def _text_config(config: dict[str, Any]) -> dict[str, Any]:
-    text_config = config.get("text_config")
+    text_config = config["text_config"] if "text_config" in config else None
     if isinstance(text_config, dict):
         merged = dict(text_config)
         for key in ("model_type", "quantization_config"):
@@ -489,7 +524,7 @@ def _kv_dtype_bytes(precision: dict[str, str], *, config: dict[str, Any]) -> flo
     if "kv" in precision:
         return _dtype_bytes(precision["kv"])
     base = precision["base"]
-    is_moe = bool(config.get("n_routed_experts") or config.get("num_experts") or config.get("moe"))
+    is_moe = bool(config["n_routed_experts"])
     if base in {"bf16", "fp16", "fp32"}:
         return _dtype_bytes(base)
     if is_moe and base == "fp4":
@@ -531,7 +566,7 @@ def _normalize_dtype_name(value: str) -> str:
 
 
 def _compress_ratios(*, config: dict[str, Any], n_layers: int) -> list[int]:
-    ratios = config.get("compress_ratios")
+    ratios = config["compress_ratios"]
     if not isinstance(ratios, list):
         raise ValueError("DeepSeek-V4 config requires a list-valued compress_ratios")
     if len(ratios) < n_layers:

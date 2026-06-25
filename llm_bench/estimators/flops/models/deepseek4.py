@@ -16,7 +16,7 @@ class Deepseek4FlopsModel(FlopsModelBase):
     name = "deepseek_v4"
 
     def matches(self, config: dict[str, Any]) -> bool:
-        model_type = str(config.get("model_type") or "")
+        model_type = str(config["model_type"])
         return model_type == "deepseek_v4" or "compress_ratios" in config and "index_head_dim" in config
 
     def estimate(
@@ -37,10 +37,10 @@ class Deepseek4FlopsModel(FlopsModelBase):
         q_lora_rank = int(config["q_lora_rank"])
         o_lora_rank = int(config["o_lora_rank"])
         o_groups = int(config["o_groups"])
-        index_head_dim = int(config.get("index_head_dim") or config.get("indexer_head_dim") or 128)
-        index_n_heads = int(config.get("index_n_heads", 64))
-        index_topk = int(config.get("index_topk", 512))
-        sliding_window = int(config.get("sliding_window", 128))
+        index_head_dim = int(config["index_head_dim"])
+        index_n_heads = int(config["index_n_heads"])
+        index_topk = int(config["index_topk"])
+        sliding_window = int(config["sliding_window"])
         total_tokens = batch_size * context_length
 
         proj_per_layer = _attention_projection_flops(
@@ -106,7 +106,7 @@ class Deepseek4FlopsModel(FlopsModelBase):
         hyper_connection_per_layer = _hyper_connection_components(
             total_tokens=total_tokens,
             hidden_size=hidden_size,
-            hc_mult=int(config.get("hc_mult", 1)),
+            hc_mult=int(config["hc_mult"]),
         )
 
         c4a = {
@@ -169,7 +169,7 @@ class Deepseek4FlopsModel(FlopsModelBase):
 
 
 def _compress_ratios(*, config: dict[str, Any], n_layers: int) -> list[int]:
-    ratios = config.get("compress_ratios")
+    ratios = config["compress_ratios"]
     if not isinstance(ratios, list):
         raise ValueError("DeepSeek-V4 config requires a list-valued compress_ratios")
     if len(ratios) < n_layers:
@@ -250,7 +250,7 @@ def _moe_components(
     moe_intermediate_size = int(config["moe_intermediate_size"])
     n_routed_experts = int(config["n_routed_experts"])
     num_experts_per_tok = int(config["num_experts_per_tok"])
-    n_shared_experts = int(config.get("n_shared_experts", 0))
+    n_shared_experts = int(config["n_shared_experts"])
 
     router = _linear_flops(total_tokens, hidden_size, n_routed_experts)
     experts = (num_experts_per_tok + n_shared_experts) * _swiglu_ffn_flops(

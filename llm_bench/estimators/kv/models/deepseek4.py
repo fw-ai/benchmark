@@ -23,7 +23,7 @@ class Deepseek4KvModel(KvModelBase):
     name = "deepseek_v4"
 
     def matches(self, config: dict[str, Any]) -> bool:
-        model_type = str(config.get("model_type") or "")
+        model_type = str(config["model_type"])
         return model_type == "deepseek_v4" or "compress_ratios" in config and "index_head_dim" in config
 
     def default_convert_to_precision(self, config: dict[str, Any]) -> str | None:
@@ -59,7 +59,7 @@ class Deepseek4KvModel(KvModelBase):
 
         num_blocks = batch_size * _ceil_div(context_length, KV_CACHE_BLOCK_SIZE)
         head_dim = int(config["head_dim"])
-        index_head_dim = int(config.get("index_head_dim") or config.get("indexer_head_dim") or 128)
+        index_head_dim = int(config["index_head_dim"])
         pool_size = batch_size + 1
 
         c4a_attn = _compressed_paged_bytes(
@@ -139,7 +139,7 @@ class Deepseek4KvModel(KvModelBase):
 
 
 def _compress_ratios(*, config: dict[str, Any], n_layers: int) -> list[int]:
-    ratios = config.get("compress_ratios")
+    ratios = config["compress_ratios"]
     if not isinstance(ratios, list):
         raise ValueError("DeepSeek-V4 config requires a list-valued compress_ratios")
     if len(ratios) < n_layers:
