@@ -1,0 +1,2 @@
+"""Decode bandwidth movement estimators."""
+
