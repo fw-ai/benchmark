@@ -24,7 +24,19 @@ from PIL import Image
 import transformers
 import re
 import gevent
+import requests
+from concurrent.futures import ThreadPoolExecutor
 from locust.util.timespan import parse_timespan as _locust_parse_timespan
+
+from prefill_load_test import (
+    RoutingConfig,
+    build_ids_to_length,
+    build_pair_ids,
+    build_warmup_ids,
+    load_chunks,
+    routing_headers_for_worker,
+    split_chat_template,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -185,46 +197,42 @@ class TranslationDataset:
         chat: bool,
         num_tokens: int,
         common_tokens: int,
+        seed: int = 0,
     ):
         self._tokenizer = tokenizer
-        self._tokenizer_path = tokenizer_path
         self._num_tokens = num_tokens
-
-        self._all_limericks = []
-        with open(path, "r") as f:
-            text = f.read()
-            lims = text.split("\n\n")
-            for i, lim in enumerate(lims):
-                num_tokens = len(self._tokenizer.encode(lim, add_special_tokens=False))
-                self._all_limericks.append((lim, num_tokens))
-
-        self._prefix = ""
-        self._suffix = prompt
-        self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt, add_special_tokens=False))
-        # Use deterministic selection (sequential iteration) to ensure all workers
-        # get the same prefix for the same common_tokens value
-        idx = 0
-        while self._prefix_suffix_tokens < common_tokens:
-            lim, num_tokens = self._all_limericks[idx % len(self._all_limericks)]
-            self._prefix += lim + "\n\n"
-            self._prefix_suffix_tokens += num_tokens
-            idx += 1
-
+        dataset = os.path.basename(path).removesuffix(".txt")
+        self._instruction_ids = tokenizer.encode(prompt, add_special_tokens=False) if prompt else []
+        body_budget = num_tokens - len(self._instruction_ids)
+        self._cached_tokens = min(common_tokens, body_budget)
+        self._rng = random.Random(seed)
+        self._chunks = load_chunks(dataset)
+        self._base_ids = build_ids_to_length(tokenizer, self._chunks, num_tokens)
         if chat:
-            empty_template_tokens = empty_chat_template_token_ids(self._tokenizer, self._tokenizer_path)
-            self._prefix_suffix_tokens += len(empty_template_tokens)
+            model_type = resolve_model_type(tokenizer_path)
+            self._chat_prefix, self._chat_suffix = split_chat_template(tokenizer, tokenizer_path, model_type)
+        else:
+            self._chat_prefix, self._chat_suffix = [], []
 
     def __next__(self):
-        prompt_tokens = self._prefix_suffix_tokens
-        prompt = self._prefix
-        while prompt_tokens < self._num_tokens:
-            lim, num_tokens = self._all_limericks[random.randint(0, len(self._all_limericks) - 1)]
-
-            prompt += lim + "\n\n"
-            prompt_tokens += num_tokens
-        prompt += self._suffix
-
-        return prompt, prompt_tokens
+        body_tokens = self._num_tokens - len(self._instruction_ids)
+        ids = build_pair_ids(
+            self._chat_prefix,
+            self._chat_suffix,
+            self._base_ids,
+            self._tokenizer,
+            self._chunks,
+            body_tokens,
+            self._cached_tokens,
+            self._rng,
+        )
+        if self._instruction_ids:
+            if self._chat_suffix:
+                ids = ids[: -len(self._chat_suffix)] + self._instruction_ids + self._chat_suffix
+            else:
+                ids = ids + self._instruction_ids
+        assert len(ids) == self._num_tokens
+        return ids, self._num_tokens
 
     def __iter__(self):
         return self
@@ -636,6 +644,88 @@ class InitTracker:
 events.spawning_complete.add_listener(InitTracker.notify_spawning_complete)
 
 
+def run_cache_warmup_blast(environment) -> None:
+    """Prime prompt cache on each generator worker before load starts."""
+    opts = environment.parsed_options
+    if opts.prompt_cache_max_len <= 0 or opts.dataset not in ("limericks", "code"):
+        return
+    if opts.rerank or opts.embeddings:
+        return
+
+    routing = RoutingConfig(
+        num_servers=opts.num_servers,
+        num_gens=opts.num_generators_per_server,
+    )
+    tokenizer_path = opts.tokenizer or DEFAULT_TOKENIZER
+    tokenizer = InitTracker.load_tokenizer(opts.tokenizer)
+    if opts.dataset == "limericks":
+        prompt_text = "\n\n" + (opts.prompt or "Translate the limericks above to Spanish.")
+    else:
+        prompt_text = "\n\n" + (opts.prompt or "Translate the code above to C++.")
+    instruction_len = len(tokenizer.encode(prompt_text, add_special_tokens=False))
+    cached_tokens = min(opts.prompt_cache_max_len, opts.prompt_tokens - instruction_len)
+    if cached_tokens <= 0:
+        return
+
+    if opts.chat:
+        chat_prefix, _ = split_chat_template(
+            tokenizer, tokenizer_path, resolve_model_type(tokenizer_path)
+        )
+    else:
+        chat_prefix = []
+
+    base_ids = build_ids_to_length(tokenizer, load_chunks(opts.dataset), opts.prompt_tokens)
+    warmup_ids = build_warmup_ids(chat_prefix, base_ids, cached_tokens)
+
+    host = environment.host.rstrip("/")
+    url = f"{host}/v1/completions"
+    model = opts.model
+    if not model:
+        resp = requests.get(f"{host}/v1/models", timeout=30)
+        resp.raise_for_status()
+        model = resp.json()["data"][0]["id"]
+
+    def post_one(worker_idx: int) -> None:
+        headers = {"Content-Type": "application/json"}
+        if opts.api_key:
+            headers["Authorization"] = f"Bearer {opts.api_key}"
+        for header in opts.header or []:
+            key, val = header.split(":", 1)
+            headers[key] = val
+        headers.update(routing_headers_for_worker(routing, worker_idx))
+        payload = {
+            "model": model,
+            "prompt": warmup_ids,
+            "max_tokens": 0,
+            "stream": False,
+            "temperature": 0.0,
+            "prompt_cache_max_len": cached_tokens,
+        }
+        r = requests.post(url, headers=headers, json=payload, timeout=3600)
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"Cache warmup worker {worker_idx} failed HTTP {r.status_code}: {r.text[:500]}"
+            )
+
+    total_workers = routing.total_workers
+    logger.info(
+        "Cache warmup blast: %d request(s), cached_tokens=%d, routing=%s",
+        total_workers,
+        cached_tokens,
+        routing.describe(),
+    )
+    if total_workers == 1:
+        post_one(0)
+    else:
+        with ThreadPoolExecutor(max_workers=total_workers) as pool:
+            list(pool.map(post_one, range(total_workers)))
+
+
+@events.test_start.add_listener
+def _on_test_start_cache_warmup(environment, **kwargs):
+    run_cache_warmup_blast(environment)
+
+
 def _parse_run_time_to_seconds(run_time_value):
     """Parse Locust -t/--run-time value into seconds (float). Supports both
     already-parsed numeric values and human strings like '30s', '5m', '1h30m'.
@@ -758,8 +848,12 @@ class OpenAIProvider(BaseProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         if self.parsed_options.rerank:
-            if isinstance(prompt, list):
+            if isinstance(prompt, list) and prompt and isinstance(prompt[0], str):
                 documents = prompt
+            elif isinstance(prompt, list) and prompt and isinstance(prompt[0], int):
+                tokenizer = InitTracker.load_tokenizer(self.parsed_options.tokenizer)
+                text = tokenizer.decode(prompt)
+                documents = [doc.strip() for doc in text.split("\n\n") if doc.strip()]
             else:
                 documents = [doc.strip() for doc in prompt.split("\n\n") if doc.strip()]
             query = self.parsed_options.rerank_query or "Find the most relevant document."
@@ -805,7 +899,11 @@ class OpenAIProvider(BaseProvider):
             data["logprobs"] = self.parsed_options.logprobs
         if self.parsed_options.reasoning_effort is not None:
             data["reasoning_effort"] = self.parsed_options.reasoning_effort
-        if isinstance(prompt, str):
+        if isinstance(prompt, list) and prompt and isinstance(prompt[0], int):
+            if images is not None:
+                raise ValueError("images are not supported with token-id prompts")
+            data["prompt"] = prompt
+        elif isinstance(prompt, str):
             if self.parsed_options.chat:
                 if images is None:
                     data["messages"] = [{"role": "user", "content": prompt}]
@@ -879,9 +977,13 @@ class OpenAIProvider(BaseProvider):
 
         assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
         choice = data["choices"][0]
-        if self.parsed_options.chat:
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        is_chat_response = "message" in choice or any(
+            k in delta for k in ("content", "reasoning", "reasoning_content")
+        )
+        if is_chat_response:
             if self.parsed_options.stream:
-                block = choice["delta"]
+                block = delta
             else:
                 block = choice["message"]
             has_content = bool(block.get("content"))
@@ -893,10 +995,10 @@ class OpenAIProvider(BaseProvider):
                 + (block.get("content", "") or "")
             )
         else:
-            # Completions API: no reasoning_content field exists in the schema;
-            # thinking tokens (if any) appear raw in text and cannot be separated.
+            # Completions API (including strict token-id prompts routed to /v1/completions
+            # while --chat applies the template client-side).
             has_reasoning_only = False
-            text = choice["text"]
+            text = choice.get("text", "") or delta.get("text", "") or ""
 
         logprobs = choice.get("logprobs", None)
         if logprobs and "tokens" in logprobs:
@@ -943,12 +1045,13 @@ class FireworksProvider(OpenAIProvider):
             self._forced_generation_pool = itertools.cycle(self._load_forced_generation_texts(forced_gen_path))
         elif forced_gen_from_dataset:
             assert parsed_options.tokenizer is not None, "--tokenizer is required for --forced-generation-from-dataset"
+            tokenizer = InitTracker.load_tokenizer(parsed_options.tokenizer)
             ds = DatasetHolder.get_forced_generation_instance(
                 dataset=parsed_options.dataset,
                 tokenizer=parsed_options.tokenizer,
                 max_tokens=parsed_options.max_tokens,
             )
-            self._forced_generation_pool = (text for text, _tokens in ds)
+            self._forced_generation_pool = (tokenizer.decode(ids) for ids, _tokens in ds)
         else:
             self._forced_generation_pool = None
 
@@ -1247,6 +1350,15 @@ PROVIDER_CLASS_MAP = {
 }
 
 
+def resolve_request_url(provider_formatter: BaseProvider, prompt) -> str:
+    url = provider_formatter.get_url()
+    opts = provider_formatter.parsed_options
+    token_id_prompt = isinstance(prompt, list) and prompt and isinstance(prompt[0], int)
+    if token_id_prompt and not opts.rerank and not opts.embeddings:
+        return "/v1/completions"
+    return url
+
+
 def _load_curl_like_data(text):
     """
     Either use the passed string or load from a file if the string is `@filename`
@@ -1435,7 +1547,11 @@ class LLMUser(HttpUser):
         self.dataset = iter(dataset)
 
         tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        sample_prompt = self._get_input()[0]
+        if isinstance(sample_prompt, list):
+            self.prompt_tokenizer_tokens = len(sample_prompt)
+        else:
+            self.prompt_tokenizer_tokens = len(tokenizer.encode(sample_prompt))
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
@@ -1542,8 +1658,10 @@ class LLMUser(HttpUser):
             print("---")
         t_start = time.perf_counter()
 
+        url = resolve_request_url(self.provider_formatter, prompt)
+
         with self.client.post(
-            self.provider_formatter.get_url(),
+            url,
             data=json.dumps(data),
             stream=True,
             catch_response=True,
@@ -2025,6 +2143,22 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--num-servers",
+        type=int,
+        default=1,
+        help="Generator servers for cache warmup blast (x-fireworks-generator-worker-service-index). "
+        "Default: 1.",
+    )
+    parser.add_argument(
+        "--num-generators-per-server",
+        "--num-gens",
+        dest="num_generators_per_server",
+        type=int,
+        default=1,
+        help="Generator workers per server for cache warmup blast "
+        "(x-fireworks-generator-worker-local-index). Alias matches fw-infer's --num-gens. Default: 1.",
     )
     parser.add_argument(
         "--acceptance-probs-override",
