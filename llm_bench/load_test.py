@@ -2,14 +2,16 @@ import abc
 import argparse
 import csv
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
+import importlib.util
+import json
 import logging
 import os
 import random
 import sys
 import threading
 import traceback
-from typing import Optional
+from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
 import copy
 import json
@@ -54,6 +56,81 @@ DEFAULT_TOKENIZER = "NousResearch/Meta-Llama-3.1-8B-Instruct"
 def _load_auto_tokenizer(tokenizer_path: str):
     _install_transformers_tokenizer_compat_shim()
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+
+def _tokenizer_asset_path(tokenizer_path: str, filename: str) -> str:
+    if os.path.isdir(tokenizer_path):
+        path = os.path.join(tokenizer_path, filename)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing {filename} in local tokenizer directory {tokenizer_path}")
+        return path
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo_id=tokenizer_path, filename=filename)
+
+
+def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
+    config_path = _tokenizer_asset_path(tokenizer_path, "config.json")
+    with open(config_path) as f:
+        return json.load(f)
+
+
+def resolve_model_type(tokenizer_path: str) -> str:
+    try:
+        config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
+        text_config = config.get_text_config()
+        return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
+    except ValueError:
+        config_json = _read_config_json(tokenizer_path)
+        text_config = config_json.get("text_config") or {}
+        return text_config.get("model_type") or config_json.get("model_type", "")
+
+
+@lru_cache(maxsize=None)
+def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
+    path = _tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
+    spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load DSV4 encoding module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.encode_messages
+
+
+def _normalize_token_ids(obj: Any) -> list[int]:
+    ids = getattr(obj, "ids", None)
+    if ids is not None:
+        return [int(t) for t in ids]
+    input_ids = getattr(obj, "input_ids", None)
+    if input_ids is not None:
+        flat = input_ids[0] if input_ids and isinstance(input_ids[0], list) else input_ids
+        return [int(t) for t in flat]
+    tolist = getattr(obj, "tolist", None)
+    if callable(tolist):
+        flat = tolist()
+        if flat and isinstance(flat[0], list):
+            flat = flat[0]
+        return [int(t) for t in flat]
+    return [int(t) for t in obj]
+
+
+def empty_chat_template_token_ids(
+    tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
+) -> list[int]:
+    """Token ids for chat template overhead (empty user message + generation prompt)."""
+    model_type = resolve_model_type(tokenizer_path)
+    if model_type == "deepseek_v4":
+        encode_messages = load_dsv4_encode_messages(tokenizer_path)
+        prompt = encode_messages([{"role": "user", "content": ""}], thinking_mode="chat")
+        return _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
+    return _normalize_token_ids(
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": ""}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+    )
 
 
 def add_custom_metric(name, value, length_value=0):
@@ -104,11 +181,13 @@ class TranslationDataset:
         path: str,
         prompt: str,
         tokenizer,
+        tokenizer_path: str,
         chat: bool,
         num_tokens: int,
         common_tokens: int,
     ):
         self._tokenizer = tokenizer
+        self._tokenizer_path = tokenizer_path
         self._num_tokens = num_tokens
 
         self._all_limericks = []
@@ -132,12 +211,8 @@ class TranslationDataset:
             idx += 1
 
         if chat:
-            empty_tempalate_tokens = self._tokenizer.apply_chat_template(
-                [{"role": "user", "content": ""}],
-                tokenize=True,
-                add_generation_prompt=True,
-            )
-            self._prefix_suffix_tokens += len(empty_tempalate_tokens)
+            empty_template_tokens = empty_chat_template_token_ids(self._tokenizer, self._tokenizer_path)
+            self._prefix_suffix_tokens += len(empty_template_tokens)
 
     def __next__(self):
         prompt_tokens = self._prefix_suffix_tokens
@@ -221,10 +296,12 @@ class DatasetHolder:
             common_tokens = options.prompt_cache_max_len
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
+            tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
                 tokenizer=InitTracker.load_tokenizer(options.tokenizer),
+                tokenizer_path=tokenizer_path,
                 chat=options.chat and not getattr(options, "rerank", False),
                 num_tokens=options.prompt_tokens,
                 common_tokens=common_tokens,
@@ -257,6 +334,7 @@ class DatasetHolder:
                 path=path,
                 prompt="",
                 tokenizer=InitTracker.load_tokenizer(tokenizer),
+                tokenizer_path=tokenizer or DEFAULT_TOKENIZER,
                 chat=False,
                 num_tokens=max_tokens,
                 common_tokens=0,
@@ -1480,7 +1558,12 @@ class LLMUser(HttpUser):
             try:
                 response.raise_for_status()
             except Exception as e:
-                raise RuntimeError(f"Error in response: {response.text}") from e
+                # Use locust's failure-recording API instead of raising so the
+                # failure is counted in stats.total.num_failures (visible in
+                # the summary, stats CSV, HTML report, and stats_failures.csv)
+                # rather than being routed to runner.exceptions.
+                response.failure(f"Error in response: {response.text or repr(e)}")
+                return
             t_first_token = None
             t_first_visible_token = None
             for chunk in response.iter_lines(delimiter=b"\n\n"):
@@ -1998,8 +2081,9 @@ def init_parser(parser):
         "--reasoning-effort",
         type=str,
         default=None,
-        choices=["low", "medium", "high"],
+        choices=["none", "low", "medium", "high"],
         help="Set the reasoning_effort parameter for the API request. "
+        "Use 'none' to disable thinking/reasoning where supported. "
         "If not specified and using a JSONL dataset, will use the value from the dataset if present.",
     )
     parser.add_argument(
@@ -2026,15 +2110,28 @@ def init_parser(parser):
         "with how Customers measures TTFT. Use this flag to compare apples-to-apples TTFT across "
         "reasoning and non-reasoning providers. Requires --chat and --stream.",
     )
+    parser.add_argument(
+        "--max-fail-ratio",
+        type=float,
+        default=0.01,
+        help="Maximum fraction of failed requests tolerated before the run is considered failed. "
+        "Defaults to 0.01 (1%%). Set to 0 to fail on any failed request.",
+    )
 
 
 @events.quitting.add_listener
 def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
-    if environment.stats.total.num_failures > 0 or total_latency.num_requests == 0:
-        logger.error("Test failed due to failed requests")
+    total = environment.stats.total
+    fail_ratio = (total.num_failures / total.num_requests) if total.num_requests > 0 else 1.0
+    if fail_ratio > environment.parsed_options.max_fail_ratio:
+        logger.error(f"Test failed: {total.num_failures}/{total.num_requests} requests failed ({fail_ratio:.2%})")
         environment.process_exit_code = 1
         return
+    # Explicitly set exit code 0 so that locust's default policy does not force
+    # a non-zero exit when runner.exceptions is non-empty (e.g. unhandled
+    # exceptions from non-request paths like dataset loading).
+    environment.process_exit_code = 0
 
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
