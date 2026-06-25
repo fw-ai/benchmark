@@ -2,6 +2,14 @@
 
 Please refer to the [`benchmark_suite.ipynb`](benchmark_suite.ipynb) for a detailed example of how to use the load_test.py script and run different types of benchmark suites.
 
+## Analytical estimators
+
+For offline model-size estimates, see the estimator READMEs:
+
+- [KV cache memory](estimators/kv/README.md)
+- [Prefill FLOPs](estimators/flops/README.md)
+- [Decode bandwidth](estimators/bandwidth/README.md)
+
 ## Installation
 
 The load test relies on [Locust package](https://locust.io/). Install it from pip.
