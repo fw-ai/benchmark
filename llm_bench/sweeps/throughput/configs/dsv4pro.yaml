@@ -1,0 +1,60 @@
+version: 1.0.0
+model_path: /shared/models/deepseek-v4-pro/hf
+
+benchmark:
+  dataset: llm_bench/limericks.txt
+  prompt_suffix: Translate the limericks above to Spanish.
+  prompt_tokens: 50000
+  cache_tokens: 50000
+  max_tokens: 600
+  temperature: 0.0
+  timeout: 3600.0
+  connector_limit: 10000
+  n_sequences: 500
+  batch_sizes: [100, 200]
+  # batch_sizes: [100, 200, 500, 1000, 2000]
+  # batch_sizes: [100, 200, 500, 1000, 2000, 4000, 6000, 8000, 10000]
+
+apis:
+  - type: fireworks
+    endpoint:
+      host: 127.0.0.1
+      port: 18080
+      startup_timeout_s: 900.0
+    args:
+      num_ranks_override: 8
+      moe_sharding: ep
+      attention_sharding: none
+      kv_cache_memory_pct: 20
+      max_batch_size: 200
+      max_seq_length: 50688
+      max_tokens_limit: 600
+      formatter_backend: legacy
+      skip_huggingface_config_check: true
+    environment:
+      PYTORCH_CUDA_ALLOC_CONF: max_split_size_mb:512
+      FIREWORKS_STANDALONE_CONTAINER: "1"
+      FIREWORKS_METERING_KEY: 5d7e254f-a8e5-4c6c-9730-2bc585fef567
+
+  - type: sglang
+    endpoint:
+      host: 127.0.0.1
+      port: 30000
+      startup_timeout_s: 900.0
+    args:
+      trust_remote_code: true
+      tp_size: 8
+      dp: 8
+      enable_dp_attention: true
+      moe_a2a_backend: megamoe
+      mem_fraction_static: 0.835
+      max_running_requests: 10000
+      cuda_graph_bs: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1250]
+      swa_full_tokens_ratio: 0.075
+      chunked_prefill_size: 65536
+      tokenizer_worker_num: 8
+      enable_prefill_delayer: true
+      enable_deepseek_v4_fp4_indexer: true
+      max_queued_requests: 12000
+    environment:
+      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "8320"

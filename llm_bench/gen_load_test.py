@@ -16,6 +16,7 @@ import argparse
 import importlib.util
 import json
 import logging
+import math
 import os
 import random
 import sys
@@ -291,7 +292,9 @@ def build_chat_prompt_ids(
         raise ValueError("no chunks provided")
 
     def length_for(k: int) -> int:
-        return len(apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:k]) + suffix_text, model_type))
+        return len(
+            apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:k]) + suffix_text, model_type)
+        )
 
     if length_for(1) > target_len:
         raise ValueError(f"target_len={target_len} too small to fit even one chunk")
@@ -364,6 +367,7 @@ def post_completion(
     temperature: Optional[float] = None,
     user: Optional[str] = None,
     extra_headers: Optional[dict[str, str]] = None,
+    prompt_cache_max_len: Optional[int] = None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
         "prompt": prompt,
@@ -371,6 +375,8 @@ def post_completion(
         "n": n,
         "stream": False,
     }
+    if prompt_cache_max_len is not None:
+        payload["prompt_cache_max_len"] = prompt_cache_max_len
     if temperature is not None:
         payload["temperature"] = temperature
     if model is not None:
@@ -408,6 +414,14 @@ class GenBenchmarkResult:
     generation_duration: float
     latency_per_forward: float
     client_duration: float
+    num_sequences: int = 0
+    req_decode_tps: float = float("nan")
+    req_decode_tps_p90: float = float("nan")
+    req_decode_tps_p99: float = float("nan")
+
+    @property
+    def total_decode_tps(self) -> float:
+        return (self.max_tokens * self.num_sequences) / self.generation_duration
 
 
 def _run_pair_n_mode(
@@ -420,6 +434,7 @@ def _run_pair_n_mode(
     seq_len: int,
     batch_size: int,
     temperature: Optional[float],
+    prompt_cache_max_len: Optional[int] = None,
 ) -> GenBenchmarkResult:
     """Single request with n=batch_size."""
     logger.info(
@@ -440,6 +455,7 @@ def _run_pair_n_mode(
         max_tokens=max_tokens,
         n=batch_size,
         temperature=temperature,
+        prompt_cache_max_len=prompt_cache_max_len,
     )
     wall = time.perf_counter() - wall_start
 
@@ -448,10 +464,8 @@ def _run_pair_n_mode(
 
     gen_dur = get_header(r.headers, "generation-duration")
     if gen_dur is None:
-        raise RuntimeError(
-            "Missing fireworks-generation-duration header (need dedicated deployment?). "
-            f"Got keys: {[k for k in r.headers.keys() if 'fireworks' in k.lower()]}"
-        )
+        logger.warning("Missing fireworks-generation-duration header; using client duration.")
+        gen_dur = wall
 
     resp_json = r.json()
     completion_tokens = resp_json.get("usage", {}).get("completion_tokens", max_tokens * batch_size)
@@ -473,6 +487,10 @@ def _run_pair_n_mode(
         generation_duration=gen_dur,
         latency_per_forward=gen_dur / num_fwd,
         client_duration=wall,
+        num_sequences=batch_size,
+        req_decode_tps=max_tokens / gen_dur,
+        req_decode_tps_p90=max_tokens / gen_dur,
+        req_decode_tps_p99=max_tokens / gen_dur,
     )
 
 
@@ -494,6 +512,7 @@ def _run_pair_separate_mode(
     users: list[str],
     routing: Optional[RoutingConfig] = None,
     worker_offset: int = 0,
+    prompt_cache_max_len: Optional[int] = None,
 ) -> GenBenchmarkResult:
     """Send batch_size concurrent requests each with n=1."""
     logger.info(
@@ -511,7 +530,10 @@ def _run_pair_separate_mode(
         headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
         if headers and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "  worker=%d server=%s local=%s", worker_idx, headers.get(_SERVICE_INDEX_HEADER), headers.get(_LOCAL_INDEX_HEADER)
+                "  worker=%d server=%s local=%s",
+                worker_idx,
+                headers.get(_SERVICE_INDEX_HEADER),
+                headers.get(_LOCAL_INDEX_HEADER),
             )
         return post_completion(
             s,
@@ -524,6 +546,7 @@ def _run_pair_separate_mode(
             temperature=temperature,
             user=user,
             extra_headers=headers or None,
+            prompt_cache_max_len=prompt_cache_max_len,
         )
 
     wall_start = time.perf_counter()
@@ -541,10 +564,8 @@ def _run_pair_separate_mode(
             raise RuntimeError(f"Request {i} failed HTTP {r.status_code}: {r.text[:500]}")
         gd = get_header(r.headers, "generation-duration")
         if gd is None:
-            raise RuntimeError(
-                "Missing fireworks-generation-duration header (need dedicated deployment?). "
-                f"Got keys: {[k for k in r.headers.keys() if 'fireworks' in k.lower()]}"
-            )
+            logger.warning("Missing fireworks-generation-duration header; using client duration.")
+            gd = wall
         gen_durs.append(gd)
         resp_json = r.json()
         ct = resp_json.get("usage", {}).get("completion_tokens", max_tokens)
@@ -569,6 +590,10 @@ def _run_pair_separate_mode(
         generation_duration=avg_gen_dur,
         latency_per_forward=avg_gen_dur / avg_fwd,
         client_duration=wall,
+        num_sequences=batch_size,
+        req_decode_tps=max_tokens / avg_gen_dur,
+        req_decode_tps_p90=max_tokens / avg_gen_dur,
+        req_decode_tps_p99=max_tokens / avg_gen_dur,
     )
 
 
@@ -586,6 +611,7 @@ def _warmup_seq_len(
     users: Optional[list[str]] = None,
     routing: Optional[RoutingConfig] = None,
     worker_offset: int = 0,
+    warmup_max_tokens: int = 0,
 ) -> None:
     """Issue `concurrency` warmup completions in parallel for the same prompt."""
     if users is not None:
@@ -599,7 +625,7 @@ def _warmup_seq_len(
             api_key,
             model,
             prompt_ids,
-            max_tokens=0,
+            max_tokens=warmup_max_tokens,
             n=1,
             temperature=temperature,
             user=user,
@@ -614,6 +640,9 @@ def _warmup_seq_len(
             attempt,
             retries,
         )
+        logger.info(
+            f"[decode] warmup start {seq_len=} {concurrency=} max_tokens={warmup_max_tokens} attempt={attempt}/{retries}"
+        )
         request_users: list[Optional[str]] = list(users) if users is not None else [None] * concurrency
         if concurrency == 1:
             responses = [_single(0, request_users[0])]
@@ -624,6 +653,7 @@ def _warmup_seq_len(
 
         bad = next((r for r in responses if r.status_code != 200), None)
         if bad is None:
+            logger.info(f"[decode] warmup done {seq_len=} {concurrency=}")
             return
         if attempt < retries:
             logger.warning(
@@ -636,6 +666,12 @@ def _warmup_seq_len(
             time.sleep(retry_delay)
         else:
             raise RuntimeError(f"Warmup seq_len={seq_len} failed HTTP {bad.status_code}: {bad.text[:500]}")
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    ordered = sorted(values)
+    idx = math.ceil((pct / 100.0) * len(ordered)) - 1
+    return ordered[max(0, min(idx, len(ordered) - 1))]
 
 
 def run_benchmark(
@@ -651,6 +687,9 @@ def run_benchmark(
     retry_delay: float = 30.0,
     seed: int = 0,
     routing: Optional[RoutingConfig] = None,
+    prompt_cache_max_len: Optional[int] = None,
+    warmup_max_tokens: int = 0,
+    n_sequences: Optional[int] = None,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     model_type = resolve_model_type(tokenizer_path)
@@ -688,6 +727,7 @@ def run_benchmark(
     seq_users: list[str] = []
     for seq_len, batch_size in pairs:
         if seq_len != prev_seq_len:
+            logger.info(f"[decode] building prompt {seq_len=}")
             prompt_ids = build_chat_prompt_ids(
                 tokenizer,
                 tokenizer_path,
@@ -697,6 +737,7 @@ def run_benchmark(
                 target_len=seq_len - max_tokens,
             )
             logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
+            logger.info(f"[decode] built prompt {seq_len=} prompt_tokens={len(prompt_ids)}")
             if separate_requests:
                 if prev_seq_len is None:
                     # HACK: backend OOMs without this pre-warmup on the largest
@@ -712,8 +753,10 @@ def run_benchmark(
                         "Pre-warmup (seq_len=%d): 64 sequential requests with random users (HACK)",
                         seq_len,
                     )
+                    logger.info(f"[decode] pre-warmup start {seq_len=} requests=64")
                     rng = random.Random(seed)
                     for i in range(64):
+                        logger.info(f"[decode] pre-warmup request {i + 1}/64")
                         _warmup_seq_len(
                             url=url,
                             api_key=api_key,
@@ -727,7 +770,9 @@ def run_benchmark(
                             users=[str(rng.randint(0, 2**63 - 1))],
                             routing=routing,
                             worker_offset=i,
+                            warmup_max_tokens=warmup_max_tokens,
                         )
+                    logger.info(f"[decode] pre-warmup done {seq_len=}")
                 seq_users = _generate_users(seq_len + seed, batch_size)
                 _warmup_seq_len(
                     url=url,
@@ -741,6 +786,7 @@ def run_benchmark(
                     retry_delay=retry_delay,
                     users=seq_users,
                     routing=routing,
+                    warmup_max_tokens=warmup_max_tokens,
                 )
             else:
                 # n-mode measurement is unrouted; warmup must match or cache primes the wrong worker.
@@ -754,42 +800,77 @@ def run_benchmark(
                     temperature=temperature,
                     retries=retries,
                     retry_delay=retry_delay,
+                    warmup_max_tokens=warmup_max_tokens,
                 )
             prev_seq_len = seq_len
 
-        users: Optional[list[str]] = None
-        if separate_requests:
-            users = seq_users[:batch_size]
+        cache_len = min(prompt_cache_max_len, len(prompt_ids)) if prompt_cache_max_len is not None else None
 
         for attempt in range(1, retries + 1):
             try:
-                if separate_requests:
-                    assert users is not None
-                    result = _run_pair_separate_mode(
-                        url=url,
-                        api_key=api_key,
-                        model=model,
-                        prompt_ids=prompt_ids,
-                        max_tokens=max_tokens,
-                        seq_len=seq_len,
-                        batch_size=batch_size,
-                        temperature=temperature,
-                        users=users,
-                        routing=routing,
-                    )
-                else:
-                    result = _run_pair_n_mode(
-                        session=session,
-                        url=url,
-                        api_key=api_key,
-                        model=model,
-                        prompt_ids=prompt_ids,
-                        max_tokens=max_tokens,
-                        seq_len=seq_len,
-                        batch_size=batch_size,
-                        temperature=temperature,
-                    )
+                total_sequences = n_sequences or batch_size
+                sent_sequences = 0
+                total_generation_duration = 0.0
+                total_client_duration = 0.0
+                req_decode_tps_values: list[float] = []
+                logger.info(
+                    f"[decode] start {seq_len=} {batch_size=} {total_sequences=} {max_tokens=} "
+                    f"attempt={attempt}/{retries}"
+                )
+                while sent_sequences < total_sequences:
+                    current_batch_size = min(batch_size, total_sequences - sent_sequences)
+                    logger.info(f"[decode] chunk start offset={sent_sequences} {current_batch_size=}")
+                    if separate_requests:
+                        users = _generate_users(seq_len + seed + sent_sequences, current_batch_size)
+                        result = _run_pair_separate_mode(
+                            url=url,
+                            api_key=api_key,
+                            model=model,
+                            prompt_ids=prompt_ids,
+                            max_tokens=max_tokens,
+                            seq_len=seq_len,
+                            batch_size=current_batch_size,
+                            temperature=temperature,
+                            users=users,
+                            routing=routing,
+                            prompt_cache_max_len=cache_len,
+                        )
+                    else:
+                        result = _run_pair_n_mode(
+                            session=session,
+                            url=url,
+                            api_key=api_key,
+                            model=model,
+                            prompt_ids=prompt_ids,
+                            max_tokens=max_tokens,
+                            seq_len=seq_len,
+                            batch_size=current_batch_size,
+                            temperature=temperature,
+                            prompt_cache_max_len=cache_len,
+                        )
+                    total_generation_duration += result.generation_duration
+                    total_client_duration += result.client_duration
+                    req_decode_tps_values.extend([result.req_decode_tps] * current_batch_size)
+                    sent_sequences += current_batch_size
+                result = GenBenchmarkResult(
+                    seq_len=seq_len,
+                    batch_size=batch_size,
+                    max_tokens=max_tokens,
+                    generation_duration=total_generation_duration,
+                    latency_per_forward=0.0,
+                    client_duration=total_client_duration,
+                    num_sequences=total_sequences,
+                    req_decode_tps=sum(req_decode_tps_values) / len(req_decode_tps_values),
+                    req_decode_tps_p90=_percentile(req_decode_tps_values, 90),
+                    req_decode_tps_p99=_percentile(req_decode_tps_values, 99),
+                )
                 results.append(result)
+                logger.info(
+                    f"[decode] done {seq_len=} {batch_size=} {total_sequences=} "
+                    f"total_decode_s={result.generation_duration:.3f}s "
+                    f"total_decode_tps={result.total_decode_tps:.3f} "
+                    f"client_duration={result.client_duration:.3f}s"
+                )
                 break
             except Exception as e:
                 if attempt < retries:
@@ -812,20 +893,47 @@ def run_benchmark(
 def format_table(rows: list[GenBenchmarkResult]) -> str:
     data: list[list[Any]] = []
     for row in rows:
-        data.append([row.seq_len, row.batch_size, row.latency_per_forward])
+        data.append(
+            [
+                row.seq_len,
+                row.batch_size,
+                row.num_sequences,
+                row.generation_duration,
+                row.total_decode_tps,
+                row.req_decode_tps,
+                row.req_decode_tps_p90,
+                row.req_decode_tps_p99,
+            ]
+        )
     return tabulate(
         data,
-        headers=["seq_len", "batch_size", "latency_per_forward"],
+        headers=[
+            "seq_len",
+            "batch_size",
+            "n_sequences",
+            "total_decode_s",
+            "total_decode_tps",
+            "req_decode_tps",
+            "req_decode_tps_p90",
+            "req_decode_tps_p99",
+        ],
         tablefmt="pipe",
         floatfmt=".6f",
-        colalign=("right", "right", "right"),
+        colalign=("right",) * 8,
     )
 
 
 def format_csv(rows: list[GenBenchmarkResult]) -> str:
-    lines = ["seq_len,batch_size,latency_per_forward"]
+    lines = [
+        "seq_len,batch_size,n_sequences,total_decode_s,total_decode_tps,"
+        "req_decode_tps,req_decode_tps_p90,req_decode_tps_p99"
+    ]
     for row in rows:
-        lines.append(f"{row.seq_len},{row.batch_size},{row.latency_per_forward:.6f}")
+        lines.append(
+            f"{row.seq_len},{row.batch_size},{row.num_sequences},{row.generation_duration:.6f},"
+            f"{row.total_decode_tps:.6f},{row.req_decode_tps:.6f},"
+            f"{row.req_decode_tps_p90:.6f},{row.req_decode_tps_p99:.6f}"
+        )
     return "\n".join(lines)
 
 
