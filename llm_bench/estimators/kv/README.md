@@ -1,0 +1,11 @@
+# KV Cache Estimator
+
+Estimates KV/cache memory in bytes for the given model.
+
+```bash
+python -m llm_bench.estimators.kv.kv_estimator \
+  --hf-model-name deepseek-ai/DeepSeek-V4-Pro \
+  --context-length=50000 \
+  --batch-size=500 \
+  --gib | jq
+```
