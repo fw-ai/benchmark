@@ -1547,7 +1547,7 @@ class LLMUser(HttpUser):
             data=json.dumps(data),
             stream=True,
             catch_response=True,
-            timeout=60,
+            timeout=self.environment.parsed_options.request_timeout,
         ) as response:
             combined_text = ""
             done = False
@@ -2116,6 +2116,12 @@ def init_parser(parser):
         default=0.01,
         help="Maximum fraction of failed requests tolerated before the run is considered failed. "
         "Defaults to 0.01 (1%%). Set to 0 to fail on any failed request.",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=60.0,
+        help="Per-request HTTP read timeout in seconds (default 60). Increase for long-context workloads.",
     )
 
 
