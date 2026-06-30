@@ -979,14 +979,18 @@ class FireworksProvider(OpenAIProvider):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
-        # Enable perf_metrics_in_response to get speculation stats in streaming responses
-        data["perf_metrics_in_response"] = True
-        # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
-        # default (0 = no caching) is a no-op for the server, but unconditionally
-        # adding the key breaks deployments whose OpenAI-compat schema is configured
-        # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
-            data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
+        # Some TRT-LLM / strict OpenAI-compat schemas reject these body fields
+        # (extra="forbid"). Prompt cache simulation still uses --prompt-cache-max-len
+        # client-side via TranslationDataset common_tokens.
+        if not getattr(self.parsed_options, "omit_forbidden_payload_fields", False):
+            # Enable perf_metrics_in_response to get speculation stats in streaming responses
+            data["perf_metrics_in_response"] = True
+            # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
+            # default (0 = no caching) is a no-op for the server, but unconditionally
+            # adding the key breaks deployments whose OpenAI-compat schema is configured
+            # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
+            if self.parsed_options.prompt_cache_max_len > 0:
+                data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
         if self._forced_generation_pool is not None:
@@ -2025,6 +2029,13 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--omit-forbidden-payload-fields",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Omit perf_metrics_in_response and prompt_cache_max_len from Fireworks request bodies. "
+        "Use for strict-schema deployments; prompt prefix simulation still honors --prompt-cache-max-len.",
     )
     parser.add_argument(
         "--acceptance-probs-override",
