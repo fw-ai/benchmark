@@ -97,6 +97,7 @@ def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) ->
     local = flat // cfg.num_servers
     return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
 
+
 # NB: don't use power of 2 as we will use multiples of this to generate seq pairs
 # and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
 _DEFAULT_MIN_SEQ_LEN = 500
@@ -422,6 +423,10 @@ class PairBenchmarkResult:
     mean_fireworks_prompt_tokens: Optional[float]
     mean_fireworks_cached_prompt_tokens: Optional[float]
 
+    @property
+    def total_prefill_tps(self) -> float:
+        return (self.prompt_tokens * self.num_prompts) / self.duration
+
 
 def _send_and_parse_measurement(
     *,
@@ -446,7 +451,7 @@ def _send_and_parse_measurement(
         model,
         prompt_token_ids,
         max_tokens,
-        prompt_cache_max_len=cached_tokens,
+        prompt_cache_max_len=cached_tokens if cached_tokens > 0 else None,
         extra_headers=extra_headers,
     )
     wall = time.perf_counter() - wall_start
@@ -459,10 +464,8 @@ def _send_and_parse_measurement(
     server_processing = get_header(r.headers, "server-processing-time")
     st = server_processing if server_processing is not None else sum_stage_seconds(r.headers)
     if st is None:
-        raise RuntimeError(
-            "Missing Fireworks timing headers (need dedicated deployment?). "
-            f"Got keys: {list(r.headers.keys())[:30]}"
-        )
+        logger.warning("Missing Fireworks timing headers; using client duration.")
+        st = wall
     return st, wall, fwp, fwc
 
 
@@ -491,9 +494,7 @@ def _measure_pair_split_across_workers(
     total_workers = routing.total_workers
     # Stride-slice for even round-robin distribution. Uneven splits handled
     # naturally (e.g. 1985 / 4 -> [497, 496, 496, 496]).
-    chunks: list[list[list[int]]] = [
-        prompt_token_ids[i::total_workers] for i in range(total_workers)
-    ]
+    chunks: list[list[list[int]]] = [prompt_token_ids[i::total_workers] for i in range(total_workers)]
     active_workers = [i for i, c in enumerate(chunks) if c]
 
     def _run_worker(worker_idx: int) -> tuple[int, float, float, Optional[int], Optional[int]]:
@@ -584,6 +585,7 @@ def run_benchmark(
     min_tokens_to_batch: int,
     max_tokens: int,
     rng_seed: Optional[int],
+    n_sequences: Optional[int] = None,
     retries: int = 3,
     retry_delay: float = 30.0,
     routing: Optional[RoutingConfig] = None,
@@ -616,9 +618,7 @@ def run_benchmark(
 
     def do_warmup(cached_tokens: int, extra_headers: Optional[dict[str, str]] = None) -> None:
         warmup_ids = build_warmup_ids(chat_prefix_ids, base_ids, cached_tokens)
-        w = post_completion(
-            session, url, api_key, model, warmup_ids, max_tokens, extra_headers=extra_headers
-        )
+        w = post_completion(session, url, api_key, model, warmup_ids, max_tokens, extra_headers=extra_headers)
         if w.status_code != 200:
             raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
 
@@ -636,10 +636,12 @@ def run_benchmark(
 
         for attempt in range(1, retries + 1):
             try:
+                logger.info(f"[prefill] start {prompt_tokens=} {cached_tokens=} attempt={attempt}/{retries}")
                 # Warmup: prime cache on every worker we're about to measure. In
                 # routing mode, each worker needs its own warmup or the
                 # measurement on that worker will see a cache miss.
                 if cached_tokens > 0:
+                    logger.info(f"[prefill] warmup {cached_tokens=} routing={routing.describe()}")
                     if routing.enabled:
                         for worker_idx in range(routing.total_workers):
                             do_warmup(
@@ -652,67 +654,102 @@ def run_benchmark(
                 prompt_token_ids: list[list[int]] = []
                 uncached_tokens = prompt_tokens - cached_tokens
                 batch_size = max(1, min_tokens_to_batch // uncached_tokens)
-                for _ in range(batch_size):
-                    pair_ids = build_pair_ids(
-                        chat_prefix_ids,
-                        chat_suffix_ids,
-                        base_ids,
-                        tokenizer,
-                        chunks,
-                        prompt_tokens,
-                        cached_tokens,
-                        rng,
-                    )
-                    if len(pair_ids) != prompt_tokens:
-                        raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
-                    prompt_token_ids.append(pair_ids)
-
+                total_prompts = n_sequences or batch_size
+                total_st = 0.0
+                total_wall = 0.0
+                total_fwp = 0
+                total_fwc = 0
+                has_fwp = False
+                has_fwc = False
+                sent_prompts = 0
                 logger.info(
-                    "Pair (%d, %d): sending %d prompts in one request, routing=%s",
-                    prompt_tokens,
-                    cached_tokens,
-                    len(prompt_token_ids),
-                    routing.describe(),
+                    f"[prefill] building/sending prompts {batch_size=} {total_prompts=} "
+                    f"{uncached_tokens=} {min_tokens_to_batch=}"
                 )
 
-                if routing.enabled:
-                    st, wall, fwp, fwc = _measure_pair_split_across_workers(
-                        routing=routing,
-                        url=url,
-                        api_key=api_key,
-                        model=model,
-                        prompt_token_ids=prompt_token_ids,
-                        max_tokens=max_tokens,
-                        cached_tokens=cached_tokens,
+                while sent_prompts < total_prompts:
+                    chunk_size = min(batch_size, total_prompts - sent_prompts)
+                    prompt_token_ids = []
+                    for _ in range(chunk_size):
+                        pair_ids = build_pair_ids(
+                            chat_prefix_ids,
+                            chat_suffix_ids,
+                            base_ids,
+                            tokenizer,
+                            chunks,
+                            prompt_tokens,
+                            cached_tokens,
+                            rng,
+                        )
+                        if len(pair_ids) != prompt_tokens:
+                            raise RuntimeError(f"pair_ids length {len(pair_ids)} != prompt_tokens {prompt_tokens}")
+                        prompt_token_ids.append(pair_ids)
+
+                    logger.info(
+                        "Pair (%d, %d): sending %d prompts in one request, routing=%s",
+                        prompt_tokens,
+                        cached_tokens,
+                        len(prompt_token_ids),
+                        routing.describe(),
                     )
-                else:
-                    st, wall, fwp, fwc = _send_and_parse_measurement(
-                        session=session,
-                        url=url,
-                        api_key=api_key,
-                        model=model,
-                        prompt_token_ids=prompt_token_ids,
-                        max_tokens=max_tokens,
-                        cached_tokens=cached_tokens,
+                    logger.info(
+                        f"[prefill] sending prompts chunk_start={sent_prompts} "
+                        f"num_prompts={len(prompt_token_ids)} {max_tokens=} routing={routing.describe()}"
                     )
 
+                    if routing.enabled:
+                        st, wall, fwp, fwc = _measure_pair_split_across_workers(
+                            routing=routing,
+                            url=url,
+                            api_key=api_key,
+                            model=model,
+                            prompt_token_ids=prompt_token_ids,
+                            max_tokens=max_tokens,
+                            cached_tokens=cached_tokens,
+                        )
+                    else:
+                        st, wall, fwp, fwc = _send_and_parse_measurement(
+                            session=session,
+                            url=url,
+                            api_key=api_key,
+                            model=model,
+                            prompt_token_ids=prompt_token_ids,
+                            max_tokens=max_tokens,
+                            cached_tokens=cached_tokens,
+                        )
+
+                    logger.info(
+                        "  -> server prompt-tokens=%s, cached=%s, server-duration=%.6fs, client=%.2fs",
+                        fwp,
+                        fwc,
+                        st,
+                        wall,
+                    )
+                    total_st += st
+                    total_wall += wall
+                    sent_prompts += len(prompt_token_ids)
+                    if fwp is not None:
+                        has_fwp = True
+                        total_fwp += fwp
+                    if fwc is not None:
+                        has_fwc = True
+                        total_fwc += fwc
+
                 logger.info(
-                    "  -> server prompt-tokens=%s, cached=%s, server-duration=%.6fs, client=%.2fs",
-                    fwp,
-                    fwc,
-                    st,
-                    wall,
+                    f"[prefill] done {prompt_tokens=} {cached_tokens=} num_prompts={sent_prompts} "
+                    f"total_prefill_s={total_st:.3f}s client_duration={total_wall:.3f}s "
+                    f"total_prefill_tps={(prompt_tokens * sent_prompts / total_st):.3f}"
                 )
 
                 results.append(
                     PairBenchmarkResult(
                         prompt_tokens=prompt_tokens,
                         cached_tokens=cached_tokens,
-                        num_prompts=len(prompt_token_ids),
-                        duration=st,
-                        client_duration=wall,
-                        mean_fireworks_prompt_tokens=fwp,
-                        mean_fireworks_cached_prompt_tokens=fwc,
+                        num_prompts=sent_prompts,
+                        duration=total_st,
+                        client_duration=total_wall,
+                        mean_fireworks_prompt_tokens=total_fwp if has_fwp else None,
+                        mean_fireworks_cached_prompt_tokens=total_fwc if has_fwc else None,
                     )
                 )
                 break
@@ -744,8 +781,13 @@ def format_table(rows: list[PairBenchmarkResult]) -> str:
                 row.num_prompts,
                 row.duration,
                 row.client_duration,
-                row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else "",
-                row.mean_fireworks_cached_prompt_tokens if row.mean_fireworks_cached_prompt_tokens is not None else "",
+                row.total_prefill_tps,
+                (row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else ""),
+                (
+                    row.mean_fireworks_cached_prompt_tokens
+                    if row.mean_fireworks_cached_prompt_tokens is not None
+                    else ""
+                ),
             ]
         )
     return tabulate(
@@ -754,14 +796,15 @@ def format_table(rows: list[PairBenchmarkResult]) -> str:
             "prompt tokens",
             "cached tokens",
             "num prompts",
-            "server duration",
+            "total_prefill_s",
             "client duration",
+            "total_prefill_tps",
             "server prompt tokens",
             "server cached tokens",
         ],
         tablefmt="pipe",
         floatfmt=".6f",
-        colalign=("right",) * 7,
+        colalign=("right",) * 8,
     )
 
 
@@ -770,8 +813,9 @@ def format_csv(rows: list[PairBenchmarkResult]) -> str:
         "prompt_tokens",
         "cached_tokens",
         "num_prompts",
-        "server_duration",
+        "total_prefill_s",
         "client_duration",
+        "total_prefill_tps",
         "server_prompt_tokens",
         "server_cached_tokens",
     ]
@@ -786,7 +830,8 @@ def format_csv(rows: list[PairBenchmarkResult]) -> str:
                     row.num_prompts,
                     f"{row.duration:.6f}",
                     f"{row.client_duration:.6f}",
-                    row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else "",
+                    f"{row.total_prefill_tps:.6f}",
+                    (row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else ""),
                     (
                         row.mean_fireworks_cached_prompt_tokens
                         if row.mean_fireworks_cached_prompt_tokens is not None
@@ -852,7 +897,12 @@ def main() -> None:
         default=131072,
         help="Minimum total prompt tokens to accumulate per batch (default 64K).",
     )
-    parser.add_argument("--max-tokens", type=int, default=0, help="max_tokens for completions (default 0).")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=0,
+        help="max_tokens for completions (default 0).",
+    )
     parser.add_argument(
         "--seed",
         type=int,

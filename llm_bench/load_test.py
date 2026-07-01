@@ -1547,7 +1547,7 @@ class LLMUser(HttpUser):
             data=json.dumps(data),
             stream=True,
             catch_response=True,
-            timeout=60,
+            timeout=self.environment.parsed_options.request_timeout,
         ) as response:
             combined_text = ""
             done = False
@@ -1956,6 +1956,13 @@ def init_parser(parser):
         type=float,
         default=1.0,
         help="Temperature parameter for the API",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        env_var="REQUEST_TIMEOUT",
+        type=float,
+        default=60.0,
+        help="HTTP request timeout in seconds. Defaults to 60.",
     )
     parser.add_argument(
         "--logprobs",
