@@ -2046,10 +2046,10 @@ def init_parser(parser):
     parser.add_argument(
         "--per-user-session-affinity",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Assign each Locust user a distinct x-session-affinity header (a random uuid "
         "generated once per user) so concurrent users spread across session-affinity routes. "
-        "Overrides any x-session-affinity passed via --header. Default: enabled.",
+        "Overrides any x-session-affinity passed via --header. Default: disabled.",
     )
     parser.add_argument(
         "-n",

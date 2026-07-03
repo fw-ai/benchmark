@@ -110,9 +110,8 @@ Deployments with session-affinity routing (Envoy prompt-cache stickiness) need d
 load test does not set this header, so serverless traffic may collapse to a single
 account-level session.
 
-Use `--per-user-session-affinity` (on by default) to assign each Locust user a stable,
-distinct `x-session-affinity` header for the duration of the test. Pass
-`--no-per-user-session-affinity` to disable.
+Use `--per-user-session-affinity` to assign each Locust user a stable, distinct
+`x-session-affinity` header for the duration of the test (off by default).
 
 ```bash
 locust -u 8 -r 8 -H https://api.fireworks.ai/inference \
