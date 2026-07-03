@@ -49,6 +49,17 @@ python3 convert_replay.py \
   depends on it). Use `--no-stream` for both if benchmarking non-streaming.
 - Omit `--model` entirely to run in **stats-only** mode (prints dataset shape,
   writes nothing).
+- By default (`--max-tokens-mode recorded`) each turn's `max_tokens` is set to
+  its recorded `numCompletionTokens`, and `min_tokens` + `ignore_eos` are baked
+  in (`--force-length`, on by default) so the decode length exactly matches
+  prod. This matters when the served checkpoint differs from the captured model
+  (e.g. a Kermit snapshot vs. the source deployment): such a model produces
+  incoherent output and never emits EOS, so without this it would run to the
+  captured `max_tokens` (often 20000) on every turn. Content is meaningless in
+  that case, but prompt sizes, decode lengths, session structure, and
+  prefix-cache behavior are all faithful — which is what a perf/load replay
+  needs. Use `--max-tokens-mode keep` (or `--no-force-length`) to preserve the
+  captured limits instead.
 
 Output: `index.jsonl` (one line per conversation) + `bodies/<conversation>/NNN.json`.
 
@@ -93,7 +104,16 @@ python3 replay_stats.py --src /shared/request-replay-data/matterhorn-fp4-5
 
 Reports per-turn prompt / completion / total tokens and per-conversation
 turns, peak prompt tokens, and final-turn length (min / p50 / avg / p90 / p99 /
-max).
+max). Add `--by-turn-index N` to break prompt/response length down by turn
+position.
+
+`replay_turn_breakdown.py` further splits each turn's output into
+thinking / tool_call / response buckets (decompresses bodies; the exact
+completion count is split proportionally to the generated message composition):
+
+```bash
+python3 replay_turn_breakdown.py --src /shared/request-replay-data/matterhorn-fp4-5 --by-turn-index 12
+```
 
 ## Notes / limitations
 
