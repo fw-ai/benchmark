@@ -11,6 +11,7 @@ import random
 import sys
 import threading
 import traceback
+import uuid
 from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
 import copy
@@ -34,45 +35,39 @@ logger = logging.getLogger(__name__)
 
 _PER_USER_SESSION_LOCK = threading.Lock()
 _PER_USER_SESSION_COUNTER = itertools.count()
-_SESSION_AFFINITY_PREFIX_ENV_VARS = (
+_RUN_SESSION_ID_LOCK = threading.Lock()
+_RUN_SESSION_ID: Optional[str] = None
+_SESSION_AFFINITY_RUN_ID_ENV_VARS = (
     "LOAD_TEST_RUN_ID",
     "RUN_ID",
     "GITHUB_RUN_ID",
 )
 
 
-def _sanitize_session_prefix(value: str) -> str:
+def _sanitize_run_session_id(value: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-")
-    if not sanitized:
-        return f"loadtest-{os.getpid()}"
-    return sanitized[:96]
+    return sanitized[:32] if sanitized else uuid.uuid4().hex[:12]
 
 
-def _resolve_session_affinity_prefix(cli_prefix: Optional[str]) -> str:
-    if cli_prefix:
-        return _sanitize_session_prefix(cli_prefix)
-    for env_var in _SESSION_AFFINITY_PREFIX_ENV_VARS:
+def _resolve_run_session_id(explicit: Optional[str]) -> str:
+    """Return the run-scoped id shared by all users in this load test."""
+    global _RUN_SESSION_ID
+    if explicit:
+        return _sanitize_run_session_id(explicit)
+    for env_var in _SESSION_AFFINITY_RUN_ID_ENV_VARS:
         if value := os.environ.get(env_var, "").strip():
-            return _sanitize_session_prefix(value)
-    return _sanitize_session_prefix(f"loadtest-{os.getpid()}")
+            return _sanitize_run_session_id(value)
+    with _RUN_SESSION_ID_LOCK:
+        if _RUN_SESSION_ID is None:
+            _RUN_SESSION_ID = uuid.uuid4().hex[:12]
+        return _RUN_SESSION_ID
 
 
-def _session_affinity_worker_scope() -> Optional[str]:
-    for env_var in ("LOCUST_WORKER_INDEX", "LOAD_TEST_LOCUST_PROCESS_INDEX"):
-        if value := os.environ.get(env_var, "").strip():
-            return value
-    return None
-
-
-def _per_user_session_affinity_value(*, prefix: str) -> str:
-    """Return a stable session id unique to this Locust user within the run."""
+def _per_user_session_affinity_value(*, run_id: str) -> str:
+    """Return a stable session id like user-0_<run_id> for this Locust user."""
     with _PER_USER_SESSION_LOCK:
         user_index = next(_PER_USER_SESSION_COUNTER)
-    base = _sanitize_session_prefix(prefix)
-    worker_scope = _session_affinity_worker_scope()
-    if worker_scope is not None:
-        return f"{base}-proc{worker_scope}-user-{user_index}"
-    return f"{base}-user-{user_index}"
+    return f"user-{user_index}_{run_id}"
 
 
 try:
@@ -1351,10 +1346,10 @@ class LLMUser(HttpUser):
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
         if self.environment.parsed_options.per_user_session_affinity:
-            prefix = _resolve_session_affinity_prefix(
+            run_id = _resolve_run_session_id(
                 self.environment.parsed_options.session_affinity_prefix
             )
-            session_id = _per_user_session_affinity_value(prefix=prefix)
+            session_id = _per_user_session_affinity_value(run_id=run_id)
             self.client.headers["x-session-affinity"] = session_id
             logger.info("Assigned per-user session affinity: %s", session_id)
         self._guess_provider()
@@ -2094,9 +2089,9 @@ def init_parser(parser):
         "--session-affinity-prefix",
         type=str,
         default=None,
-        help="Prefix for per-user x-session-affinity ids (e.g. a GHA run_id). "
-        "Each user gets {prefix}-user-N. When unset, uses LOAD_TEST_RUN_ID, RUN_ID, "
-        "or GITHUB_RUN_ID from the environment, then loadtest-<pid>.",
+        help="Optional run id suffix for per-user x-session-affinity ids. "
+        "Each user gets user-N_<run_id>. When unset, uses LOAD_TEST_RUN_ID, RUN_ID, "
+        "or GITHUB_RUN_ID from the environment, otherwise a random uuid per run.",
     )
     parser.add_argument(
         "-n",
