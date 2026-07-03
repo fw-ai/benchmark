@@ -32,10 +32,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_PER_USER_SESSION_LOCK = threading.Lock()
+_PER_USER_SESSION_COUNTER = itertools.count()
+
 try:
     import locust_plugins
 except ImportError:
     logger.warning("locust-plugins is not installed, Grafana won't work")
+
+
+def _per_user_session_affinity_value() -> str:
+    """Return a stable session id unique to this Locust user within the process."""
+    with _PER_USER_SESSION_LOCK:
+        user_index = next(_PER_USER_SESSION_COUNTER)
+    # Include pid so multi-process runs (e.g. locust --processes) do not reuse ids.
+    return f"loadtest-{os.getpid()}-user-{user_index}"
 
 
 def _install_transformers_tokenizer_compat_shim():
@@ -1307,6 +1318,10 @@ class LLMUser(HttpUser):
             for header in self.environment.parsed_options.header:
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
+        if self.environment.parsed_options.per_user_session_affinity:
+            session_id = _per_user_session_affinity_value()
+            self.client.headers["x-session-affinity"] = session_id
+            logger.info("Assigned per-user session affinity: %s", session_id)
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
@@ -2031,6 +2046,14 @@ def init_parser(parser):
         action="append",
         default=[],
         help="Arbitrary headers to add to the inference request. Can be used multiple times. For example, --header header1:value1 --header header2:value2",
+    )
+    parser.add_argument(
+        "--per-user-session-affinity",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Assign each Locust user a distinct x-session-affinity header so concurrent "
+        "users spread across session-affinity routes (e.g. 8 users -> 8 sticky sessions). "
+        "Overrides any x-session-affinity passed via --header.",
     )
     parser.add_argument(
         "-n",

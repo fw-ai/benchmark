@@ -103,6 +103,25 @@ Non-chat dataset (--no-chat option):
 {"prompt": "Five six seven eight"}
 ```
 
+### Session affinity
+
+Deployments with session-affinity routing (Envoy prompt-cache stickiness) need distinct
+`x-session-affinity` values to spread concurrent users across replicas. By default the
+load test does not set this header, so serverless traffic may collapse to a single
+account-level session.
+
+Use `--per-user-session-affinity` to assign each Locust user a stable, distinct
+`x-session-affinity` header for the duration of the test:
+
+```bash
+locust -u 8 -r 8 --per-user-session-affinity -H https://api.fireworks.ai/inference \
+  --api-key $FIREWORKS_API_KEY -m accounts/<account>/deployments/<deployment_id> \
+  -p 1024 -o 128 -t 2min --headless
+```
+
+With 8 users this creates 8 sticky sessions. The flag overrides any `x-session-affinity`
+passed via `--header`.
+
 
 ## Examples
 
