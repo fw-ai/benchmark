@@ -1289,6 +1289,36 @@ class SessionReplayController:
         self._cursor = 0
         self._served = 0
         self._quit_scheduled = False
+        # Optional cross-process cursor persistence: resume where a prior locust
+        # process (e.g. the previous sweep step) left off so steps cover disjoint
+        # slices of the dataset (no cross-step prefix-cache overlap).
+        self.cursor_file = getattr(options, "replay_cursor_file", None)
+        if self.cursor_file:
+            try:
+                with open(self.cursor_file) as cf:
+                    start = int((cf.read().strip() or "0"))
+                self._cursor = start  # absolute; indexing uses % len(sessions)
+                logger.info(
+                    f"SessionReplayController resuming from absolute cursor {start} "
+                    f"(index {start % len(self.sessions)}) via {self.cursor_file}"
+                )
+            except FileNotFoundError:
+                logger.info(f"SessionReplayController cursor file {self.cursor_file} absent; starting at 0")
+            except Exception as e:
+                logger.warning(f"SessionReplayController could not read cursor file ({e}); starting at 0")
+        # Bounded warmup: hand out at most this many sessions THIS process (0 = unlimited).
+        self.max_sessions = int(getattr(options, "replay_max_sessions", 0) or 0)
+        if self.max_sessions > 0:
+            logger.info(f"SessionReplayController bounded to {self.max_sessions} sessions this process (warmup)")
+
+    def _persist_cursor(self):
+        try:
+            tmp = self.cursor_file + ".tmp"
+            with open(tmp, "w") as cf:
+                cf.write(str(self._cursor))
+            os.replace(tmp, self.cursor_file)
+        except Exception:
+            pass
 
     @classmethod
     def instance(cls, options: argparse.Namespace) -> "SessionReplayController":
@@ -1297,20 +1327,41 @@ class SessionReplayController:
                 cls._instance = cls(options)
             return cls._instance
 
+    def _is_done(self, n: int) -> bool:
+        # once  : stop when the ABSOLUTE cursor reaches the dataset end, so a warmup
+        #         that advanced the cursor makes the measured pass cover the REMAINING
+        #         sessions exactly once (no wrap, no overlap).
+        # warmup: (max_sessions>0, not once) stop after serving that many sessions
+        #         THIS process.
+        if self.once:
+            return self._cursor >= n
+        if self.max_sessions > 0:
+            return self._served >= self.max_sessions
+        return False
+
     def next_session(self) -> Optional[dict]:
-        """Return the next session, or None when exhausted (once mode only)."""
+        """Return the next session, or None at the stop boundary (once = dataset end
+        by absolute cursor; warmup = --replay-max-sessions this process; else none)."""
         with self._lock:
-            if self.once and self._served >= len(self.sessions):
+            n = len(self.sessions)
+            if self._is_done(n):
                 return None
-            sess = self.sessions[self._cursor % len(self.sessions)]
+            sess = self.sessions[self._cursor % n]
             self._cursor += 1
             self._served += 1
-            if self.once and self._served >= len(self.sessions) and not self._quit_scheduled:
+            if self.cursor_file:
+                self._persist_cursor()
+            if self._is_done(n) and not self._quit_scheduled:
                 self._quit_scheduled = True
-                logger.info("Last replay session handed out; scheduling runner quit after grace period")
+                # once-mode drains long conversations (300s); a bounded warmup only
+                # needs a short drain before the sweep continues from the cursor.
+                grace = 300 if self.once else 60
+                logger.info(
+                    f"Reached replay stop boundary (cursor={self._cursor}, served={self._served}); "
+                    f"scheduling runner quit in {grace}s"
+                )
                 if InitTracker.environment is not None and InitTracker.environment.runner is not None:
-                    # give in-flight conversations time to drain their remaining turns
-                    gevent.spawn_later(300, InitTracker.environment.runner.quit)
+                    gevent.spawn_later(grace, InitTracker.environment.runner.quit)
             return sess
 
 
@@ -1640,7 +1691,7 @@ class LLMUser(HttpUser):
                 print(json.dumps(data, indent=2))
                 print("---")
             data_bytes = json.dumps(data)
-            post_timeout = 60
+            post_timeout = self.environment.parsed_options.replay_timeout
         t_start = time.perf_counter()
 
         with self.client.post(
@@ -1902,6 +1953,26 @@ def init_parser(parser):
         default=False,
         help="Replay each conversation exactly once, then stop the test. Default is to recycle "
         "conversations to sustain load for the -t duration.",
+    )
+    parser.add_argument(
+        "--replay-cursor-file",
+        type=str,
+        default=None,
+        help="Path to a small file that persists the ABSOLUTE session cursor across locust "
+        "processes. If set, the controller resumes from the stored cursor on start and writes "
+        "the advancing cursor as it hands out sessions. This lets a multi-step sweep run "
+        "consecutive steps over DISJOINT slices of the dataset (no session overlap, so no "
+        "artificial cross-step prefix-cache reuse). Delete the file to reset to 0.",
+    )
+    parser.add_argument(
+        "--replay-max-sessions",
+        type=int,
+        default=0,
+        help="If >0, hand out at most this many sessions THIS process, then stop (schedule "
+        "runner quit after a drain grace). Combined with --replay-cursor-file this implements a "
+        "bounded WARMUP phase: replay the first N real sessions (evicting any prior-run prefix "
+        "cache with real content) and leave the cursor at N so the subsequent sweep resumes on "
+        "fresh, warmup-uncached content. 0 = unlimited (normal recycle).",
     )
     parser.add_argument(
         "--replay-timeout",

@@ -79,6 +79,7 @@ def process_conversation(
     keep_headers: tuple[str, ...],
     max_tokens_mode: str = "recorded",
     force_length: bool = True,
+    fixed_max_tokens: Optional[int] = None,
 ) -> Optional[ConversationResult]:
     """Decode + filter + (optionally) bake one conversation directory.
 
@@ -163,7 +164,16 @@ def process_conversation(
                 baked["stream_options"] = so
             else:
                 baked.pop("stream_options", None)
-            if max_tokens_mode == "recorded":
+            if fixed_max_tokens is not None:
+                # Prefill-focused replay: keep the real captured prompt but cap
+                # decode to a fixed tiny length. force_length pins it to exactly
+                # this many tokens regardless of EOS.
+                mt = max(1, fixed_max_tokens)
+                baked["max_tokens"] = mt
+                if force_length:
+                    baked["min_tokens"] = mt
+                    baked["ignore_eos"] = True
+            elif max_tokens_mode == "recorded":
                 comp = completion_by_file.get(fname)
                 if comp is not None:
                     mt = max(1, comp)
@@ -244,6 +254,15 @@ def main() -> int:
                            help="(default) With --max-tokens-mode recorded, also set min_tokens + ignore_eos "
                            "to force exactly the recorded token count (served checkpoint may not emit EOS).")
     force_grp.add_argument("--no-force-length", dest="force_length", action="store_false")
+    ap.add_argument(
+        "--max-tokens",
+        dest="fixed_max_tokens",
+        type=int,
+        default=None,
+        help="Override every turn's max_tokens with this fixed value (e.g. 5 for a prefill-focused "
+        "replay that keeps the real captured prompts but caps decode). Takes precedence over "
+        "--max-tokens-mode. With --force-length also pins min_tokens + ignore_eos to this value.",
+    )
     ap.add_argument("--workers", type=int, default=min(32, (os.cpu_count() or 8)))
     ap.add_argument("--limit", type=int, default=None, help="Process at most N conversations (debug).")
     args = ap.parse_args()
@@ -292,6 +311,7 @@ def main() -> int:
                     keep_headers,
                     args.max_tokens_mode,
                     args.force_length,
+                    args.fixed_max_tokens,
                 )
                 for d in conv_dirs
             ]
