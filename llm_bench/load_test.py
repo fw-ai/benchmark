@@ -33,41 +33,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_PER_USER_SESSION_LOCK = threading.Lock()
-_PER_USER_SESSION_COUNTER = itertools.count()
-_RUN_SESSION_ID_LOCK = threading.Lock()
-_RUN_SESSION_ID: Optional[str] = None
-_SESSION_AFFINITY_RUN_ID_ENV_VARS = (
-    "LOAD_TEST_RUN_ID",
-    "RUN_ID",
-    "GITHUB_RUN_ID",
-)
 
-
-def _sanitize_run_session_id(value: str) -> str:
-    sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-")
-    return sanitized[:32] if sanitized else uuid.uuid4().hex[:12]
-
-
-def _resolve_run_session_id(explicit: Optional[str]) -> str:
-    """Return the run-scoped id shared by all users in this load test."""
-    global _RUN_SESSION_ID
-    if explicit:
-        return _sanitize_run_session_id(explicit)
-    for env_var in _SESSION_AFFINITY_RUN_ID_ENV_VARS:
-        if value := os.environ.get(env_var, "").strip():
-            return _sanitize_run_session_id(value)
-    with _RUN_SESSION_ID_LOCK:
-        if _RUN_SESSION_ID is None:
-            _RUN_SESSION_ID = uuid.uuid4().hex[:12]
-        return _RUN_SESSION_ID
-
-
-def _per_user_session_affinity_value(*, run_id: str) -> str:
-    """Return a stable session id like user-0_<run_id> for this Locust user."""
-    with _PER_USER_SESSION_LOCK:
-        user_index = next(_PER_USER_SESSION_COUNTER)
-    return f"user-{user_index}_{run_id}"
+def _new_per_user_session_affinity_value() -> str:
+    """Return a random session id for one Locust user, reused for all its requests."""
+    return uuid.uuid4().hex
 
 
 try:
@@ -1346,12 +1315,9 @@ class LLMUser(HttpUser):
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
         if self.environment.parsed_options.per_user_session_affinity:
-            run_id = _resolve_run_session_id(
-                self.environment.parsed_options.session_affinity_prefix
-            )
-            session_id = _per_user_session_affinity_value(run_id=run_id)
-            self.client.headers["x-session-affinity"] = session_id
-            logger.info("Assigned per-user session affinity: %s", session_id)
+            self.session_affinity_id = _new_per_user_session_affinity_value()
+            self.client.headers["x-session-affinity"] = self.session_affinity_id
+            logger.info("Assigned per-user session affinity: %s", self.session_affinity_id)
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
@@ -2081,17 +2047,9 @@ def init_parser(parser):
         "--per-user-session-affinity",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Assign each Locust user a distinct x-session-affinity header so concurrent "
-        "users spread across session-affinity routes (e.g. 8 users -> 8 sticky sessions). "
+        help="Assign each Locust user a distinct x-session-affinity header (a random uuid "
+        "generated once per user) so concurrent users spread across session-affinity routes. "
         "Overrides any x-session-affinity passed via --header.",
-    )
-    parser.add_argument(
-        "--session-affinity-prefix",
-        type=str,
-        default=None,
-        help="Optional run id suffix for per-user x-session-affinity ids. "
-        "Each user gets user-N_<run_id>. When unset, uses LOAD_TEST_RUN_ID, RUN_ID, "
-        "or GITHUB_RUN_ID from the environment, otherwise a random uuid per run.",
     )
     parser.add_argument(
         "-n",

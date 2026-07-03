@@ -120,9 +120,8 @@ locust -u 8 -r 8 --per-user-session-affinity \
   -p 1024 -o 128 -t 2min --headless
 ```
 
-Session ids look like `user-0_a1b2c3d4e5f6`, `user-1_a1b2c3d4e5f6`, ... where the suffix is a
-random uuid generated once per load-test run (or an explicit `--session-affinity-prefix` /
-`LOAD_TEST_RUN_ID` when you want a workflow run id instead).
+Session ids are random uuids (e.g. `a1b2c3d4e5f6478990abcdef1234567890`), generated once
+per Locust user in `on_start` and reused for every request from that user.
 
 With 8 users this creates 8 sticky sessions. The flag overrides any `x-session-affinity`
 passed via `--header`.
