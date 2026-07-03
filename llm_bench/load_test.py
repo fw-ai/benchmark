@@ -13,6 +13,7 @@ import threading
 import traceback
 from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
+from locust.exception import StopUser
 import copy
 import json
 import time
@@ -1239,6 +1240,80 @@ def _load_curl_like_data(text):
         return text
 
 
+class SessionReplayController:
+    """Hands out whole conversations (sessions) to Locust users for Mode B replay.
+
+    Loads the index.jsonl produced by ``convert_replay.py`` once, then serves
+    sessions greenlet-safely. Each session is a dict:
+        {"conversation_id": str,
+         "session_headers": {header: value, ...},
+         "turn_paths": [absolute path to pre-baked body bytes, ...]}
+
+    In the default (recycle) mode sessions are served round-robin forever so the
+    test sustains load for the ``-t`` duration. With ``--replay-once`` each
+    session is served exactly once; after the last one is handed out the runner
+    is scheduled to quit.
+    """
+
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self, options: argparse.Namespace):
+        if not options.replay_index:
+            raise ValueError("--replay-sessions requires --replay-index <path to index.jsonl>")
+        base_dir = os.path.dirname(os.path.abspath(options.replay_index))
+        self.once = options.replay_once
+        self.sessions: list[dict] = []
+        with open(options.replay_index, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                turns = rec.get("turns") or []
+                if not turns:
+                    continue
+                self.sessions.append(
+                    {
+                        "conversation_id": rec.get("conversation_id", ""),
+                        "session_headers": rec.get("session_headers") or {},
+                        "turn_paths": [os.path.join(base_dir, t) for t in turns],
+                    }
+                )
+        if not self.sessions:
+            raise ValueError(f"No sessions with turns found in {options.replay_index}")
+        logger.info(
+            f"SessionReplayController loaded {len(self.sessions)} sessions "
+            f"({'once' if self.once else 'recycle'} mode)"
+        )
+        self._cursor = 0
+        self._served = 0
+        self._quit_scheduled = False
+
+    @classmethod
+    def instance(cls, options: argparse.Namespace) -> "SessionReplayController":
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(options)
+            return cls._instance
+
+    def next_session(self) -> Optional[dict]:
+        """Return the next session, or None when exhausted (once mode only)."""
+        with self._lock:
+            if self.once and self._served >= len(self.sessions):
+                return None
+            sess = self.sessions[self._cursor % len(self.sessions)]
+            self._cursor += 1
+            self._served += 1
+            if self.once and self._served >= len(self.sessions) and not self._quit_scheduled:
+                self._quit_scheduled = True
+                logger.info("Last replay session handed out; scheduling runner quit after grace period")
+                if InitTracker.environment is not None and InitTracker.environment.runner is not None:
+                    # give in-flight conversations time to drain their remaining turns
+                    gevent.spawn_later(300, InitTracker.environment.runner.quit)
+            return sess
+
+
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
 
@@ -1405,6 +1480,20 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
+        # Session-based replay (Mode B): no dataset cycling, no client-side
+        # tokenization. Each user plays whole conversations in order.
+        self._replay = getattr(self.environment.parsed_options, "replay_sessions", False)
+        if self._replay:
+            self._replay_timeout = self.environment.parsed_options.replay_timeout
+            self._session_think = self.environment.parsed_options.session_think_time
+            self._controller = SessionReplayController.instance(self.environment.parsed_options)
+            self._cur_turns = iter(())
+            self._session_headers: dict = {}
+            self._turn_started = False
+            # No tokenizer needed: prompt/cached/completion tokens come from server usage.
+            self.prompt_tokenizer_tokens = 0
+            return
+
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
@@ -1497,31 +1586,70 @@ class LLMUser(HttpUser):
             if self.ramping_pacer:
                 self.ramping_pacer.request_end()
 
+    def _next_replay_turn(self):
+        """Return (body_bytes, headers) for the next replay turn, or (None, None) when done.
+
+        Advances within the current conversation; when it is exhausted, pulls a
+        new conversation from the shared controller. Reads pre-baked bytes off
+        disk and posts them verbatim -- no decompression, JSON, or tokenization.
+        """
+        while True:
+            nxt = next(self._cur_turns, None)
+            if nxt is not None:
+                if self._session_think > 0 and self._turn_started:
+                    gevent.sleep(self._session_think)
+                self._turn_started = True
+                with open(nxt, "rb") as f:
+                    return f.read(), self._session_headers
+            sess = self._controller.next_session()
+            if sess is None:
+                return None, None
+            self._session_headers = sess["session_headers"]
+            self._cur_turns = iter(sess["turn_paths"])
+            self._turn_started = False
+
     def _do_generate_text(self):
-        max_tokens = self.max_tokens_sampler.sample()
-        is_embeddings = self.provider_formatter.parsed_options.embeddings
-        batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
-        if is_embeddings and batch_size > 1:
-            prompts = []
-            for _ in range(batch_size):
-                p, _, _ = self._get_input()
-                prompts.append(p)
-            prompt, prompt_tokens, images = prompts, 0, None
+        prompt_tokens = None
+        req_headers = None
+        if getattr(self, "_replay", False):
+            # Zero-CPU hot path: pre-baked bytes + captured session headers.
+            data_bytes, req_headers = self._next_replay_turn()
+            if data_bytes is None:
+                raise StopUser()
+            max_tokens = None
+            post_timeout = self._replay_timeout
+            if self.environment.parsed_options.show_request:
+                print("--- Replay request (bytes) ---")
+                print(data_bytes.decode("utf-8", "replace"))
+                print(f"--- headers: {req_headers} ---")
         else:
-            prompt, prompt_tokens, images = self._get_input()
-        data = self.provider_formatter.format_payload(prompt, max_tokens, images)
-        if self.environment.parsed_options.show_request:
-            print("--- Request payload ---")
-            print(json.dumps(data, indent=2))
-            print("---")
+            max_tokens = self.max_tokens_sampler.sample()
+            is_embeddings = self.provider_formatter.parsed_options.embeddings
+            batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
+            if is_embeddings and batch_size > 1:
+                prompts = []
+                for _ in range(batch_size):
+                    p, _, _ = self._get_input()
+                    prompts.append(p)
+                prompt, prompt_tokens, images = prompts, 0, None
+            else:
+                prompt, prompt_tokens, images = self._get_input()
+            data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+            if self.environment.parsed_options.show_request:
+                print("--- Request payload ---")
+                print(json.dumps(data, indent=2))
+                print("---")
+            data_bytes = json.dumps(data)
+            post_timeout = 60
         t_start = time.perf_counter()
 
         with self.client.post(
             self.provider_formatter.get_url(),
-            data=json.dumps(data),
+            data=data_bytes,
+            headers=req_headers or None,
             stream=True,
             catch_response=True,
-            timeout=60,
+            timeout=post_timeout,
         ) as response:
             combined_text = ""
             done = False
@@ -1672,7 +1800,7 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                if num_tokens != max_tokens:
+                if max_tokens is not None and num_tokens != max_tokens:
                     logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
                 add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
                 add_custom_metric("completion_tokens", num_tokens)
@@ -1745,6 +1873,42 @@ def init_parser(parser):
         type=int,
         default=None,
         help="Limit the dataset to the first N items after shuffling (if shuffle seed is provided). Useful for sampling a subset of a large dataset.",
+    )
+    parser.add_argument(
+        "--replay-sessions",
+        action="store_true",
+        default=False,
+        help="Session-based replay mode (Mode B). Replay pre-baked request bodies produced by "
+        "convert_replay.py, one whole conversation per Locust user, turns in order, on a single "
+        "client session. Each -u user == one concurrent conversation. Requires --replay-index.",
+    )
+    parser.add_argument(
+        "--replay-index",
+        type=str,
+        default=None,
+        help="Path to index.jsonl produced by convert_replay.py. Relative body paths are resolved "
+        "against this file's directory.",
+    )
+    parser.add_argument(
+        "--session-think-time",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between consecutive turns of a replayed conversation (client-side "
+        "think time). Default 0 (send next turn as soon as the previous completes).",
+    )
+    parser.add_argument(
+        "--replay-once",
+        action="store_true",
+        default=False,
+        help="Replay each conversation exactly once, then stop the test. Default is to recycle "
+        "conversations to sustain load for the -t duration.",
+    )
+    parser.add_argument(
+        "--replay-timeout",
+        type=int,
+        default=600,
+        help="Per-request HTTP timeout (seconds) for replay requests. Replayed prompts can be very "
+        "large with high max_tokens, so this is higher than the default.",
     )
     parser.add_argument(
         "-m",
