@@ -77,11 +77,21 @@ def process_conversation(
     stream: bool,
     target_substr: str,
     keep_headers: tuple[str, ...],
+    max_tokens_mode: str = "recorded",
+    force_length: bool = True,
 ) -> Optional[ConversationResult]:
     """Decode + filter + (optionally) bake one conversation directory.
 
     Runs in a worker process. When ``out_bodies_dir`` is None this is
     stats-only and no files are written.
+
+    ``max_tokens_mode``:
+      * ``recorded`` -- set each turn's max_tokens to the recorded
+        numCompletionTokens (from manifest.json), so decode length matches prod.
+        With ``force_length`` also set min_tokens + ignore_eos to force exactly
+        that many tokens (the served checkpoint may differ from the capture and
+        never emit EOS, otherwise running to the captured max_tokens).
+      * ``keep`` -- leave the captured max_tokens untouched.
     """
     conversation_id = os.path.basename(conv_dir.rstrip("/"))
     files = sorted(
@@ -90,6 +100,18 @@ def process_conversation(
     )
     if not files:
         return None
+
+    # Map original turn filename -> recorded numCompletionTokens (for max_tokens).
+    completion_by_file: dict[str, int] = {}
+    if max_tokens_mode == "recorded":
+        try:
+            with open(os.path.join(conv_dir, "manifest.json")) as mf:
+                for e in json.load(mf).get("files", []):
+                    c = e.get("numCompletionTokens")
+                    if e.get("file") and c is not None:
+                        completion_by_file[e["file"]] = int(c)
+        except Exception:  # noqa: BLE001
+            pass
 
     res = ConversationResult(conversation_id=conversation_id)
     conv_out_dir = None
@@ -141,6 +163,17 @@ def process_conversation(
                 baked["stream_options"] = so
             else:
                 baked.pop("stream_options", None)
+            if max_tokens_mode == "recorded":
+                comp = completion_by_file.get(fname)
+                if comp is not None:
+                    mt = max(1, comp)
+                    baked["max_tokens"] = mt
+                    if force_length:
+                        # Force the exact recorded decode length: the served
+                        # checkpoint may differ from the capture and not emit
+                        # EOS, so bound + pad to reproduce prod token counts.
+                        baked["min_tokens"] = mt
+                        baked["ignore_eos"] = True
             data = json.dumps(baked, ensure_ascii=False).encode("utf-8")
             os.makedirs(conv_out_dir, exist_ok=True)
             idx = len(res.turns)
@@ -199,6 +232,18 @@ def main() -> int:
         default=",".join(DEFAULT_SESSION_HEADERS),
         help="Comma-separated header names to replay (authorization is always dropped).",
     )
+    ap.add_argument(
+        "--max-tokens-mode",
+        choices=["recorded", "keep"],
+        default="recorded",
+        help="'recorded' (default): set each turn's max_tokens to the recorded numCompletionTokens so "
+        "decode length matches prod. 'keep': leave the captured max_tokens (often 20000) untouched.",
+    )
+    force_grp = ap.add_mutually_exclusive_group()
+    force_grp.add_argument("--force-length", dest="force_length", action="store_true", default=True,
+                           help="(default) With --max-tokens-mode recorded, also set min_tokens + ignore_eos "
+                           "to force exactly the recorded token count (served checkpoint may not emit EOS).")
+    force_grp.add_argument("--no-force-length", dest="force_length", action="store_false")
     ap.add_argument("--workers", type=int, default=min(32, (os.cpu_count() or 8)))
     ap.add_argument("--limit", type=int, default=None, help="Process at most N conversations (debug).")
     args = ap.parse_args()
@@ -245,6 +290,8 @@ def main() -> int:
                     args.stream,
                     args.target_substr,
                     keep_headers,
+                    args.max_tokens_mode,
+                    args.force_length,
                 )
                 for d in conv_dirs
             ]

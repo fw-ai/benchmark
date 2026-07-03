@@ -102,6 +102,7 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=min(32, (os.cpu_count() or 8)))
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--csv", default=None, help="Optional path to write per-turn rows (conversation_id,turn,prompt,completion,total).")
+    ap.add_argument("--by-turn-index", type=int, default=0, metavar="N", help="Also print prompt/response length stats grouped by turn position, for the first N turn indices.")
     args = ap.parse_args()
 
     conv_dirs = sorted(
@@ -120,6 +121,9 @@ def main() -> int:
     conv_token_sums: list[int] = []  # sum of all turn totals in a conversation (bytes actually moved)
     statuses: dict[str, int] = {}
     n_conv = 0
+
+    # Per-turn-index accumulators: index -> {"prompt": [...], "completion": [...]}
+    by_index: dict[int, dict[str, list[int]]] = {}
 
     csv_f = open(args.csv, "w") if args.csv else None
     if csv_f:
@@ -141,6 +145,13 @@ def main() -> int:
             conv_token_sums.append(sum(res["totals"]))
             for k, v in res["statuses"].items():
                 statuses[k] = statuses.get(k, 0) + v
+            if args.by_turn_index:
+                for i, (p, c) in enumerate(zip(res["prompts"], res["completions"])):
+                    if i >= args.by_turn_index:
+                        break
+                    slot = by_index.setdefault(i, {"prompt": [], "completion": []})
+                    slot["prompt"].append(p)
+                    slot["completion"].append(c)
             if csv_f:
                 cid = os.path.basename(futs[fut].rstrip("/"))
                 for i, (p, c, t) in enumerate(zip(res["prompts"], res["completions"], res["totals"])):
@@ -160,6 +171,22 @@ def main() -> int:
     _summary("  peak prompt tokens", peak_prompts)
     _summary("  final-turn total tokens", final_totals)
     _summary("  sum of turn totals", conv_token_sums)
+    if args.by_turn_index and by_index:
+
+        def _stats(vals):
+            s = sorted(vals)
+            n = len(s)
+            return n, s[0], s[n // 2], sum(s) / n, s[min(n - 1, int(0.9 * (n - 1)))], s[-1]
+
+        print(f"\nPer-turn-index (first {args.by_turn_index} positions):")
+        print(f"  {'turn':>4}  {'convs':>7}  | {'prompt: min':>11} {'p50':>7} {'avg':>8} {'p90':>7} {'max':>7} "
+              f"| {'resp: min':>9} {'p50':>5} {'avg':>7} {'p90':>6} {'max':>6}")
+        for i in sorted(by_index):
+            pn, pmin, pmed, pavg, p90, pmax = _stats(by_index[i]["prompt"])
+            _, cmin, cmed, cavg, c90, cmax = _stats(by_index[i]["completion"])
+            print(f"  {i:>4}  {pn:>7}  | {pmin:>11} {pmed:>7} {pavg:>8.0f} {p90:>7} {pmax:>7} "
+                  f"| {cmin:>9} {cmed:>5} {cavg:>7.0f} {c90:>6} {cmax:>6}")
+
     if all_totals:
         print(f"\ngrand total tokens across all turns: {sum(all_totals):,}")
     if args.csv:
