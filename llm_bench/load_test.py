@@ -34,19 +34,51 @@ logger = logging.getLogger(__name__)
 
 _PER_USER_SESSION_LOCK = threading.Lock()
 _PER_USER_SESSION_COUNTER = itertools.count()
+_SESSION_AFFINITY_PREFIX_ENV_VARS = (
+    "LOAD_TEST_RUN_ID",
+    "RUN_ID",
+    "GITHUB_RUN_ID",
+)
+
+
+def _sanitize_session_prefix(value: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-")
+    if not sanitized:
+        return f"loadtest-{os.getpid()}"
+    return sanitized[:96]
+
+
+def _resolve_session_affinity_prefix(cli_prefix: Optional[str]) -> str:
+    if cli_prefix:
+        return _sanitize_session_prefix(cli_prefix)
+    for env_var in _SESSION_AFFINITY_PREFIX_ENV_VARS:
+        if value := os.environ.get(env_var, "").strip():
+            return _sanitize_session_prefix(value)
+    return _sanitize_session_prefix(f"loadtest-{os.getpid()}")
+
+
+def _session_affinity_worker_scope() -> Optional[str]:
+    for env_var in ("LOCUST_WORKER_INDEX", "LOAD_TEST_LOCUST_PROCESS_INDEX"):
+        if value := os.environ.get(env_var, "").strip():
+            return value
+    return None
+
+
+def _per_user_session_affinity_value(*, prefix: str) -> str:
+    """Return a stable session id unique to this Locust user within the run."""
+    with _PER_USER_SESSION_LOCK:
+        user_index = next(_PER_USER_SESSION_COUNTER)
+    base = _sanitize_session_prefix(prefix)
+    worker_scope = _session_affinity_worker_scope()
+    if worker_scope is not None:
+        return f"{base}-proc{worker_scope}-user-{user_index}"
+    return f"{base}-user-{user_index}"
+
 
 try:
     import locust_plugins
 except ImportError:
     logger.warning("locust-plugins is not installed, Grafana won't work")
-
-
-def _per_user_session_affinity_value() -> str:
-    """Return a stable session id unique to this Locust user within the process."""
-    with _PER_USER_SESSION_LOCK:
-        user_index = next(_PER_USER_SESSION_COUNTER)
-    # Include pid so multi-process runs (e.g. locust --processes) do not reuse ids.
-    return f"loadtest-{os.getpid()}-user-{user_index}"
 
 
 def _install_transformers_tokenizer_compat_shim():
@@ -1319,7 +1351,10 @@ class LLMUser(HttpUser):
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
         if self.environment.parsed_options.per_user_session_affinity:
-            session_id = _per_user_session_affinity_value()
+            prefix = _resolve_session_affinity_prefix(
+                self.environment.parsed_options.session_affinity_prefix
+            )
+            session_id = _per_user_session_affinity_value(prefix=prefix)
             self.client.headers["x-session-affinity"] = session_id
             logger.info("Assigned per-user session affinity: %s", session_id)
         self._guess_provider()
@@ -2054,6 +2089,14 @@ def init_parser(parser):
         help="Assign each Locust user a distinct x-session-affinity header so concurrent "
         "users spread across session-affinity routes (e.g. 8 users -> 8 sticky sessions). "
         "Overrides any x-session-affinity passed via --header.",
+    )
+    parser.add_argument(
+        "--session-affinity-prefix",
+        type=str,
+        default=None,
+        help="Prefix for per-user x-session-affinity ids (e.g. a GHA run_id). "
+        "Each user gets {prefix}-user-N. When unset, uses LOAD_TEST_RUN_ID, RUN_ID, "
+        "or GITHUB_RUN_ID from the environment, then loadtest-<pid>.",
     )
     parser.add_argument(
         "-n",

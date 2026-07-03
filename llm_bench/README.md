@@ -114,10 +114,17 @@ Use `--per-user-session-affinity` to assign each Locust user a stable, distinct
 `x-session-affinity` header for the duration of the test:
 
 ```bash
-locust -u 8 -r 8 --per-user-session-affinity -H https://api.fireworks.ai/inference \
+locust -u 8 -r 8 --per-user-session-affinity \
+  --session-affinity-prefix shape-gha-1712345678 \
+  -H https://api.fireworks.ai/inference \
   --api-key $FIREWORKS_API_KEY -m accounts/<account>/deployments/<deployment_id> \
   -p 1024 -o 128 -t 2min --headless
 ```
+
+Session ids look like `shape-gha-1712345678-user-0`, `shape-gha-1712345678-user-1`, ...
+so concurrent users in one run are distinct and different workflow runs do not reuse
+the same ids. You can pass the prefix explicitly or set `LOAD_TEST_RUN_ID` /
+`RUN_ID` / `GITHUB_RUN_ID` in the environment (for example the GHA `run_id` input).
 
 With 8 users this creates 8 sticky sessions. The flag overrides any `x-session-affinity`
 passed via `--header`.
