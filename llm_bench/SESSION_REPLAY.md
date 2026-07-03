@@ -78,9 +78,24 @@ locust --headless -u 64 -r 8 -t 10min --chat --stream --provider fireworks \
   match the bake).
 - `-m` can be omitted — the model is baked into each body; the harness
   auto-detects a display model from `/v1/models` for bookkeeping only.
+- `--gpus N` (optional): when set, the summary also reports **TPM/GPU total**
+  and **TPM/GPU uncached** (real compute after prefix-cache reuse).
 - Results: Locust's percentile tables + summary block, plus `--summary-file`
   CSV (consumed by jarvis/perfagent). Server-side metrics are on the server's
   `--request-metrics-port`.
+
+### Derived summary metrics
+
+Beyond the standard fields, the end-of-run summary (and the `--summary-file`
+CSV) also reports, for the chat/completions path:
+
+| Field | Meaning |
+|---|---|
+| `Ttft Max` | max time-to-first-token (ms) |
+| `Decode Tokens Per S` | `1000 / mean latency_per_token` (per-stream inter-token rate) |
+| `Cache Hit Pct` | token-weighted `cached_tokens / prompt_tokens` |
+| `Tpm Total` / `Tpm Uncached` | tokens/min = `qps × tokens × 60` (uncached = after prefix-cache reuse) |
+| `Tpm Per Gpu Total` / `Tpm Per Gpu Uncached` | the above ÷ `--gpus` (only when `--gpus` is set) |
 
 ### Replay-specific flags
 

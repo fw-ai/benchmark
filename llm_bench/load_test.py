@@ -1911,6 +1911,13 @@ def init_parser(parser):
         "large with high max_tokens, so this is higher than the default.",
     )
     parser.add_argument(
+        "--gpus",
+        type=int,
+        default=None,
+        help="Total GPUs backing the endpoint. When set, the summary also reports TPM/GPU "
+        "(total and uncached = real compute after prefix-cache reuse).",
+    )
+    parser.add_argument(
         "-m",
         "--model",
         env_var="MODEL",
@@ -2325,6 +2332,45 @@ def _(environment, **kw):
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
             entries[name] = metric_entry.get_response_time_percentile(percentile / 100)
+
+    # Derived perf metrics (chat/completions path only): TTFT max, decode TPS,
+    # token-weighted cache hit, and TPM (total + uncached), optionally per-GPU.
+    if not getattr(environment.parsed_options, "embeddings", False) and not getattr(
+        environment.parsed_options, "rerank", False
+    ):
+
+        def _f(x):
+            try:
+                return float(x)
+            except (TypeError, ValueError):
+                return None
+
+        ttft_entry = environment.stats.entries.get(("time_to_first_token", "METRIC"))
+        if environment.parsed_options.stream and ttft_entry is not None:
+            entries["ttft_max"] = ttft_entry.max_response_time
+        lpt = _f(entries.get("latency_per_token"))
+        if lpt:
+            entries["decode_tokens_per_s"] = 1000.0 / lpt
+        prompt = _f(entries.get("prompt_tokens"))
+        cached = _f(entries.get("cached_tokens")) or 0.0
+        gen = _f(entries.get("generation_tokens"))
+        if gen is None:
+            gen = _f(entries.get("num_tokens"))
+        qps = _f(entries.get("qps"))
+        if prompt:
+            entries["cache_hit_pct"] = 100.0 * cached / prompt
+        if qps is not None and prompt is not None and gen is not None:
+            total_tok = prompt + gen
+            uncached_tok = max(prompt - cached, 0.0) + gen
+            tpm_total = qps * total_tok * 60.0
+            tpm_uncached = qps * uncached_tok * 60.0
+            gpus = getattr(environment.parsed_options, "gpus", None)
+            if gpus:
+                entries["tpm_per_gpu_total"] = tpm_total / gpus
+                entries["tpm_per_gpu_uncached"] = tpm_uncached / gpus
+            else:
+                entries["tpm_total"] = tpm_total
+                entries["tpm_uncached"] = tpm_uncached
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
