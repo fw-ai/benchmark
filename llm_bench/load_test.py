@@ -1289,6 +1289,27 @@ class SessionReplayController:
         self._cursor = 0
         self._served = 0
         self._quit_scheduled = False
+        self._quit_fired = False
+        self._active = 0                 # in-flight sessions (for session-drain early quit)
+        self._t0: Optional[float] = None  # monotonic time of the first hand-out
+        # Session-level drain window: after `window_seconds` of serving, stop handing
+        # out NEW sessions but let every in-flight conversation finish ALL its turns,
+        # so cache-hit / token stats cover whole sessions. `drain_seconds` bounds the
+        # tail (hard runner.quit backstop). window_seconds == 0 disables it (the run is
+        # bounded by locust -t instead: the legacy turn-level cutoff).
+        self.window_seconds = int(getattr(options, "replay_window_seconds", 0) or 0)
+        self.drain_seconds = int(getattr(options, "replay_drain_seconds", 300) or 300)
+        # Optional per-session status log (JSONL): one record per COMPLETED session with
+        # session-level + per-turn ttft/ttit/total-latency and prompt/output token counts.
+        self.session_log_path = getattr(options, "replay_session_log", None)
+        self._log_lock = threading.Lock()
+        if self.session_log_path:
+            logger.info(f"SessionReplayController per-session status log -> {self.session_log_path}")
+        if self.window_seconds > 0:
+            logger.info(
+                f"SessionReplayController session-drain ON: measured window={self.window_seconds}s, "
+                f"drain backstop={self.drain_seconds}s"
+            )
         # Optional cross-process cursor persistence: resume where a prior locust
         # process (e.g. the previous sweep step) left off so steps cover disjoint
         # slices of the dataset (no cross-step prefix-cache overlap).
@@ -1327,31 +1348,94 @@ class SessionReplayController:
                 cls._instance = cls(options)
             return cls._instance
 
-    def _is_done(self, n: int) -> bool:
+    def _is_done(self, n: int, now: Optional[float] = None) -> bool:
         # once  : stop when the ABSOLUTE cursor reaches the dataset end, so a warmup
         #         that advanced the cursor makes the measured pass cover the REMAINING
         #         sessions exactly once (no wrap, no overlap).
         # warmup: (max_sessions>0, not once) stop after serving that many sessions
         #         THIS process.
+        # window: (session-drain) stop handing out NEW sessions once the measured
+        #         window has elapsed; in-flight sessions still drain to completion.
         if self.once:
             return self._cursor >= n
         if self.max_sessions > 0:
             return self._served >= self.max_sessions
+        if self.window_seconds > 0 and self._t0 is not None:
+            if now is None:
+                now = time.monotonic()
+            return (now - self._t0) >= self.window_seconds
         return False
+
+    def _spawn_quit(self, grace: float):
+        """Schedule a single runner.quit in `grace` seconds (idempotent)."""
+        if self._quit_fired:
+            return
+        self._quit_fired = True
+        if InitTracker.environment is not None and InitTracker.environment.runner is not None:
+            gevent.spawn_later(grace, InitTracker.environment.runner.quit)
+
+    def session_complete(self):
+        """Called by a user when it has replayed ALL turns of its current session.
+
+        In session-drain mode this is the early-quit signal: once the measured window
+        has elapsed and every in-flight session has finished, quit immediately rather
+        than waiting out the full drain backstop."""
+        with self._lock:
+            if self._active > 0:
+                self._active -= 1
+            if (
+                self.window_seconds > 0
+                and self._t0 is not None
+                and (time.monotonic() - self._t0) >= self.window_seconds
+                and self._active <= 0
+                and not self._quit_fired
+            ):
+                logger.info("All in-flight sessions drained after window; quitting runner now")
+                self._spawn_quit(0)
+
+    def log_session(self, record: dict):
+        """Append one completed-session JSON record to the per-session status log."""
+        if not self.session_log_path:
+            return
+        try:
+            line = json.dumps(record)
+        except Exception:
+            return
+        with self._log_lock:
+            try:
+                with open(self.session_log_path, "a") as fh:
+                    fh.write(line + "\n")
+            except Exception as e:
+                logger.warning(f"could not write session log: {e}")
 
     def next_session(self) -> Optional[dict]:
         """Return the next session, or None at the stop boundary (once = dataset end
-        by absolute cursor; warmup = --replay-max-sessions this process; else none)."""
+        by absolute cursor; warmup = --replay-max-sessions this process; window =
+        measured window elapsed (session-drain); else none)."""
         with self._lock:
             n = len(self.sessions)
-            if self._is_done(n):
+            now = time.monotonic()
+            if self._t0 is None:
+                self._t0 = now
+            if self._is_done(n, now):
+                # window (session-drain): stop handing out NEW sessions and arm the
+                # hard drain backstop; the step ends when the last in-flight session
+                # finishes (session_complete) or when this backstop fires.
+                if self.window_seconds > 0 and not self._quit_scheduled:
+                    self._quit_scheduled = True
+                    logger.info(
+                        f"Reached replay window ({self.window_seconds}s); draining "
+                        f"{self._active} in-flight session(s), quit backstop in {self.drain_seconds}s"
+                    )
+                    self._spawn_quit(self.drain_seconds)
                 return None
             sess = self.sessions[self._cursor % n]
             self._cursor += 1
             self._served += 1
+            self._active += 1
             if self.cursor_file:
                 self._persist_cursor()
-            if self._is_done(n) and not self._quit_scheduled:
+            if self._is_done(n, now) and not self._quit_scheduled:
                 self._quit_scheduled = True
                 # once-mode drains long conversations (300s); a bounded warmup only
                 # needs a short drain before the sweep continues from the cursor.
@@ -1360,8 +1444,7 @@ class SessionReplayController:
                     f"Reached replay stop boundary (cursor={self._cursor}, served={self._served}); "
                     f"scheduling runner quit in {grace}s"
                 )
-                if InitTracker.environment is not None and InitTracker.environment.runner is not None:
-                    gevent.spawn_later(grace, InitTracker.environment.runner.quit)
+                self._spawn_quit(grace)
             return sess
 
 
@@ -1541,6 +1624,11 @@ class LLMUser(HttpUser):
             self._cur_turns = iter(())
             self._session_headers: dict = {}
             self._turn_started = False
+            self._have_session = False  # True once a session is checked out (for session_complete accounting)
+            # Per-session status accumulation (one record emitted when a session finishes).
+            self._session_cid = ""
+            self._cur_turn_idx = 0
+            self._session_turns: list[dict] = []
             # No tokenizer needed: prompt/cached/completion tokens come from server usage.
             self.prompt_tokenizer_tokens = 0
             return
@@ -1650,14 +1738,84 @@ class LLMUser(HttpUser):
                 if self._session_think > 0 and self._turn_started:
                     gevent.sleep(self._session_think)
                 self._turn_started = True
+                self._cur_turn_idx += 1
                 with open(nxt, "rb") as f:
                     return f.read(), self._session_headers
+            # Current session (if any) is fully replayed: emit its per-session status
+            # summary, then account for completion BEFORE pulling the next one, so
+            # session-drain can early-quit once all in-flight sessions have finished.
+            if self._have_session:
+                self._emit_session_summary()
+                self._controller.session_complete()
+                self._have_session = False
             sess = self._controller.next_session()
             if sess is None:
                 return None, None
             self._session_headers = sess["session_headers"]
+            self._session_cid = sess.get("conversation_id", "")
             self._cur_turns = iter(sess["turn_paths"])
+            self._session_turns = []
+            self._cur_turn_idx = 0
             self._turn_started = False
+            self._have_session = True
+
+    def _emit_session_summary(self):
+        """Emit a per-session status record (session-level + per-turn breakdown) for
+        the session just completed. Session ttit is token-weighted across turns;
+        session total-latency is the sum of per-turn total latencies."""
+        turns = self._session_turns
+        if not turns:
+            return
+        # Per-turn cache-hit rates: actual (server-reported) vs expected (ideal prefix
+        # cache, first turn cold). Ideal: turn k's cacheable prefix == the PREVIOUS
+        # turn's full context (its prompt + its generated output), capped at turn k's
+        # prompt; turn 1 has no prior context so its expected hit is 0.
+        tot_expected_cached = 0
+        prev_prompt = 0
+        prev_out = 0
+        for idx, t in enumerate(turns):
+            p = t["prompt_tokens"]
+            c = t["cached_tokens"] or 0
+            exp_cached = 0 if idx == 0 else min(prev_prompt + prev_out, p)
+            t["expected_cached_tokens"] = exp_cached
+            t["actual_cache_hit_pct"] = round(100.0 * c / p, 2) if p else None
+            t["expected_cache_hit_pct"] = round(100.0 * exp_cached / p, 2) if p else None
+            tot_expected_cached += exp_cached
+            prev_prompt = p
+            prev_out = t["output_tokens"]
+        ttfts = [t["ttft_ms"] for t in turns if t["ttft_ms"] is not None]
+        tot_out = sum(t["output_tokens"] for t in turns)
+        tot_prompt = sum(t["prompt_tokens"] for t in turns)
+        tot_cached = sum((t["cached_tokens"] or 0) for t in turns)
+        tot_gen_ms = sum(t["gen_ms"] for t in turns)
+        tot_lat_ms = sum(t["total_latency_ms"] for t in turns)
+        sess = {
+            "ttft_ms_mean": round(sum(ttfts) / len(ttfts), 2) if ttfts else None,
+            "ttft_ms_max": round(max(ttfts), 2) if ttfts else None,
+            "ttit_ms": round(tot_gen_ms / tot_out, 3) if tot_out else None,
+            "total_latency_ms": round(tot_lat_ms, 2),
+            "prompt_tokens": tot_prompt,
+            "cached_tokens": tot_cached,
+            "output_tokens": tot_out,
+            "actual_cache_hit_pct": round(100.0 * tot_cached / tot_prompt, 2) if tot_prompt else None,
+            "expected_cache_hit_pct": round(100.0 * tot_expected_cached / tot_prompt, 2) if tot_prompt else None,
+        }
+        client_pid = os.getpid()
+        record = {
+            "conversation_id": self._session_cid,
+            "client_pid": client_pid,
+            "num_turns": len(turns),
+            "session": sess,
+            "turns": turns,
+        }
+        logger.info(
+            f"[session] pid={client_pid} cid={self._session_cid} turns={len(turns)} "
+            f"ttft_mean={sess['ttft_ms_mean']}ms ttft_max={sess['ttft_ms_max']}ms "
+            f"ttit={sess['ttit_ms']}ms total={sess['total_latency_ms']}ms "
+            f"prompt={tot_prompt} cached={tot_cached} out={tot_out} "
+            f"hit_actual={sess['actual_cache_hit_pct']}% hit_expected={sess['expected_cache_hit_pct']}%"
+        )
+        self._controller.log_session(record)
 
     def _do_generate_text(self):
         prompt_tokens = None
@@ -1872,6 +2030,22 @@ class LLMUser(HttpUser):
                 if cached_tokens is not None:
                     add_custom_metric("cached_tokens", cached_tokens)
 
+            # Per-session status: record this completed turn's metrics for the summary
+            # emitted when the whole conversation finishes (see _emit_session_summary).
+            if getattr(self, "_replay", False):
+                self._session_turns.append(
+                    {
+                        "i": self._cur_turn_idx,
+                        "prompt_tokens": int(prompt_tokens or 0),
+                        "cached_tokens": (int(cached_tokens) if cached_tokens is not None else None),
+                        "output_tokens": int(num_tokens or 0),
+                        "ttft_ms": round(dur_first_token * 1000, 2),
+                        "ttit_ms": (round(dur_generation / num_tokens * 1000, 3) if num_tokens else None),
+                        "total_latency_ms": round(dur_total * 1000, 2),
+                        "gen_ms": round(dur_generation * 1000, 2),
+                    }
+                )
+
             # Allow provider to process response (e.g., for custom metrics)
             self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
 
@@ -1980,6 +2154,32 @@ def init_parser(parser):
         default=600,
         help="Per-request HTTP timeout (seconds) for replay requests. Replayed prompts can be very "
         "large with high max_tokens, so this is higher than the default.",
+    )
+    parser.add_argument(
+        "--replay-window-seconds",
+        type=int,
+        default=0,
+        help="Session-drain mode: measured serving window (seconds). After this many seconds the "
+        "controller stops handing out NEW sessions but lets every in-flight conversation finish "
+        "ALL its turns, so cache-hit/token stats cover whole sessions. 0 (default) disables it "
+        "(the run is bounded by locust -t / --run-time instead: legacy turn-level cutoff).",
+    )
+    parser.add_argument(
+        "--replay-drain-seconds",
+        type=int,
+        default=300,
+        help="Session-drain mode: hard backstop (seconds) to wait for in-flight sessions to finish "
+        "after --replay-window-seconds elapses. The step ends as soon as all in-flight sessions "
+        "drain, or when this backstop fires, whichever comes first.",
+    )
+    parser.add_argument(
+        "--replay-session-log",
+        type=str,
+        default=None,
+        help="If set, append one JSON object per COMPLETED replay session to this file (JSONL). "
+        "Each record has session-level ttft (mean/max), token-weighted ttit, and summed "
+        "total-latency, plus a per-turn breakdown (ttft, ttit, total-latency, prompt/output "
+        "tokens). Use to debug per-session hit-rate / latency.",
     )
     parser.add_argument(
         "--gpus",
