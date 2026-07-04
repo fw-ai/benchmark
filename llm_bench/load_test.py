@@ -1787,13 +1787,16 @@ class LLMUser(HttpUser):
         tot_out = sum(t["output_tokens"] for t in turns)
         tot_prompt = sum(t["prompt_tokens"] for t in turns)
         tot_cached = sum((t["cached_tokens"] or 0) for t in turns)
-        tot_gen_ms = sum(t["gen_ms"] for t in turns)
+        tot_decode_ms = sum(t["decode_ms"] for t in turns)
+        tot_prefill_ms = sum((t["prefill_ms"] or 0) for t in turns)
         tot_lat_ms = sum(t["total_latency_ms"] for t in turns)
         sess = {
             "ttft_ms_mean": round(sum(ttfts) / len(ttfts), 2) if ttfts else None,
             "ttft_ms_max": round(max(ttfts), 2) if ttfts else None,
-            "ttit_ms": round(tot_gen_ms / tot_out, 3) if tot_out else None,
+            "ttit_ms": round(tot_decode_ms / tot_out, 3) if tot_out else None,
             "total_latency_ms": round(tot_lat_ms, 2),
+            "total_prefill_ms": round(tot_prefill_ms, 2),
+            "total_decode_ms": round(tot_decode_ms, 2),
             "prompt_tokens": tot_prompt,
             "cached_tokens": tot_cached,
             "output_tokens": tot_out,
@@ -1812,6 +1815,7 @@ class LLMUser(HttpUser):
             f"[session] pid={client_pid} cid={self._session_cid} turns={len(turns)} "
             f"ttft_mean={sess['ttft_ms_mean']}ms ttft_max={sess['ttft_ms_max']}ms "
             f"ttit={sess['ttit_ms']}ms total={sess['total_latency_ms']}ms "
+            f"prefill_total={sess['total_prefill_ms']}ms decode_total={sess['total_decode_ms']}ms "
             f"prompt={tot_prompt} cached={tot_cached} out={tot_out} "
             f"hit_actual={sess['actual_cache_hit_pct']}% hit_expected={sess['expected_cache_hit_pct']}%"
         )
@@ -2040,9 +2044,10 @@ class LLMUser(HttpUser):
                         "cached_tokens": (int(cached_tokens) if cached_tokens is not None else None),
                         "output_tokens": int(num_tokens or 0),
                         "ttft_ms": round(dur_first_token * 1000, 2),
+                        "prefill_ms": round(dur_first_token * 1000, 2),
+                        "decode_ms": round(dur_generation * 1000, 2),
                         "ttit_ms": (round(dur_generation / num_tokens * 1000, 3) if num_tokens else None),
                         "total_latency_ms": round(dur_total * 1000, 2),
-                        "gen_ms": round(dur_generation * 1000, 2),
                     }
                 )
 
