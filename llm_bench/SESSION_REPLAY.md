@@ -130,6 +130,21 @@ completion count is split proportionally to the generated message composition):
 python3 replay_turn_breakdown.py --src /shared/request-replay-data/matterhorn-fp4-5 --by-turn-index 12
 ```
 
+`replay_cache_estimate.py` computes the **theoretical prefix-cache hit rate for a
+cold replay** (manifests only, no decompression): turn 0 of every conversation is
+cold; every later turn reuses the maximal already-computed prefix (previous
+prompt + its generated response, capped at the current prompt). The
+token-weighted overall rate is the ceiling for a from-cold run — turn-0 prefills
+and single-turn conversations can never be cached, so it is < 100%.
+
+```bash
+python3 replay_cache_estimate.py --src /shared/request-replay-data/matterhorn-fp4-5
+```
+
+Compare a live run's `Cache Hit Pct` against this ceiling: **above** it implies
+cross-conversation / cross-step cache residue (not a true cold replay); **at or
+below** means turn-0 prefills are landing cold as expected.
+
 ## Notes / limitations
 
 - **Single-process only.** The session controller is per-process; running
