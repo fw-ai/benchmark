@@ -979,13 +979,15 @@ class FireworksProvider(OpenAIProvider):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
-        # Enable perf_metrics_in_response to get speculation stats in streaming responses
-        data["perf_metrics_in_response"] = True
+        # Enable perf_metrics_in_response to get speculation stats in streaming responses.
+        # TRT-LLM chat OpenAI-compat schemas reject this field (extra_forbid).
+        if not self.parsed_options.chat:
+            data["perf_metrics_in_response"] = True
         # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
         # default (0 = no caching) is a no-op for the server, but unconditionally
         # adding the key breaks deployments whose OpenAI-compat schema is configured
-        # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
+        # with extra="forbid" (e.g. TRT-LLM chat and some vLLM-style serving images).
+        if self.parsed_options.prompt_cache_max_len > 0 and not self.parsed_options.chat:
             data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
