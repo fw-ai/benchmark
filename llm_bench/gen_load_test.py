@@ -751,7 +751,7 @@ def run_benchmark(
                     model_type,
                     suffix,
                     chunks,
-                    max_seq=max_seq,
+                    max_seq=seq_len,
                     target_len=seq_len - max_tokens,
                     n=batch_size,
                     seed=seq_len + seed,
