@@ -11,6 +11,7 @@ import random
 import sys
 import threading
 import traceback
+import uuid
 from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
 from locust.exception import StopUser
@@ -1305,6 +1306,14 @@ class SessionReplayController:
         self._log_lock = threading.Lock()
         if self.session_log_path:
             logger.info(f"SessionReplayController per-session status log -> {self.session_log_path}")
+        # --eval: log for "bad"/"maybe bad" LLM-judged responses.
+        self.eval_log_path = getattr(options, "eval_log", None)
+        self._eval_lock = threading.Lock()
+        if getattr(options, "eval", False):
+            logger.info(
+                f"SessionReplayController eval ON: LLM-judge responses vs golden; "
+                f"bad/maybe-bad -> {self.eval_log_path or '(logger only)'}"
+            )
         if self.window_seconds > 0:
             logger.info(
                 f"SessionReplayController session-drain ON: measured window={self.window_seconds}s, "
@@ -1393,6 +1402,21 @@ class SessionReplayController:
                 logger.info("All in-flight sessions drained after window; quitting runner now")
                 self._spawn_quit(0)
 
+    def log_eval(self, record: dict):
+        """Append one bad/maybe-bad eval record to the eval log (JSONL)."""
+        if not self.eval_log_path:
+            return
+        try:
+            line = json.dumps(record)
+        except Exception:
+            return
+        with self._eval_lock:
+            try:
+                with open(self.eval_log_path, "a") as fh:
+                    fh.write(line + "\n")
+            except Exception as e:
+                logger.warning(f"could not write eval log: {e}")
+
     def log_session(self, record: dict):
         """Append one completed-session JSON record to the per-session status log."""
         if not self.session_log_path:
@@ -1446,6 +1470,184 @@ class SessionReplayController:
                 )
                 self._spawn_quit(grace)
             return sess
+
+
+def _eval_msg_text(content):
+    """Flatten a chat `content` field into plain text.
+
+    Handles the OpenAI content shapes: a plain string, or a list of parts like
+    [{"type":"text","text":...}, {"type":"image_url",...}]. Non-text parts are
+    dropped. Returns a stripped string ("" when there is no usable text)."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        out = []
+        for p in content:
+            if isinstance(p, dict):
+                t = p.get("text")
+                if isinstance(t, str) and t.strip():
+                    out.append(t.strip())
+            elif isinstance(p, str) and p.strip():
+                out.append(p.strip())
+        return "\n".join(out).strip()
+    try:
+        return json.dumps(content).strip()
+    except Exception:
+        return str(content).strip()
+
+
+def _eval_golden_from_msg(msg):
+    """Turn an assistant message into a golden string. Prefer text content;
+    fall back to a compact rendering of tool_calls so tool-only turns are still
+    judged. Returns "" when there is nothing meaningful to compare against."""
+    if not isinstance(msg, dict):
+        return ""
+    txt = _eval_msg_text(msg.get("content"))
+    if txt:
+        return txt
+    tcs = msg.get("tool_calls")
+    if isinstance(tcs, list) and tcs:
+        parts = []
+        for tc in tcs:
+            fn = (tc or {}).get("function") or {}
+            name = fn.get("name") or (tc or {}).get("type") or "tool"
+            args = fn.get("arguments")
+            args = args if isinstance(args, str) else (json.dumps(args) if args is not None else "")
+            parts.append(f"tool_call {name}({args})")
+        return "\n".join(parts).strip()
+    return ""
+
+
+def _eval_extract_golden(turn_paths, cur_idx):
+    """Golden response for turn `cur_idx` (0-based).
+
+    In teacher-forced replay, turn k's prompt embeds the ORIGINAL assistant
+    replies of turns 0..k-1. So turn k's own golden reply is the assistant
+    message that appears right after turn k's messages in turn k+1's prompt.
+    Returns (golden_text, user_query_text). Returns (None, None) when there is
+    no usable golden (last turn, parse error, or an empty/tool-less assistant
+    reply) so the caller skips judging that turn entirely.
+    """
+    if cur_idx < 0 or cur_idx + 1 >= len(turn_paths):
+        return None, None
+
+    try:
+        with open(turn_paths[cur_idx], "rb") as f:
+            mk = orjson.loads(f.read()).get("messages") or []
+        with open(turn_paths[cur_idx + 1], "rb") as f:
+            mk1 = orjson.loads(f.read()).get("messages") or []
+    except Exception:
+        return None, None
+    golden = ""
+    if len(mk1) > len(mk):
+        cand = mk1[len(mk)]
+        if isinstance(cand, dict) and cand.get("role") == "assistant":
+            golden = _eval_golden_from_msg(cand)
+    if not golden:
+        return None, None
+    user_query = _eval_msg_text(mk[-1].get("content")) if (mk and isinstance(mk[-1], dict)) else ""
+    return golden, (user_query or None)
+
+
+def _eval_judge(host, model, user_query, golden, candidate, max_chars, timeout):
+    """Grade `candidate` against `golden` using the same LLM service (a side call,
+    NOT counted in the load-test stats). Returns (verdict, raw_text) where verdict
+    is one of 'good' | 'bad' | 'maybe bad'."""
+    import urllib.request
+
+    def _clip(s):
+        # Keep the LAST max_chars: for long replies the decisive part (final
+        # answer / conclusion) is usually at the end.
+        s = s or ""
+        return s if len(s) <= max_chars else "[truncated]… " + s[-max_chars:]
+
+    sys_p = (
+        "You are judging whether an AI assistant's CANDIDATE answer is a reasonable, coherent, "
+        "high-quality response to the USER REQUEST. Judge the candidate ON ITS OWN MERITS. A "
+        "GOLDEN answer is provided ONLY as a weak reference of one acceptable response. The "
+        "candidate is a valid agent turn and will OFTEN legitimately differ from the golden in "
+        "approach, wording, format, which tool it calls, or whether it acts vs. explains. "
+        "Divergence from the golden is NOT a defect: NEVER label 'bad' just because the candidate "
+        "differs from, does not match, or seems 'unrelated to' the golden. Only compare against "
+        "the golden as a loose sanity hint.\n"
+        "The output uses special channel/control tokens of the form '<|control<N>|>' for ANY "
+        "number N (e.g. <|control29|>, <|control30|>, <|control34|>, <|control35|>, <|control36|>, "
+        "<|control38|>, ...) and other '<|...|>' tokens. These delimit the model's reasoning, "
+        "response, and tool-call channels (e.g. '<|control29|>thinking<|control30|>...', "
+        "'<|control29|>response<|control30|>...', and tool-call sequences like "
+        "'<|control34|>0<|control35|>Shell<|control36|>command<|control38|>...'). They are ALL a "
+        "LEGITIMATE part of the output format. NEVER label an answer bad merely because it contains "
+        "such control tokens/numbers or a tool-call — parse the content and judge the actual answer.\n"
+        "Label 'bad' ONLY for a clear INTRINSIC defect in the candidate itself: broken/malformed "
+        "output, degenerate or garbled text (random characters, repetition, foreign-language "
+        "splicing), truncated mid-thought, empty, an unwarranted refusal, or an answer that is "
+        "clearly factually wrong or nonsensical FOR THE REQUEST. If the candidate is a plausible, "
+        "coherent agent action or answer, label 'good' even when it differs from the golden. Use "
+        "'maybe bad' only when genuinely unsure.\n"
+        "You MUST first give a brief reason (one short sentence naming the concrete defect for "
+        "'bad', or why it's acceptable for 'good'), and then output the final label on its own as "
+        "'response: <good|bad|maybe bad>'. A 'bad' label without a concrete stated defect is not "
+        "allowed."
+    )
+    usr = (
+        f"[USER REQUEST]\n{_clip(user_query)}\n\n[GOLDEN RESPONSE (weak reference only)]\n{_clip(golden)}\n\n"
+        f"[CANDIDATE RESPONSE]\n{_clip(candidate)}\n\nBriefly state the reason, then the label:"
+    )
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "system", "content": sys_p}, {"role": "user", "content": usr}],
+            # Enough headroom for reasoning models that emit a hidden thinking
+            # channel before the final label; too small and we only capture the
+            # start of the thinking block and never reach the verdict.
+            "max_tokens": 1024,
+            "temperature": 0,
+            "stream": False,
+        }
+    ).encode("utf-8")
+    # Fresh unique session id per judge call so the grader's (large) request never
+    # reuses / pollutes the replayed conversation's session routing or prefix cache.
+    sid = uuid.uuid4().hex
+    req = urllib.request.Request(
+        host.rstrip("/") + "/v1/chat/completions",
+        data=payload,
+        headers={
+            "content-type": "application/json",
+            "x-session-affinity": sid,
+            "x-multi-turn-session-id": sid,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        resp = json.loads(r.read())
+    msg = (resp.get("choices") or [{}])[0].get("message") or {}
+    raw = msg.get("content", "") or ""
+    # Reasoning models return the label in a `response`/final channel after a
+    # (possibly long) thinking block. Prefer the model's reasoning-stripped
+    # content, then scope label detection to the final answer segment so words
+    # like "bad"/"good" that appear inside the thinking text don't leak in.
+    t = raw.strip().lower()
+    idx = t.rfind("response")
+    seg = t[idx + len("response"):] if idx != -1 else t
+    if "maybe" in seg:
+        v = "maybe bad"
+    elif "good" in seg:
+        v = "good"
+    elif "bad" in seg:
+        v = "bad"
+    else:
+        v = "maybe bad"  # unparseable -> flag for review
+    # Require a justified 'bad': the judge must have written a concrete reason before
+    # the final label. A terse 'bad' with (essentially) no reasoning is low-confidence
+    # and gets downgraded to 'maybe bad' rather than counted as a real defect.
+    if v == "bad":
+        pre = t[:idx] if idx != -1 else ""
+        pre = re.sub(r"<\|[^|]*\|>", " ", pre)  # strip control tokens
+        pre = re.sub(r"\b(thinking|response|analysis|final)\b", " ", pre).strip()
+        if len(pre) < 40:
+            v = "maybe bad"
+    return v, raw.strip()
 
 
 class LLMUser(HttpUser):
@@ -1629,6 +1831,10 @@ class LLMUser(HttpUser):
             self._session_cid = ""
             self._cur_turn_idx = 0
             self._session_turns: list[dict] = []
+            # --eval: judge each turn's response vs the golden (original) reply.
+            self._eval = getattr(self.environment.parsed_options, "eval", False)
+            self._eval_model = None
+            self._cur_turn_paths: list = []
             # No tokenizer needed: prompt/cached/completion tokens come from server usage.
             self.prompt_tokenizer_tokens = 0
             return
@@ -1754,6 +1960,7 @@ class LLMUser(HttpUser):
             self._session_headers = sess["session_headers"]
             self._session_cid = sess.get("conversation_id", "")
             self._cur_turns = iter(sess["turn_paths"])
+            self._cur_turn_paths = sess["turn_paths"]
             self._session_turns = []
             self._cur_turn_idx = 0
             self._turn_started = False
@@ -1831,6 +2038,64 @@ class LLMUser(HttpUser):
                 raise StopUser()
             max_tokens = None
             post_timeout = self._replay_timeout
+            # Optional body overrides on the replay hot path. Applied in a single
+            # parse/serialize so the zero-CPU path is only left when an override is
+            # actually requested. Eval and non-eval load tests are treated DIFFERENTLY:
+            #   - top_p: forced on every replayed request when --replay-top-p is set
+            #     (applies to BOTH eval and non-eval).
+            #   - max_tokens / ignore_eos / min_tokens: only touched in --eval mode.
+            #     The baked perf bodies force an EXACT output length (ignore_eos=True +
+            #     min_tokens==max_tokens); a NON-eval perf sweep keeps that as-is. In
+            #     eval mode we instead let the model stop at its natural EOS (see below),
+            #     so quality is judged on a real answer, not a forced fixed-length one.
+            _eval = getattr(self, "_eval", False)
+            _top_p = getattr(self.environment.parsed_options, "replay_top_p", None)
+            # eval max_tokens cap: >0 caps at that many tokens; 0 (default) removes
+            # the cap entirely and relies on the model/server default max length.
+            _eval_mt = int(getattr(self.environment.parsed_options, "eval_max_tokens", 0) or 0) if _eval else 0
+            if _top_p is not None or _eval:
+                try:
+                    obj = orjson.loads(data_bytes)
+                    changed = False
+                    if _top_p is not None and obj.get("top_p") != _top_p:
+                        obj["top_p"] = _top_p
+                        changed = True
+                    if _eval:
+                        # CRITICAL: the baked perf bodies force an EXACT output length via
+                        # ignore_eos=True + min_tokens==max_tokens. Left alone, the model is
+                        # forced to emit the full token budget with EOS suppressed and fills
+                        # it with degenerate repetition (falsely judged 'bad'). For eval we
+                        # want the model's NATURAL answer, so let it stop at EOS and drop the
+                        # forced floor.
+                        if obj.get("ignore_eos"):
+                            obj["ignore_eos"] = False
+                            changed = True
+                        if obj.get("min_tokens") is not None:
+                            obj.pop("min_tokens", None)
+                            changed = True
+                        if _eval_mt > 0:
+                            # Explicit safety cap requested: raise to at least `_eval_mt`.
+                            mt = obj.get("max_tokens")
+                            if not isinstance(mt, int) or mt < _eval_mt:
+                                obj["max_tokens"] = _eval_mt if not isinstance(mt, int) else max(mt, _eval_mt)
+                                changed = True
+                            mct = obj.get("max_completion_tokens")
+                            if isinstance(mct, int) and mct < _eval_mt:
+                                obj["max_completion_tokens"] = _eval_mt
+                                changed = True
+                        else:
+                            # Default: remove the cap, rely on the model/server default so a
+                            # long natural answer is never truncated (it still stops at EOS).
+                            if "max_tokens" in obj:
+                                obj.pop("max_tokens", None)
+                                changed = True
+                            if "max_completion_tokens" in obj:
+                                obj.pop("max_completion_tokens", None)
+                                changed = True
+                    if changed:
+                        data_bytes = orjson.dumps(obj)
+                except Exception as e:
+                    logger.warning(f"replay body override failed: {e}")
             if self.environment.parsed_options.show_request:
                 print("--- Replay request (bytes) ---")
                 print(data_bytes.decode("utf-8", "replace"))
@@ -2051,6 +2316,45 @@ class LLMUser(HttpUser):
                     }
                 )
 
+            # --eval: LLM-judge this turn's response against the golden (original)
+            # reply. Golden comes from the NEXT turn's baked prompt, so the last
+            # turn of a session is skipped. The judge is a side call (not counted
+            # in load stats); bad / maybe-bad verdicts are logged to the eval log.
+            if getattr(self, "_replay", False) and getattr(self, "_eval", False) and combined_text:
+                try:
+                    cur = self._cur_turn_idx - 1  # 0-based index of the turn just served
+                    golden, user_query = _eval_extract_golden(self._cur_turn_paths, cur)
+                    if golden:
+                        if self._eval_model is None:
+                            try:
+                                self._eval_model = orjson.loads(data_bytes).get("model")
+                            except Exception:
+                                self._eval_model = None
+                        maxc = int(getattr(self.environment.parsed_options, "eval_max_chars", 4000) or 4000)
+                        verdict, raw = _eval_judge(
+                            self.host, (self._eval_model or ""), user_query, golden,
+                            combined_text, maxc, self._replay_timeout,
+                        )
+                        add_custom_metric(f"eval_{verdict.replace(' ', '_')}", 1)
+                        if verdict in ("bad", "maybe bad"):
+                            self._controller.log_eval(
+                                {
+                                    "conversation_id": self._session_cid,
+                                    "turn": self._cur_turn_idx,
+                                    "verdict": verdict,
+                                    "judge_raw": raw,
+                                    "user_query": (user_query or "")[-maxc:],
+                                    "golden": golden[-maxc:],
+                                    "candidate": combined_text[-maxc:],
+                                }
+                            )
+                            logger.info(
+                                f"[eval] {verdict} cid={self._session_cid} turn={self._cur_turn_idx} "
+                                f"judge='{raw[:40]}'"
+                            )
+                except Exception as e:
+                    logger.warning(f"eval failed for cid={self._session_cid} turn={self._cur_turn_idx}: {e}")
+
             # Allow provider to process response (e.g., for custom metrics)
             self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
 
@@ -2161,6 +2465,13 @@ def init_parser(parser):
         "large with high max_tokens, so this is higher than the default.",
     )
     parser.add_argument(
+        "--replay-top-p",
+        type=float,
+        default=None,
+        help="Force top_p on every replayed request body (e.g. 0.95). Overrides/sets top_p in the "
+        "baked body. Unset (default) replays top_p exactly as baked.",
+    )
+    parser.add_argument(
         "--replay-window-seconds",
         type=int,
         default=0,
@@ -2185,6 +2496,43 @@ def init_parser(parser):
         "Each record has session-level ttft (mean/max), token-weighted ttit, and summed "
         "total-latency, plus a per-turn breakdown (ttft, ttit, total-latency, prompt/output "
         "tokens). Use to debug per-session hit-rate / latency.",
+    )
+    parser.add_argument(
+        "--eval",
+        action="store_true",
+        default=False,
+        help="Replay-only: after each turn, LLM-judge the model's response against the golden "
+        "(original recorded) reply using the SAME service as a grader. The judge returns 'good', "
+        "'bad', or 'maybe bad'; bad/maybe-bad responses are logged to --eval-log. The golden is "
+        "read from the next turn's prompt, so the last turn of each session is skipped. Judge "
+        "calls are side requests (not counted in the load-test stats). Verdict tallies appear as "
+        "eval_good / eval_bad / eval_maybe_bad custom metrics.",
+    )
+    parser.add_argument(
+        "--eval-log",
+        type=str,
+        default=None,
+        help="Path to a JSONL file for --eval bad/maybe-bad records (conversation_id, turn, verdict, "
+        "judge_raw, user_query, golden, candidate).",
+    )
+    parser.add_argument(
+        "--eval-max-chars",
+        type=int,
+        default=8000,
+        help="Max chars of user_query / golden / candidate passed to the judge and stored in the "
+        "eval log (default 8000), to bound judge prompt size. The LAST N chars are kept (for long "
+        "replies the decisive part is usually at the end). Larger avoids long candidates looking "
+        "truncated to the judge.",
+    )
+    parser.add_argument(
+        "--eval-max-tokens",
+        type=int,
+        default=0,
+        help="Replay+--eval only: safety cap on generated tokens. In --eval mode the baked "
+        "ignore_eos/min_tokens forcing is always removed so the model stops at EOS and produces "
+        "its natural answer (not a repetition-filled fixed length). Default 0 removes max_tokens "
+        "entirely and relies on the model/server default max length; set >0 to impose an explicit "
+        "upper cap (raised to at least this value, never lowered).",
     )
     parser.add_argument(
         "--gpus",
