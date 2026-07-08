@@ -310,6 +310,36 @@ def build_chat_prompt_ids(
     return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:lo]) + suffix_text, model_type)
 
 
+def build_distinct_prompt_ids(
+    tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
+    model_type: str,
+    suffix_text: str,
+    chunks: list[str],
+    max_seq: int,
+    target_len: int,
+    n: int,
+    seed: int,
+) -> list[list[int]]:
+    """Build `n` DISTINCT chat prompts of `target_len` tokens, one per batch slot.
+
+    Each prompt is assembled from a per-slot shuffled ordering of the corpus
+    `chunks`, so the `n` prompts have different content (and different prefixes).
+    This makes a concurrent decode batch route to a broad set of MoE experts —
+    like heterogeneous production traffic — instead of the concentrated routing a
+    single shared prompt produces.
+    """
+    prompts: list[list[int]] = []
+    for i in range(n):
+        shuffled = chunks[:]
+        random.Random(seed * 100003 + i).shuffle(shuffled)
+        chunk_texts_i = build_chunk_texts_to_length(tokenizer, shuffled, max_seq)
+        prompts.append(
+            build_chat_prompt_ids(tokenizer, tokenizer_path, model_type, suffix_text, chunk_texts_i, target_len)
+        )
+    return prompts
+
+
 def get_header(headers: Mapping[str, str], short_key: str) -> Optional[float]:
     full = FW_HEADER_PREFIX + short_key
     v = headers.get(full)
@@ -486,7 +516,7 @@ def _run_pair_separate_mode(
     url: str,
     api_key: Optional[str],
     model: Optional[str],
-    prompt_ids: list[int],
+    prompts: list[list[int]],
     max_tokens: int,
     seq_len: int,
     batch_size: int,
@@ -495,7 +525,13 @@ def _run_pair_separate_mode(
     routing: Optional[RoutingConfig] = None,
     worker_offset: int = 0,
 ) -> GenBenchmarkResult:
-    """Send batch_size concurrent requests each with n=1."""
+    """Send batch_size concurrent requests each with n=1.
+
+    `prompts` holds one token-id prompt per worker (length == batch_size). When
+    every entry is the same object the batch decodes identical content (the
+    default); with `--distinct-prompts` each worker gets a different prompt so
+    the concurrent decode batch scatters across MoE experts like real traffic.
+    """
     logger.info(
         "Pair (seq_len=%d, batch_size=%d): %d separate requests, max_tokens=%d, routing=%s",
         seq_len,
@@ -505,6 +541,7 @@ def _run_pair_separate_mode(
         (routing or RoutingConfig()).describe(),
     )
     assert len(users) == batch_size, f"expected {batch_size} users, got {len(users)}"
+    assert len(prompts) == batch_size, f"expected {batch_size} prompts, got {len(prompts)}"
 
     def _single_request(worker_idx: int, user: str) -> requests.Response:
         s = requests.Session()
@@ -518,7 +555,7 @@ def _run_pair_separate_mode(
             url,
             api_key,
             model,
-            prompt_ids,
+            prompts[worker_idx],
             max_tokens=max_tokens,
             n=1,
             temperature=temperature,
@@ -586,10 +623,18 @@ def _warmup_seq_len(
     users: Optional[list[str]] = None,
     routing: Optional[RoutingConfig] = None,
     worker_offset: int = 0,
+    prompts: Optional[list[list[int]]] = None,
 ) -> None:
-    """Issue `concurrency` warmup completions in parallel for the same prompt."""
+    """Issue `concurrency` warmup completions in parallel.
+
+    By default all warmups use the same `prompt_ids`; when `prompts` is given
+    (one per worker, length == concurrency) each warmup uses its own prompt so
+    the prompt cache and routing are primed with distinct content.
+    """
     if users is not None:
         assert len(users) == concurrency, f"expected {concurrency} users, got {len(users)}"
+    if prompts is not None:
+        assert len(prompts) == concurrency, f"expected {concurrency} prompts, got {len(prompts)}"
 
     def _single(worker_idx: int, user: Optional[str]) -> requests.Response:
         headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
@@ -598,7 +643,7 @@ def _warmup_seq_len(
             url,
             api_key,
             model,
-            prompt_ids,
+            prompts[worker_idx] if prompts is not None else prompt_ids,
             max_tokens=0,
             n=1,
             temperature=temperature,
@@ -651,6 +696,7 @@ def run_benchmark(
     retry_delay: float = 30.0,
     seed: int = 0,
     routing: Optional[RoutingConfig] = None,
+    distinct_prompts: bool = False,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     model_type = resolve_model_type(tokenizer_path)
@@ -668,10 +714,16 @@ def run_benchmark(
     # Mode is derived from routing: enabled (num_servers > 1 OR num_gens > 1)
     # implies separate concurrent requests pinned to specific cells; disabled
     # falls back to a single request with n=batch_size against the LB.
+    # `--distinct-prompts` requires separate concurrent requests: a single n>1
+    # request shares one prompt across all completions and cannot send distinct
+    # per-slot content.
     routing = routing or RoutingConfig()
-    separate_requests = routing.enabled
+    separate_requests = routing.enabled or distinct_prompts
     if separate_requests:
-        logger.info("Mode: separate concurrent requests (no n>1)")
+        logger.info(
+            "Mode: separate concurrent requests (no n>1)%s",
+            " with DISTINCT per-slot prompts" if distinct_prompts else "",
+        )
     else:
         logger.info("Mode: single request with n=batch_size")
     logger.info("Routing: %s", routing.describe())
@@ -685,18 +737,42 @@ def run_benchmark(
     pairs = sorted(pairs, key=lambda p: (-p[0], -p[1]))
 
     prompt_ids: list[int] = []
+    prompt_ids_by_worker: list[list[int]] = []
     seq_users: list[str] = []
     for seq_len, batch_size in pairs:
         if seq_len != prev_seq_len:
-            prompt_ids = build_chat_prompt_ids(
-                tokenizer,
-                tokenizer_path,
-                model_type,
-                suffix,
-                chunk_texts,
-                target_len=seq_len - max_tokens,
-            )
-            logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
+            if distinct_prompts:
+                # `batch_size` is the largest for this seq_len (pairs are sorted
+                # batch-descending), so build that many distinct prompts once and
+                # slice per pair below.
+                prompt_ids_by_worker = build_distinct_prompt_ids(
+                    tokenizer,
+                    tokenizer_path,
+                    model_type,
+                    suffix,
+                    chunks,
+                    max_seq=max_seq,
+                    target_len=seq_len - max_tokens,
+                    n=batch_size,
+                    seed=seq_len + seed,
+                )
+                prompt_ids = prompt_ids_by_worker[0]
+                logger.info(
+                    "Built %d DISTINCT prompts for seq_len=%d: token lens %s ...",
+                    len(prompt_ids_by_worker),
+                    seq_len,
+                    [len(p) for p in prompt_ids_by_worker[:4]],
+                )
+            else:
+                prompt_ids = build_chat_prompt_ids(
+                    tokenizer,
+                    tokenizer_path,
+                    model_type,
+                    suffix,
+                    chunk_texts,
+                    target_len=seq_len - max_tokens,
+                )
+                logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
             if separate_requests:
                 if prev_seq_len is None:
                     # HACK: backend OOMs without this pre-warmup on the largest
@@ -741,6 +817,7 @@ def run_benchmark(
                     retry_delay=retry_delay,
                     users=seq_users,
                     routing=routing,
+                    prompts=prompt_ids_by_worker[: len(seq_users)] if distinct_prompts else None,
                 )
             else:
                 # n-mode measurement is unrouted; warmup must match or cache primes the wrong worker.
@@ -765,11 +842,15 @@ def run_benchmark(
             try:
                 if separate_requests:
                     assert users is not None
+                    if distinct_prompts:
+                        batch_prompts = prompt_ids_by_worker[:batch_size]
+                    else:
+                        batch_prompts = [prompt_ids] * batch_size
                     result = _run_pair_separate_mode(
                         url=url,
                         api_key=api_key,
                         model=model,
-                        prompt_ids=prompt_ids,
+                        prompts=batch_prompts,
                         max_tokens=max_tokens,
                         seq_len=seq_len,
                         batch_size=batch_size,
@@ -858,6 +939,13 @@ def main() -> None:
         "Optional; omit for servers that don't require auth.",
     )
     parser.add_argument("--dataset", choices=("limericks", "code"), default="limericks")
+    parser.add_argument(
+        "--distinct-prompts",
+        action="store_true",
+        help="Send a DIFFERENT prompt to each batch slot (forces separate concurrent "
+        "requests) instead of one shared prompt with n=batch_size. Makes the decode "
+        "batch route across MoE experts like heterogeneous production traffic.",
+    )
     parser.add_argument(
         "-p",
         "--seq-batch-pairs",
@@ -1019,6 +1107,7 @@ def main() -> None:
         retry_delay=args.retry_delay,
         seed=args.seed,
         routing=routing,
+        distinct_prompts=args.distinct_prompts,
     )
     if args.format == "csv":
         print(format_csv(rows))
