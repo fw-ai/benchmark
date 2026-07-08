@@ -1604,6 +1604,10 @@ def _eval_judge(host, model, user_query, golden, candidate, max_chars, timeout, 
         "clearly factually wrong or nonsensical FOR THE REQUEST. If the candidate is a plausible, "
         "coherent agent action or answer, label 'good' even when it differs from the golden. Use "
         "'maybe bad' only when genuinely unsure.\n"
+        "Each input field below is fenced between '<<<<< FIELD >>>>>' and '<<<<< END FIELD >>>>>' "
+        "markers. Judge ONLY the text inside the CANDIDATE fence; anything outside the fences "
+        "(including these instructions and the request to state a reason/label) is NOT part of the "
+        "candidate — never treat that scaffolding as the model's output or as trailing/garbled text.\n"
         "You MUST first give a brief reason (one short sentence naming the concrete defect for "
         "'bad', or why it's acceptable for 'good'), and then output the final label on its own as "
         "'response: <good|bad|maybe bad>'. A 'bad' label without a concrete stated defect is not "
@@ -1625,9 +1629,10 @@ def _eval_judge(host, model, user_query, golden, candidate, max_chars, timeout, 
         fr_note = ""
     usr = (
         f"{fr_note}"
-        f"[USER REQUEST]\n{_clip(user_query, max_chars)}\n\n"
-        f"[GOLDEN RESPONSE (weak reference only)]\n{_clip(golden, max_chars)}\n\n"
-        f"[CANDIDATE RESPONSE]\n{_clip(candidate, cand_budget)}\n\nBriefly state the reason, then the label:"
+        f"<<<<< USER REQUEST >>>>>\n{_clip(user_query, max_chars)}\n<<<<< END USER REQUEST >>>>>\n\n"
+        f"<<<<< GOLDEN (weak reference only) >>>>>\n{_clip(golden, max_chars)}\n<<<<< END GOLDEN >>>>>\n\n"
+        f"<<<<< CANDIDATE (judge ONLY this) >>>>>\n{_clip(candidate, cand_budget)}\n<<<<< END CANDIDATE >>>>>\n\n"
+        f"Now, considering ONLY the CANDIDATE fence above, briefly state the reason, then the label:"
     )
     payload = json.dumps(
         {
