@@ -1551,17 +1551,30 @@ def _eval_extract_golden(turn_paths, cur_idx):
     return golden, (user_query or None)
 
 
-def _eval_judge(host, model, user_query, golden, candidate, max_chars, timeout):
+def _eval_judge(host, model, user_query, golden, candidate, max_chars, timeout, finish_reason=None):
     """Grade `candidate` against `golden` using the same LLM service (a side call,
     NOT counted in the load-test stats). Returns (verdict, raw_text) where verdict
-    is one of 'good' | 'bad' | 'maybe bad'."""
+    is one of 'good' | 'bad' | 'maybe bad'.
+
+    `finish_reason` is the model's own stream finish_reason ('stop'/'length'/…) —
+    the REAL truncation signal, so the judge doesn't have to infer truncation from
+    clipped text (which the harness clip would otherwise fake)."""
     import urllib.request
 
-    def _clip(s):
-        # Keep the LAST max_chars: for long replies the decisive part (final
+    def _clip(s, budget):
+        # Keep the LAST `budget` chars: for long replies the decisive part (final
         # answer / conclusion) is usually at the end.
         s = s or ""
-        return s if len(s) <= max_chars else "[truncated]… " + s[-max_chars:]
+        # NOTE: this marker must NOT look like the model truncated its own output —
+        # the judge is told (below) it is a harness-side clip and to ignore it.
+        return s if len(s) <= budget else "[EVAL-HARNESS CLIPPED EARLIER TEXT FOR LENGTH]\n" + s[-budget:]
+
+    # (A) The candidate is the thing being judged, so clip it far less aggressively
+    # than the context fields — a clipped candidate is exactly what fools the judge
+    # into calling a complete answer 'truncated'. Give it a generous budget; only
+    # pathological (repetition-loop) outputs get clipped, and the loop is still
+    # visible in what remains.
+    cand_budget = max(max_chars * 4, 16000)
 
     sys_p = (
         "You are judging whether an AI assistant's CANDIDATE answer is a reasonable, coherent, "
@@ -1580,6 +1593,11 @@ def _eval_judge(host, model, user_query, golden, candidate, max_chars, timeout):
         "'<|control34|>0<|control35|>Shell<|control36|>command<|control38|>...'). They are ALL a "
         "LEGITIMATE part of the output format. NEVER label an answer bad merely because it contains "
         "such control tokens/numbers or a tool-call — parse the content and judge the actual answer.\n"
+        "A leading '[EVAL-HARNESS CLIPPED EARLIER TEXT FOR LENGTH]' marker means the eval harness "
+        "shortened the BEGINNING of that field for length before showing it to you. It is NOT the "
+        "model truncating its own output — NEVER label 'bad' for truncation/incompleteness just "
+        "because of that marker or because a field appears to start mid-content; judge only the "
+        "actual content shown.\n"
         "Label 'bad' ONLY for a clear INTRINSIC defect in the candidate itself: broken/malformed "
         "output, degenerate or garbled text (random characters, repetition, foreign-language "
         "splicing), truncated mid-thought, empty, an unwarranted refusal, or an answer that is "
@@ -1591,9 +1609,25 @@ def _eval_judge(host, model, user_query, golden, candidate, max_chars, timeout):
         "'response: <good|bad|maybe bad>'. A 'bad' label without a concrete stated defect is not "
         "allowed."
     )
+    # (B) Tell the judge the model's ACTUAL stop reason so truncation is a fact,
+    # not a guess from (possibly clipped) text.
+    if finish_reason in ("stop", "eos", "end_turn", "tool_calls", "function_call"):
+        fr_note = (
+            f"The model ENDED ITS OWN TURN normally (finish_reason='{finish_reason}'); it was NOT cut "
+            "off by a length limit — so do NOT label it 'bad' for being truncated/incomplete.\n"
+        )
+    elif finish_reason == "length":
+        fr_note = (
+            "The model hit the max-length limit (finish_reason='length'); a genuine mid-thought "
+            "cutoff here is a real defect.\n"
+        )
+    else:
+        fr_note = ""
     usr = (
-        f"[USER REQUEST]\n{_clip(user_query)}\n\n[GOLDEN RESPONSE (weak reference only)]\n{_clip(golden)}\n\n"
-        f"[CANDIDATE RESPONSE]\n{_clip(candidate)}\n\nBriefly state the reason, then the label:"
+        f"{fr_note}"
+        f"[USER REQUEST]\n{_clip(user_query, max_chars)}\n\n"
+        f"[GOLDEN RESPONSE (weak reference only)]\n{_clip(golden, max_chars)}\n\n"
+        f"[CANDIDATE RESPONSE]\n{_clip(candidate, cand_budget)}\n\nBriefly state the reason, then the label:"
     )
     payload = json.dumps(
         {
@@ -2041,8 +2075,8 @@ class LLMUser(HttpUser):
             # Optional body overrides on the replay hot path. Applied in a single
             # parse/serialize so the zero-CPU path is only left when an override is
             # actually requested. Eval and non-eval load tests are treated DIFFERENTLY:
-            #   - top_p: forced on every replayed request when --replay-top-p is set
-            #     (applies to BOTH eval and non-eval).
+            #   - top_p / temperature: forced on every replayed request when
+            #     --replay-top-p / --replay-temperature is set (BOTH eval and non-eval).
             #   - max_tokens / ignore_eos / min_tokens: only touched in --eval mode.
             #     The baked perf bodies force an EXACT output length (ignore_eos=True +
             #     min_tokens==max_tokens); a NON-eval perf sweep keeps that as-is. In
@@ -2050,15 +2084,19 @@ class LLMUser(HttpUser):
             #     so quality is judged on a real answer, not a forced fixed-length one.
             _eval = getattr(self, "_eval", False)
             _top_p = getattr(self.environment.parsed_options, "replay_top_p", None)
+            _temp = getattr(self.environment.parsed_options, "replay_temperature", None)
             # eval max_tokens cap: >0 caps at that many tokens; 0 (default) removes
             # the cap entirely and relies on the model/server default max length.
             _eval_mt = int(getattr(self.environment.parsed_options, "eval_max_tokens", 0) or 0) if _eval else 0
-            if _top_p is not None or _eval:
+            if _top_p is not None or _temp is not None or _eval:
                 try:
                     obj = orjson.loads(data_bytes)
                     changed = False
                     if _top_p is not None and obj.get("top_p") != _top_p:
                         obj["top_p"] = _top_p
+                        changed = True
+                    if _temp is not None and obj.get("temperature") != _temp:
+                        obj["temperature"] = _temp
                         changed = True
                     if _eval:
                         # CRITICAL: the baked perf bodies force an EXACT output length via
@@ -2134,6 +2172,7 @@ class LLMUser(HttpUser):
             completion_tokens = None
             total_logprob_tokens = None
             cached_tokens = None
+            finish_reason = None  # last non-null choices[0].finish_reason (eval: real truncation signal)
             perf_metrics = None  # Capture perf_metrics from response body (streaming)
             try:
                 response.raise_for_status()
@@ -2184,6 +2223,12 @@ class LLMUser(HttpUser):
                     if data.get("perf_metrics"):
                         perf_metrics = data["perf_metrics"]
                     out = self.provider_formatter.parse_output_json(data)
+                    try:
+                        _fr = (data.get("choices") or [{}])[0].get("finish_reason")
+                        if _fr:
+                            finish_reason = _fr
+                    except Exception:
+                        pass
                     if out.completion_tokens:
                         completion_tokens = out.completion_tokens
                     if out.prompt_tokens:
@@ -2330,10 +2375,11 @@ class LLMUser(HttpUser):
                                 self._eval_model = orjson.loads(data_bytes).get("model")
                             except Exception:
                                 self._eval_model = None
-                        maxc = int(getattr(self.environment.parsed_options, "eval_max_chars", 4000) or 4000)
+                        maxc = int(getattr(self.environment.parsed_options, "eval_max_chars", 8000) or 8000)
+                        cand_budget = max(maxc * 4, 16000)
                         verdict, raw = _eval_judge(
                             self.host, (self._eval_model or ""), user_query, golden,
-                            combined_text, maxc, self._replay_timeout,
+                            combined_text, maxc, self._replay_timeout, finish_reason=finish_reason,
                         )
                         add_custom_metric(f"eval_{verdict.replace(' ', '_')}", 1)
                         if verdict in ("bad", "maybe bad"):
@@ -2343,9 +2389,10 @@ class LLMUser(HttpUser):
                                     "turn": self._cur_turn_idx,
                                     "verdict": verdict,
                                     "judge_raw": raw,
+                                    "finish_reason": finish_reason,
                                     "user_query": (user_query or "")[-maxc:],
                                     "golden": golden[-maxc:],
-                                    "candidate": combined_text[-maxc:],
+                                    "candidate": combined_text[-cand_budget:],
                                 }
                             )
                             logger.info(
@@ -2470,6 +2517,14 @@ def init_parser(parser):
         default=None,
         help="Force top_p on every replayed request body (e.g. 0.95). Overrides/sets top_p in the "
         "baked body. Unset (default) replays top_p exactly as baked.",
+    )
+    parser.add_argument(
+        "--replay-temperature",
+        type=float,
+        default=None,
+        help="Force temperature on every replayed request body (e.g. 0.6). Overrides/sets "
+        "temperature in the baked body (baked bodies use 1.0). Unset (default) replays "
+        "temperature exactly as baked.",
     )
     parser.add_argument(
         "--replay-window-seconds",
