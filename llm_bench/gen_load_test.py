@@ -189,25 +189,77 @@ def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenize
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
 
+_DATASET_FILES = {
+    "limericks": "limericks.txt",
+    "code": "code.txt",
+    "diverse_fiction": "diverse_fiction.txt",
+    "diverse_nonfiction": "diverse_nonfiction.txt",
+    "diverse_practical": "diverse_practical.txt",
+}
+
+_DISTINCT_PROMPT_DATASETS = tuple(_DATASET_FILES)
+
+_DATASET_SUFFIXES = {
+    "limericks": "\n\nTranslate the limericks above to Spanish.",
+    "code": "\n\nTranslate the code above to C++.",
+    "diverse_fiction": "\n\nIdentify the setting, characters, and likely conflict in the passages above.",
+    "diverse_nonfiction": "\n\nSummarize the main claims and supporting details in the passages above.",
+    "diverse_practical": "\n\nExtract the procedural requirements and practical cautions from the passages above.",
+}
+
+_DISTINCT_PROMPT_SUFFIXES = (
+    "\n\nSummarize the passages above for a technically minded reader.",
+    "\n\nRewrite the key points above as concise operational guidance.",
+    "\n\nIdentify the topic, tone, and evidence used in the passages above.",
+    "\n\nExtract named entities, actions, and constraints from the passages above.",
+    "\n\nExplain what a careful reader should remember from the passages above.",
+    "\n\nClassify the passages by genre and describe the likely audience.",
+    "\n\nWrite a brief continuation that preserves the style of the passages above.",
+    "\n\nCompare the themes and communication style across the passages above.",
+)
+
+
 def _dataset_path(dataset: str) -> str:
-    name = "limericks.txt" if dataset == "limericks" else "code.txt"
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), _DATASET_FILES[dataset])
 
 
 def load_chunks(dataset: str) -> list[str]:
     path = _dataset_path(dataset)
     with open(path, "r") as f:
         text = f.read()
-    chunks = [p for p in text.split("\n\n") if p.strip()]
+    chunks: list[str] = []
+    for paragraph in text.split("\n\n"):
+        chunk = paragraph.strip()
+        if not chunk:
+            continue
+        normalized = chunk.lower()
+        if normalized.startswith(("source note", "sources:")):
+            continue
+        if normalized in ("chunks:", "text chunks"):
+            continue
+        if normalized.startswith("text chunks\n"):
+            chunk = chunk.split("\n", 1)[1].strip()
+        chunks.append(chunk)
     if not chunks:
         raise ValueError(f"No chunks in {path}")
     return chunks
 
 
-_DATASET_SUFFIXES = {
-    "limericks": "\n\nTranslate the limericks above to Spanish.",
-    "code": "\n\nTranslate the code above to C++.",
-}
+def load_distinct_chunks() -> list[tuple[str, str]]:
+    chunks: list[tuple[str, str]] = []
+    for dataset in _DISTINCT_PROMPT_DATASETS:
+        path = _dataset_path(dataset)
+        if not os.path.exists(path):
+            continue
+        chunks.extend((dataset, chunk) for chunk in load_chunks(dataset))
+    if not chunks:
+        raise ValueError("No chunks found for distinct prompt generation")
+    return chunks
+
+
+def _strip_source_label(labeled_chunk: tuple[str, str]) -> str:
+    _, chunk = labeled_chunk
+    return chunk
 
 
 def build_chunk_texts_to_length(
@@ -314,8 +366,7 @@ def build_distinct_prompt_ids(
     tokenizer: transformers.PreTrainedTokenizer,
     tokenizer_path: str,
     model_type: str,
-    suffix_text: str,
-    chunks: list[str],
+    chunks: list[tuple[str, str]],
     max_seq: int,
     target_len: int,
     n: int,
@@ -323,17 +374,17 @@ def build_distinct_prompt_ids(
 ) -> list[list[int]]:
     """Build `n` DISTINCT chat prompts of `target_len` tokens, one per batch slot.
 
-    Each prompt is assembled from a per-slot shuffled ordering of the corpus
-    `chunks`, so the `n` prompts have different content (and different prefixes).
-    This makes a concurrent decode batch route to a broad set of MoE experts —
-    like heterogeneous production traffic — instead of the concentrated routing a
-    single shared prompt produces.
+    Each prompt is assembled from a per-slot shuffled ordering across multiple
+    built-in corpora plus a varied instruction suffix. That creates different
+    content, prefixes, and task framing per batch slot.
     """
     prompts: list[list[int]] = []
     for i in range(n):
         shuffled = chunks[:]
-        random.Random(seed * 100003 + i).shuffle(shuffled)
-        chunk_texts_i = build_chunk_texts_to_length(tokenizer, shuffled, max_seq)
+        rng = random.Random(seed * 100003 + i)
+        rng.shuffle(shuffled)
+        chunk_texts_i = build_chunk_texts_to_length(tokenizer, [_strip_source_label(c) for c in shuffled], max_seq)
+        suffix_text = _DISTINCT_PROMPT_SUFFIXES[i % len(_DISTINCT_PROMPT_SUFFIXES)]
         prompts.append(
             build_chat_prompt_ids(tokenizer, tokenizer_path, model_type, suffix_text, chunk_texts_i, target_len)
         )
@@ -705,6 +756,7 @@ def run_benchmark(
     max_seq = max(seq_len for seq_len, _ in pairs)
     chunks = load_chunks(dataset)
     suffix = _DATASET_SUFFIXES.get(dataset, "")
+    distinct_chunks = load_distinct_chunks() if distinct_prompts else []
 
     chunk_texts = build_chunk_texts_to_length(tokenizer, chunks, max_seq)
 
@@ -749,8 +801,7 @@ def run_benchmark(
                     tokenizer,
                     tokenizer_path,
                     model_type,
-                    suffix,
-                    chunks,
+                    distinct_chunks,
                     max_seq=seq_len,
                     target_len=seq_len - max_tokens,
                     n=batch_size,
@@ -758,8 +809,9 @@ def run_benchmark(
                 )
                 prompt_ids = prompt_ids_by_worker[0]
                 logger.info(
-                    "Built %d DISTINCT prompts for seq_len=%d: token lens %s ...",
+                    "Built %d DISTINCT prompts from %d source chunks for seq_len=%d: token lens %s ...",
                     len(prompt_ids_by_worker),
+                    len(distinct_chunks),
                     seq_len,
                     [len(p) for p in prompt_ids_by_worker[:4]],
                 )
@@ -938,7 +990,7 @@ def main() -> None:
         help="Bearer token (default: API_KEY or FIREWORKS_API_KEY). "
         "Optional; omit for servers that don't require auth.",
     )
-    parser.add_argument("--dataset", choices=("limericks", "code"), default="limericks")
+    parser.add_argument("--dataset", choices=tuple(_DATASET_FILES), default="limericks")
     parser.add_argument(
         "--distinct-prompts",
         action="store_true",

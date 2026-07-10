@@ -1,0 +1,571 @@
+Source note: All excerpts below are from Project Gutenberg texts whose catalog pages state Public domain in the USA. Check local copyright law outside the United States.
+- Pride and Prejudice — Jane Austen: https://www.gutenberg.org/ebooks/1342
+- Alice's Adventures in Wonderland — Lewis Carroll: https://www.gutenberg.org/ebooks/11
+- The Adventures of Sherlock Holmes — Arthur Conan Doyle: https://www.gutenberg.org/ebooks/1661
+- Treasure Island — Robert Louis Stevenson: https://www.gutenberg.org/ebooks/120
+- The Wonderful Wizard of Oz — L. Frank Baum: https://www.gutenberg.org/ebooks/55
+- Grimms' Fairy Tales — Jacob Grimm and Wilhelm Grimm: https://www.gutenberg.org/ebooks/2591
+- The Importance of Being Earnest — Oscar Wilde: https://www.gutenberg.org/ebooks/844
+- Hamlet — William Shakespeare: https://www.gutenberg.org/ebooks/1524
+- Anne of Green Gables — L. M. Montgomery: https://www.gutenberg.org/ebooks/45
+- Jane Eyre — Charlotte Bronte: https://www.gutenberg.org/ebooks/1260
+- The Secret Garden — Frances Hodgson Burnett: https://www.gutenberg.org/ebooks/17396
+- A Midsummer Night's Dream — William Shakespeare: https://www.gutenberg.org/ebooks/1514
+
+Chunks:
+
+Chunk 01 — Pride and Prejudice (Jane Austen)
+“Your conjecture is totally wrong, I assure you. My mind was more agreeably engaged. I
+have been meditating on the very great pleasure which a pair of fine eyes in the face of
+a pretty woman can bestow.” Miss Bingley immediately fixed her eyes on his face, and
+desired he would tell her what lady had the credit of inspiring such reflections. Mr.
+Darcy replied, with great intrepidity,-- “Miss Elizabeth Bennet!” repeated Miss Bingley.
+“I am all astonishment. How long has she been such a favourite? and pray when am I to
+wish you joy?” “That is exactly the question which I expected you to ask. A lady’s
+imagination is very rapid; it jumps from admiration to love, from love to matrimony, in
+a moment. I knew you would be wishing me joy.”
+
+Chunk 02 — Pride and Prejudice (Jane Austen)
+Miss Bennet accepted her aunt’s invitation with pleasure; and the Bingleys were no
+otherwise in her thoughts at the same time than as she hoped, by Caroline’s not living
+in the same house with her brother, she might occasionally spend a morning with her,
+without any danger of seeing him. The Gardiners stayed a week at Longbourn; and what
+with the Philipses, the Lucases, and the officers, there was not a day without its
+engagement. Mrs. Bennet had so carefully provided for the entertainment of her brother
+and sister, that they did not once sit down to a family dinner. When the engagement was
+for home, some of the officers always made part of it, of which officers Mr. Wickham was
+sure to be one; and on these occasions Mrs. Gardiner, rendered suspicious by Elizabeth’s
+warm commendation of him, narrowly observed them both. Without supposing them, from what
+she saw, to be very seriously in love, their preference of each other was plain enough
+to make her a little uneasy; and she resolved to speak to Elizabeth on the subject
+before she left Hertfordshire, and represent to her the imprudence of encouraging such
+an attachment.
+
+Chunk 03 — Pride and Prejudice (Jane Austen)
+“Oh, yes! Be so kind as to apologize for us to Miss Darcy. Say that urgent business
+calls us home immediately. Conceal the unhappy truth as long as it is possible. I know
+it cannot be long.” He readily assured her of his secrecy, again expressed his sorrow
+for her distress, wished it a happier conclusion than there was at present reason to
+hope, and, leaving his compliments for her relations, with only one serious parting
+look, went away. As he quitted the room, Elizabeth felt how improbable it was that they
+should ever see each other again on such terms of cordiality as had marked their several
+meetings in Derbyshire; and as she threw a retrospective glance over the whole of their
+acquaintance, so full of contradictions and varieties, sighed at the perverseness of
+those feelings which would now have promoted its continuance, and would formerly have
+rejoiced in its termination.
+
+Chunk 04 — Pride and Prejudice (Jane Austen)
+Lady Catherine was extremely indignant on the marriage of her nephew; and as she gave
+way to all the genuine frankness of her character, in her reply to the letter which
+announced its arrangement, she sent him language so very abusive, especially of
+Elizabeth, that for some time all intercourse was at an end. But at length, by
+Elizabeth’s persuasion, he was prevailed on to overlook the offence, and seek a
+reconciliation; and, after a little further resistance on the part of his aunt, her
+resentment gave way, either to her affection for him, or her curiosity to see how his
+wife conducted herself; and she condescended to wait on them at Pemberley, in spite of
+that pollution which its woods had received, not merely from the presence of such a
+mistress, but the visits of her uncle and aunt from the city.
+
+Chunk 05 — Alice's Adventures in Wonderland (Lewis Carroll)
+And she went on planning to herself how she would manage it. “They must go by the
+carrier,” she thought; “and how funny it’ll seem, sending presents to one’s own feet!
+And how odd the directions will look! _Alice’s Right Foot, Esq., Hearthrug, near the
+Fender,_ (_with Alice’s love_). Just then her head struck against the roof of the hall:
+in fact she was now more than nine feet high, and she at once took up the little golden
+key and hurried off to the garden door. Poor Alice! It was as much as she could do,
+lying down on one side, to look through into the garden with one eye; but to get through
+was more hopeless than ever: she sat down and began to cry again.
+
+Chunk 06 — Alice's Adventures in Wonderland (Lewis Carroll)
+For a minute or two she stood looking at the house, and wondering what to do next, when
+suddenly a footman in livery came running out of the wood—(she considered him to be a
+footman because he was in livery: otherwise, judging by his face only, she would have
+called him a fish)—and rapped loudly at the door with his knuckles. It was opened by
+another footman in livery, with a round face, and large eyes like a frog; and both
+footmen, Alice noticed, had powdered hair that curled all over their heads. She felt
+very curious to know what it was all about, and crept a little way out of the wood to
+listen. The Fish-Footman began by producing from under his arm a great letter, nearly as
+large as himself, and this he handed over to the other, saying, in a solemn tone, “For
+the Duchess. An invitation from the Queen to play croquet.” The Frog-Footman repeated,
+in the same solemn tone, only changing the order of the words a little, “From the Queen.
+An invitation for the Duchess to play croquet.”
+
+Chunk 07 — Alice's Adventures in Wonderland (Lewis Carroll)
+“He might bite,” Alice cautiously replied, not feeling at all anxious to have the
+experiment tried. “Very true,” said the Duchess: “flamingoes and mustard both bite. And
+the moral of that is—‘Birds of a feather flock together.’” “Only mustard isn’t a bird,”
+Alice remarked. “Right, as usual,” said the Duchess: “what a clear way you have of
+putting things!” “It’s a mineral, I _think_,” said Alice. “Of course it is,” said the
+Duchess, who seemed ready to agree to everything that Alice said; “there’s a large
+mustard-mine near here. And the moral of that is—‘The more there is of mine, the less
+there is of yours.’” “Oh, I know!” exclaimed Alice, who had not attended to this last
+remark, “it’s a vegetable. It doesn’t look like one, but it is.”
+
+Chunk 08 — Alice's Adventures in Wonderland (Lewis Carroll)
+So she sat on, with closed eyes, and half believed herself in Wonderland, though she
+knew she had but to open them again, and all would change to dull reality—the grass
+would be only rustling in the wind, and the pool rippling to the waving of the reeds—the
+rattling teacups would change to tinkling sheep-bells, and the Queen’s shrill cries to
+the voice of the shepherd boy—and the sneeze of the baby, the shriek of the Gryphon, and
+all the other queer noises, would change (she knew) to the confused clamour of the busy
+farm-yard—while the lowing of the cattle in the distance would take the place of the
+Mock Turtle’s heavy sobs. Lastly, she pictured to herself how this same little sister of
+hers would, in the after-time, be herself a grown woman; and how she would keep, through
+all her riper years, the simple and loving heart of her childhood: and how she would
+gather about her other little children, and make _their_ eyes bright and eager with many
+a strange tale, perhaps even with the dream of Wonderland of long ago: and how she would
+feel with all their simple sorrows, and find a pleasure in all their simple joys,
+remembering her own child-life, and the happy summer days.
+
+Chunk 09 — The Adventures of Sherlock Holmes (Arthur Conan Doyle)
+“What a woman—oh, what a woman!” cried the King of Bohemia, when we had all three read
+this epistle. “Did I not tell you how quick and resolute she was? Would she not have
+made an admirable queen? Is it not a pity that she was not on my level?” “From what I
+have seen of the lady, she seems, indeed, to be on a very different level to your
+Majesty,” said Holmes coldly. “I am sorry that I have not been able to bring your
+Majesty’s business to a more successful conclusion.” “On the contrary, my dear sir,”
+cried the King; “nothing could be more successful. I know that her word is inviolate.
+The photograph is now as safe as if it were in the fire.”
+
+Chunk 10 — The Adventures of Sherlock Holmes (Arthur Conan Doyle)
+He took an orange from the cupboard, and tearing it to pieces he squeezed out the pips
+upon the table. Of these he took five and thrust them into an envelope. On the inside of
+the flap he wrote “S. H. for J. O.” Then he sealed it and addressed it to “Captain James
+Calhoun, Barque _Lone Star_, Savannah, Georgia.” “That will await him when he enters
+port,” said he, chuckling. “It may give him a sleepless night. He will find it as sure a
+precursor of his fate as Openshaw did before him.” “The leader of the gang. I shall have
+the others, but he first.” He took a large sheet of paper from his pocket, all covered
+with dates and names.
+
+Chunk 11 — The Adventures of Sherlock Holmes (Arthur Conan Doyle)
+“I felt angry at having been tricked by so elaborate a story as that which he had told
+me. ‘I was admiring your fuller’s-earth,’ said I; ‘I think that I should be better able
+to advise you as to your machine if I knew what the exact purpose was for which it was
+used.’ “The instant that I uttered the words I regretted the rashness of my speech. His
+face set hard, and a baleful light sprang up in his grey eyes. “‘Very well,’ said he,
+‘you shall know all about the machine.’ He took a step backward, slammed the little
+door, and turned the key in the lock. I rushed towards it and pulled at the handle, but
+it was quite secure, and did not give in the least to my kicks and shoves. ‘Hullo!’ I
+yelled. ‘Hullo! Colonel! Let me out!’
+
+Chunk 12 — The Adventures of Sherlock Holmes (Arthur Conan Doyle)
+“You have it, sir, just as it happened.” “I am sure we owe you an apology, Mrs. Toller,”
+said Holmes, “for you have certainly cleared up everything which puzzled us. And here
+comes the country surgeon and Mrs. Rucastle, so I think, Watson, that we had best escort
+Miss Hunter back to Winchester, as it seems to me that our _locus standi_ now is rather
+a questionable one.” And thus was solved the mystery of the sinister house with the
+copper beeches in front of the door. Mr. Rucastle survived, but was always a broken man,
+kept alive solely through the care of his devoted wife. They still live with their old
+servants, who probably know so much of Rucastle’s past life that he finds it difficult
+to part from them. Mr. Fowler and Miss Rucastle were married, by special license, in
+Southampton the day after their flight, and he is now the holder of a government
+appointment in the island of Mauritius. As to Miss Violet Hunter, my friend Holmes,
+rather to my disappointment, manifested no further interest in her when once she had
+ceased to be the centre of one of his problems, and she is now the head of a private
+school at Walsall, where I believe that she has met with considerable success.
+
+Chunk 13 — Treasure Island (Robert Louis Stevenson)
+“Draw down the blind, Jim,” whispered my mother; “they might come and watch outside. And
+now,” said she when I had done so, “we have to get the key off _that;_ and who’s to
+touch it, I should like to know!” and she gave a kind of sob as she said the words. I
+went down on my knees at once. On the floor close to his hand there was a little round
+of paper, blackened on the one side. I could not doubt that this was the _black spot;_
+and taking it up, I found written on the other side, in a very good, clear hand, this
+short message: “You have till ten tonight.” “He had till ten, Mother,” said I; and just
+as I said it, our old clock began striking. This sudden noise startled us shockingly;
+but the news was good, for it was only six.
+
+Chunk 14 — Treasure Island (Robert Louis Stevenson)
+“Well, I was in another ship three years back, and we sighted this island. ‘Boys,’ said
+I, ‘here’s Flint’s treasure; let’s land and find it.’ The cap’n was displeased at that,
+but my messmates were all of a mind and landed. Twelve days they looked for it, and
+every day they had the worse word for me, until one fine morning all hands went aboard.
+‘As for you, Benjamin Gunn,’ says they, ‘here’s a musket,’ they says, ‘and a spade, and
+pick-axe. You can stay here and find Flint’s money for yourself,’ they says. “Well, Jim,
+three years have I been here, and not a bite of Christian diet from that day to this.
+But now, you look here; look at me. Do I look like a man before the mast? No, says you.
+Nor I weren’t, neither, I says.”
+
+Chunk 15 — Treasure Island (Robert Louis Stevenson)
+Now, the coxswain’s hesitation seemed to be unnatural, and as for the notion of his
+preferring wine to brandy, I entirely disbelieved it. The whole story was a pretext. He
+wanted me to leave the deck--so much was plain; but with what purpose I could in no way
+imagine. His eyes never met mine; they kept wandering to and fro, up and down, now with
+a look to the sky, now with a flitting glance upon the dead O’Brien. All the time he
+kept smiling and putting his tongue out in the most guilty, embarrassed manner, so that
+a child could have told that he was bent on some deception. I was prompt with my answer,
+however, for I saw where my advantage lay and that with a fellow so densely stupid I
+could easily conceal my suspicions to the end.
+
+Chunk 16 — Treasure Island (Robert Louis Stevenson)
+Of Silver we have heard no more. That formidable seafaring man with one leg has at last
+gone clean out of my life; but I dare say he met his old Negress, and perhaps still
+lives in comfort with her and Captain Flint. It is to be hoped so, I suppose, for his
+chances of comfort in another world are very small. The bar silver and the arms still
+lie, for all that I know, where Flint buried them; and certainly they shall lie there
+for me. Oxen and wain-ropes would not bring me back again to that accursed island; and
+the worst dreams that ever I have are when I hear the surf booming about its coasts or
+start upright in bed with the sharp voice of Captain Flint still ringing in my ears:
+“Pieces of eight! Pieces of eight!”
+
+Chunk 17 — The Wonderful Wizard of Oz (L. Frank Baum)
+“Won’t you go with me?” pleaded the girl, who had begun to look upon the little old
+woman as her only friend. “No, I cannot do that,” she replied, “but I will give you my
+kiss, and no one will dare injure a person who has been kissed by the Witch of the
+North.” She came close to Dorothy and kissed her gently on the forehead. Where her lips
+touched the girl they left a round, shining mark, as Dorothy found out soon after. “The
+road to the City of Emeralds is paved with yellow brick,” said the Witch, “so you cannot
+miss it. When you get to Oz do not be afraid of him, but tell your story and ask him to
+help you. Good-bye, my dear.”
+
+Chunk 18 — The Wonderful Wizard of Oz (L. Frank Baum)
+After a great deal of hard work, for the Lion was heavy, they managed to get him up on
+the truck. Then the Queen hurriedly gave her people the order to start, for she feared
+if the mice stayed among the poppies too long they also would fall asleep. At first the
+little creatures, many though they were, could hardly stir the heavily loaded truck; but
+the Woodman and the Scarecrow both pushed from behind, and they got along better. Soon
+they rolled the Lion out of the poppy bed to the green fields, where he could breathe
+the sweet, fresh air again, instead of the poisonous scent of the flowers. Dorothy came
+to meet them and thanked the little mice warmly for saving her companion from death. She
+had grown so fond of the big Lion she was glad he had been rescued.
+
+Chunk 19 — The Wonderful Wizard of Oz (L. Frank Baum)
+“And what became of them?” asked Dorothy, who had been greatly interested in the story.
+“Quelala being the first owner of the Golden Cap,” replied the Monkey, “he was the first
+to lay his wishes upon us. As his bride could not bear the sight of us, he called us all
+to him in the forest after he had married her and ordered us always to keep where she
+could never again set eyes on a Winged Monkey, which we were glad to do, for we were all
+afraid of her. “This was all we ever had to do until the Golden Cap fell into the hands
+of the Wicked Witch of the West, who made us enslave the Winkies, and afterward drive Oz
+himself out of the Land of the West. Now the Golden Cap is yours, and three times you
+have the right to lay your wishes upon us.”
+
+Chunk 20 — The Wonderful Wizard of Oz (L. Frank Baum)
+Dorothy stood up and found she was in her stocking-feet. For the Silver Shoes had fallen
+off in her flight through the air, and were lost forever in the desert. Aunt Em had just
+come out of the house to water the cabbages when she looked up and saw Dorothy running
+toward her. “My darling child!” she cried, folding the little girl in her arms and
+covering her face with kisses. “Where in the world did you come from?” “From the Land of
+Oz,” said Dorothy gravely. “And here is Toto, too. And oh, Aunt Em! I’m so glad to be at
+home again!”
+
+Chunk 21 — Grimms' Fairy Tales (Jacob Grimm and Wilhelm Grimm)
+However, the king hoped still to save his dear child altogether from the threatened
+evil; so he ordered that all the spindles in the kingdom should be bought up and burnt.
+But all the gifts of the first eleven fairies were in the meantime fulfilled; for the
+princess was so beautiful, and well behaved, and good, and wise, that everyone who knew
+her loved her. It happened that, on the very day she was fifteen years old, the king and
+queen were not at home, and she was left alone in the palace. So she roved about by
+herself, and looked at all the rooms and chambers, till at last she came to an old
+tower, to which there was a narrow staircase ending with a little door. In the door
+there was a golden key, and when she turned it the door sprang open, and there sat an
+old lady spinning away very busily. ‘Why, how now, good mother,’ said the princess;
+‘what are you doing there?’ ‘Spinning,’ said the old lady, and nodded her head, humming
+a tune, while buzz! went the wheel. ‘How prettily that little thing turns round!’ said
+the princess, and took the spindle and began to try and spin. But scarcely had she
+touched it, before the fairy’s prophecy was fulfilled; the spindle wounded her, and she
+fell down lifeless on the ground.
+
+Chunk 22 — Grimms' Fairy Tales (Jacob Grimm and Wilhelm Grimm)
+At the birth of her first little child she was very glad, and forgot the dwarf, and what
+she had said. But one day he came into her room, where she was sitting playing with her
+baby, and put her in mind of it. Then she grieved sorely at her misfortune, and said she
+would give him all the wealth of the kingdom if he would let her off, but in vain; till
+at last her tears softened him, and he said, ‘I will give you three days’ grace, and if
+during that time you tell me my name, you shall keep your child.’ Now the queen lay
+awake all night, thinking of all the odd names that she had ever heard; and she sent
+messengers all over the land to find out new ones. The next day the little man came, and
+she began with TIMOTHY, ICHABOD, BENJAMIN, JEREMIAH, and all the names she could
+remember; but to all and each of them he said, ‘Madam, that is not my name.’
+
+Chunk 23 — Grimms' Fairy Tales (Jacob Grimm and Wilhelm Grimm)
+This done, they were riding away well pleased, when up sprang a fierce lion, and roared
+out, ‘Whoever has stolen my roses shall be eaten up alive!’ Then the man said, ‘I knew
+not that the garden belonged to you; can nothing save my life?’ ‘No!’ said the lion,
+‘nothing, unless you undertake to give me whatever meets you on your return home; if you
+agree to this, I will give you your life, and the rose too for your daughter.’ But the
+man was unwilling to do so and said, ‘It may be my youngest daughter, who loves me most,
+and always runs to meet me when I go home.’ Then the servant was greatly frightened, and
+said, ‘It may perhaps be only a cat or a dog.’ And at last the man yielded with a heavy
+heart, and took the rose; and said he would give the lion whatever should meet him first
+on his return.
+
+Chunk 24 — Grimms' Fairy Tales (Jacob Grimm and Wilhelm Grimm)
+The girls had run away, but the bear called to them: ‘Snow-white and Rose-red, do not be
+afraid; wait, I will come with you.’ Then they recognized his voice and waited, and when
+he came up to them suddenly his bearskin fell off, and he stood there a handsome man,
+clothed all in gold. ‘I am a king’s son,’ he said, ‘and I was bewitched by that wicked
+dwarf, who had stolen my treasures; I have had to run about the forest as a savage bear
+until I was freed by his death. Now he has got his well-deserved punishment. Snow-white
+was married to him, and Rose-red to his brother, and they divided between them the great
+treasure which the dwarf had gathered together in his cave. The old mother lived
+peacefully and happily with her children for many years. She took the two rose-trees
+with her, and they stood before her window, and every year bore the most beautiful
+roses, white and red.
+
+Chunk 25 — The Importance of Being Earnest (Oscar Wilde)
+ALGERNON. Yes. But why does your aunt call you her uncle? ‘From little Cecily, with her
+fondest love to her dear Uncle Jack.’ There is no objection, I admit, to an aunt being a
+small aunt, but why an aunt, no matter what her size may be, should call her own nephew
+her uncle, I can’t quite make out. Besides, your name isn’t Jack at all; it is Ernest.
+JACK. It isn’t Ernest; it’s Jack. ALGERNON. You have always told me it was Ernest. I
+have introduced you to every one as Ernest. You answer to the name of Ernest. You look
+as if your name was Ernest. You are the most earnest-looking person I ever saw in my
+life. It is perfectly absurd your saying that your name isn’t Ernest. It’s on your
+cards. Here is one of them. [Taking it from case.] ‘Mr. Ernest Worthing, B. 4, The
+Albany.’ I’ll keep this as a proof that your name is Ernest if ever you attempt to deny
+it to me, or to Gwendolen, or to any one else. [Puts the card in his pocket.]
+
+Chunk 26 — The Importance of Being Earnest (Oscar Wilde)
+MISS PRISM. The good ended happily, and the bad unhappily. That is what Fiction means.
+CECILY. I suppose so. But it seems very unfair. And was your novel ever published? MISS
+PRISM. Alas! no. The manuscript unfortunately was abandoned. [Cecily starts.] I use the
+word in the sense of lost or mislaid. To your work, child, these speculations are
+profitless. CECILY. [Smiling.] But I see dear Dr. Chasuble coming up through the garden.
+MISS PRISM. [Rising and advancing.] Dr. Chasuble! This is indeed a pleasure. CHASUBLE.
+And how are we this morning? Miss Prism, you are, I trust, well? CECILY. Miss Prism has
+just been complaining of a slight headache. I think it would do her so much good to have
+a short stroll with you in the Park, Dr. Chasuble.
+
+Chunk 27 — The Importance of Being Earnest (Oscar Wilde)
+[Merriman does so, and goes out with footman. Gwendolen drinks the tea and makes a
+grimace. Puts down cup at once, reaches out her hand to the bread and butter, looks at
+it, and finds it is cake. Rises in indignation.] GWENDOLEN. You have filled my tea with
+lumps of sugar, and though I asked most distinctly for bread and butter, you have given
+me cake. I am known for the gentleness of my disposition, and the extraordinary
+sweetness of my nature, but I warn you, Miss Cardew, you may go too far. CECILY.
+[Rising.] To save my poor, innocent, trusting boy from the machinations of any other
+girl there are no lengths to which I would not go. GWENDOLEN. From the moment I saw you
+I distrusted you. I felt that you were false and deceitful. I am never deceived in such
+matters. My first impressions of people are invariably right.
+
+Chunk 28 — The Importance of Being Earnest (Oscar Wilde)
+JACK. Gwendolen, it is a terrible thing for a man to find out suddenly that all his life
+he has been speaking nothing but the truth. Can you forgive me? GWENDOLEN. I can. For I
+feel that you are sure to change. CHASUBLE. [To Miss Prism.] Lætitia! [Embraces her]
+LADY BRACKNELL. My nephew, you seem to be displaying signs of triviality. JACK. On the
+contrary, Aunt Augusta, I’ve now realised for the first time in my life the vital
+Importance of Being Earnest.
+
+Chunk 29 — Hamlet (William Shakespeare)
+MARCELLUS. My lord, upon the platform where we watch. HORATIO. My lord, I did; But
+answer made it none: yet once methought It lifted up it head, and did address Itself to
+motion, like as it would speak. But even then the morning cock crew loud, And at the
+sound it shrunk in haste away, And vanish’d from our sight. HORATIO. As I do live, my
+honour’d lord, ’tis true; And we did think it writ down in our duty To let you know of
+it. HAMLET. Indeed, indeed, sirs, but this troubles me. Hold you the watch tonight?
+HORATIO. O yes, my lord, he wore his beaver up. HORATIO. A countenance more in sorrow
+than in anger.
+
+Chunk 30 — Hamlet (William Shakespeare)
+OPHELIA. Good my lord, How does your honour for this many a day? HAMLET. I humbly thank
+you; well, well, well. OPHELIA. My lord, I have remembrances of yours That I have longed
+long to re-deliver. I pray you, now receive them. HAMLET. No, not I. I never gave you
+aught. OPHELIA. My honour’d lord, you know right well you did, And with them words of so
+sweet breath compos’d As made the things more rich; their perfume lost, Take these
+again; for to the noble mind Rich gifts wax poor when givers prove unkind. There, my
+lord. HAMLET. That if you be honest and fair, your honesty should admit no discourse to
+your beauty. OPHELIA. Could beauty, my lord, have better commerce than with honesty?
+
+Chunk 31 — Hamlet (William Shakespeare)
+LAERTES. Let this be so; His means of death, his obscure burial,— No trophy, sword, nor
+hatchment o’er his bones, No noble rite, nor formal ostentation,— Cry to be heard, as
+’twere from heaven to earth, That I must call’t in question. KING. So you shall. And
+where th’offence is let the great axe fall. I pray you go with me. HORATIO. What are
+they that would speak with me? SERVANT. Sailors, sir. They say they have letters for
+you. I do not know from what part of the world I should be greeted, if not from Lord
+Hamlet. FIRST SAILOR. He shall, sir, and’t please him. There’s a letter for you, sir. It
+comes from th’ambassador that was bound for England; if your name be Horatio, as I am
+let to know it is.
+
+Chunk 32 — Hamlet (William Shakespeare)
+FORTINBRAS. Let us haste to hear it, And call the noblest to the audience. For me, with
+sorrow I embrace my fortune. I have some rights of memory in this kingdom, Which now to
+claim my vantage doth invite me. HORATIO. Of that I shall have also cause to speak, And
+from his mouth whose voice will draw on more. But let this same be presently perform’d,
+Even while men’s minds are wild, lest more mischance On plots and errors happen.
+FORTINBRAS. Let four captains Bear Hamlet like a soldier to the stage, For he was
+likely, had he been put on, To have prov’d most royally; and for his passage, The
+soldiers’ music and the rites of war Speak loudly for him. Take up the bodies. Such a
+sight as this Becomes the field, but here shows much amiss. Go, bid the soldiers shoot.
+
+Chunk 33 — Anne of Green Gables (L. M. Montgomery)
+Marilla set the candle on a three-legged, three-cornered table and turned down the
+bedclothes. “I suppose you have a nightgown?” she questioned. “Yes, I have two. The
+matron of the asylum made them for me. They’re fearfully skimpy. There is never enough
+to go around in an asylum, so things are always skimpy--at least in a poor asylum like
+ours. I hate skimpy night-dresses. But one can dream just as well in them as in lovely
+trailing ones, with frills around the neck, that’s one consolation.” “Well, undress as
+quick as you can and go to bed. I’ll come back in a few minutes for the candle. I
+daren’t trust you to put it out yourself. You’d likely set the place on fire.”
+
+Chunk 34 — Anne of Green Gables (L. M. Montgomery)
+Anne swept by disdainfully, without look or sign of hearing. “Oh how could you, Anne?”
+breathed Diana as they went down the road half reproachfully, half admiringly. Diana
+felt that _she_ could never have resisted Gilbert’s plea. “I shall never forgive Gilbert
+Blythe,” said Anne firmly. “And Mr. Phillips spelled my name without an e, too. The iron
+has entered into my soul, Diana.” Diana hadn’t the least idea what Anne meant but she
+understood it was something terrible. “You mustn’t mind Gilbert making fun of your
+hair,” she said soothingly. “Why, he makes fun of all the girls. He laughs at mine
+because it’s so black. He’s called me a crow a dozen times; and I never heard him
+apologize for anything before, either.”
+
+Chunk 35 — Anne of Green Gables (L. M. Montgomery)
+This was how the story club came into existence. It was limited to Diana and Anne at
+first, but soon it was extended to include Jane Andrews and Ruby Gillis and one or two
+others who felt that their imaginations needed cultivating. No boys were allowed in it--
+although Ruby Gillis opined that their admission would make it more exciting--and each
+member had to produce one story a week. “It’s extremely interesting,” Anne told Marilla.
+“Each girl has to read her story out loud and then we talk it over. We are going to keep
+them all sacredly and have them to read to our descendants. We each write under a nom-
+de-plume. Mine is Rosamond Montmorency. All the girls do pretty well. Ruby Gillis is
+rather sentimental. She puts too much lovemaking into her stories and you know too much
+is worse than too little. Jane never puts any because she says it makes her feel so
+silly when she had to read it out loud. Jane’s stories are extremely sensible. Then
+Diana puts too many murders into hers. She says most of the time she doesn’t know what
+to do with the people so she kills them off to get rid of them. I mostly always have to
+tell them what to write about, but that isn’t hard for I’ve millions of ideas.”
+
+Chunk 36 — Anne of Green Gables (L. M. Montgomery)
+Anne’s horizons had closed in since the night she had sat there after coming home from
+Queen’s; but if the path set before her feet was to be narrow she knew that flowers of
+quiet happiness would bloom along it. The joy of sincere work and worthy aspiration and
+congenial friendship were to be hers; nothing could rob her of her birthright of fancy
+or her ideal world of dreams. And there was always the bend in the road! “‘God’s in his
+heaven, all’s right with the world,’” whispered Anne softly.
+
+Chunk 37 — Jane Eyre (Charlotte Bronte)
+I remember but little of the journey; I only know that the day seemed to me of a
+preternatural length, and that we appeared to travel over hundreds of miles of road. We
+passed through several towns, and in one, a very large one, the coach stopped; the
+horses were taken out, and the passengers alighted to dine. I was carried into an inn,
+where the guard wanted me to have some dinner; but, as I had no appetite, he left me in
+an immense room with a fireplace at each end, a chandelier pendent from the ceiling, and
+a little red gallery high up against the wall filled with musical instruments. Here I
+walked about for a long time, feeling very strange, and mortally apprehensive of some
+one coming in and kidnapping me; for I believed in kidnappers, their exploits having
+frequently figured in Bessie’s fireside chronicles. At last the guard returned; once
+more I was stowed away in the coach, my protector mounted his own seat, sounded his
+hollow horn, and away we rattled over the “stony street” of L——.
+
+Chunk 38 — Jane Eyre (Charlotte Bronte)
+“Yaas, to be sure I do,” drawled Lord Ingram; “and the poor old stick used to cry out,
+‘Oh you villains childs!’—and then we sermonised her on the presumption of attempting to
+teach such clever blades as we were, when she was herself so ignorant.” “We did; and,
+Tedo, you know, I helped you in prosecuting (or persecuting) your tutor, whey-faced Mr.
+Vining—the parson in the pip, as we used to call him. He and Miss Wilson took the
+liberty of falling in love with each other—at least Tedo and I thought so; we surprised
+sundry tender glances and sighs which we interpreted as tokens of ‘la belle passion,’
+and I promise you the public soon had the benefit of our discovery; we employed it as a
+sort of lever to hoist our dead-weights from the house. Dear mama, there, as soon as she
+got an inkling of the business, found out that it was of an immoral tendency. Did you
+not, my lady-mother?”
+
+Chunk 39 — Jane Eyre (Charlotte Bronte)
+“I don’t like you so well as I have done sometimes, indeed, sir. Did it not seem to you
+in the least wrong to live in that way, first with one mistress and then another? You
+talk of it as a mere matter of course.” “It was with me; and I did not like it. It was a
+grovelling fashion of existence: I should never like to return to it. Hiring a mistress
+is the next worse thing to buying a slave: both are often by nature, and always by
+position, inferior: and to live familiarly with inferiors is degrading. I now hate the
+recollection of the time I passed with Céline, Giacinta, and Clara.” I felt the truth of
+these words; and I drew from them the certain inference, that if I were so far to forget
+myself and all the teaching that had ever been instilled into me, as—under any
+pretext—with any justification—through any temptation—to become the successor of these
+poor girls, he would one day regard me with the same feeling which now in his mind
+desecrated their memory. I did not give utterance to this conviction: it was enough to
+feel it. I impressed it on my heart, that it might remain there to serve me as aid in
+the time of trial.
+
+Chunk 40 — Jane Eyre (Charlotte Bronte)
+“I never thought of it, before; but you certainly are rather like Vulcan, sir.” “Well,
+you can leave me, ma’am: but before you go” (and he retained me by a firmer grasp than
+ever), “you will be pleased just to answer me a question or two.” He paused. “St. John
+made you schoolmistress of Morton before he knew you were his cousin?” “You would often
+see him? He would visit the school sometimes?” “He would approve of your plans, Jane? I
+know they would be clever, for you are a talented creature!” “He would discover many
+things in you he could not have expected to find? Some of your accomplishments are not
+ordinary.” “You had a little cottage near the school, you say: did he ever come there to
+see you?”
+
+Chunk 41 — The Secret Garden (Frances Hodgson Burnett)
+"What!" she said. "What! You thought I was a native. You--you daughter of a pig!" "Who
+are you callin' names?" she said. "You needn't be so vexed. That's not th' way for a
+young lady to talk. I've nothin' against th' blacks. When you read about 'em in tracts
+they're always very religious. You always read as a black's a man an' a brother. I've
+never seen a black an' I was fair pleased to think I was goin' to see one close. When I
+come in to light your fire this mornin' I crep' up to your bed an' pulled th' cover back
+careful to look at you. An' there you was," disappointedly, "no more black than me--for
+all you're so yeller."
+
+Chunk 42 — The Secret Garden (Frances Hodgson Burnett)
+"It makes me feel strong when I play and the wind comes over the moor," argued Mary.
+"Everywhere," gasped Mary. "Martha's mother sent me a skipping-rope. I skip and run--and
+I look about to see if things are beginning to stick up out of the earth. I don't do any
+harm." "Don't look so frightened," he said in a worried voice. "You could not do any
+harm, a child like you! You may do what you like." Mary put her hand up to her throat
+because she was afraid he might see the excited lump which she felt jump into it. She
+came a step nearer to him. Her anxious little face seemed to worry him more than ever.
+
+Chunk 43 — The Secret Garden (Frances Hodgson Burnett)
+"Things are changing in this house, Mr. Roach," said Mrs. Medlock, as she led him up the
+back staircase to the corridor on to which opened the hitherto mysterious chamber.
+"Let's hope they're changing for the better, Mrs. Medlock," he answered. "They couldn't
+well change for the worse," she continued; "and queer as it all is there's them as finds
+their duties made a lot easier to stand up under. Don't you be surprised, Mr. Roach, if
+you find yourself in the middle of a menagerie and Martha Sowerby's Dickon more at home
+than you or me could ever be." There really was a sort of Magic about Dickon, as Mary
+always privately believed. When Mr. Roach heard his name he smiled quite leniently.
+
+Chunk 44 — The Secret Garden (Frances Hodgson Burnett)
+"Where was Master Colin? How did he look? What did they say to each other?" "I didna'
+hear that," said Ben, "along o' only bein' on th' step-ladder lookin' over th' wall. But
+I'll tell thee this. There's been things goin' on outside as you house people knows nowt
+about. An' what tha'll find out tha'll find out soon." And it was not two minutes before
+he swallowed the last of his beer and waved his mug solemnly toward the window which
+took in through the shrubbery a piece of the lawn. "Look there," he said, "if tha's
+curious. Look what's comin' across th' grass." When Mrs. Medlock looked she threw up her
+hands and gave a little shriek and every man and woman servant within hearing bolted
+across the servants' hall and stood looking through the window with their eyes almost
+starting out of their heads.
+
+Chunk 45 — A Midsummer Night's Dream (William Shakespeare)
+LYSANDER. Keep promise, love. Look, here comes Helena. HELENA. Call you me fair? That
+fair again unsay. Demetrius loves your fair. O happy fair! Your eyes are lode-stars and
+your tongue’s sweet air More tuneable than lark to shepherd’s ear, When wheat is green,
+when hawthorn buds appear. Sickness is catching. O were favour so, Yours would I catch,
+fair Hermia, ere I go. My ear should catch your voice, my eye your eye, My tongue should
+catch your tongue’s sweet melody. Were the world mine, Demetrius being bated, The rest
+I’d give to be to you translated. O, teach me how you look, and with what art You sway
+the motion of Demetrius’ heart! HERMIA. I frown upon him, yet he loves me still.
+
+Chunk 46 — A Midsummer Night's Dream (William Shakespeare)
+PYRAMUS. _Thisbe, the flowers of odious savours sweet_ PYRAMUS. _. . . odours savours
+sweet. So hath thy breath, my dearest Thisbe dear. But hark, a voice! Stay thou but here
+awhile, And by and by I will to thee appear._ PUCK. A stranger Pyramus than e’er played
+here! QUINCE. Ay, marry, must you, For you must understand he goes but to see a noise
+that he heard, and is to come again. THISBE. _Most radiant Pyramus, most lily-white of
+hue, Of colour like the red rose on triumphant brier, Most brisky juvenal, and eke most
+lovely Jew, As true as truest horse, that yet would never tire, I’ll meet thee, Pyramus,
+at Ninny’s tomb._ QUINCE. Ninus’ tomb, man! Why, you must not speak that yet. That you
+answer to Pyramus. You speak all your part at once, cues, and all.—Pyramus enter! Your
+cue is past; it is ‘never tire.’
+
+Chunk 47 — A Midsummer Night's Dream (William Shakespeare)
+BOTTOM. Monsieur Cobweb; good monsieur, get you your weapons in your hand and kill me a
+red-hipped humble-bee on the top of a thistle; and, good monsieur, bring me the honey-
+bag. Do not fret yourself too much in the action, monsieur; and, good monsieur, have a
+care the honey-bag break not; I would be loath to have you overflown with a honey-bag,
+signior. Where’s Monsieur Mustardseed? BOTTOM. Give me your neaf, Monsieur Mustardseed.
+Pray you, leave your courtesy, good monsieur. BOTTOM. Nothing, good monsieur, but to
+help Cavalery Cobweb to scratch. I must to the barber’s, monsieur, for methinks I am
+marvellous hairy about the face; and I am such a tender ass, if my hair do but tickle
+me, I must scratch.
+
+Chunk 48 — A Midsummer Night's Dream (William Shakespeare)
+PUCK. If we shadows have offended, Think but this, and all is mended, That you have but
+slumber’d here While these visions did appear. And this weak and idle theme, No more
+yielding but a dream, Gentles, do not reprehend. If you pardon, we will mend. And, as I
+am an honest Puck, If we have unearnèd luck Now to ’scape the serpent’s tongue, We will
+make amends ere long; Else the Puck a liar call. So, good night unto you all. Give me
+your hands, if we be friends, And Robin shall restore amends.
