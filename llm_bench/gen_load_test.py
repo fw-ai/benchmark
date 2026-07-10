@@ -239,6 +239,9 @@ def load_chunks(dataset: str) -> list[str]:
             continue
         if normalized.startswith("text chunks\n"):
             chunk = chunk.split("\n", 1)[1].strip()
+        lines = chunk.splitlines()
+        if len(lines) > 1 and lines[0].lower().startswith("chunk "):
+            chunk = "\n".join(lines[1:]).strip()
         chunks.append(chunk)
     if not chunks:
         raise ValueError(f"No chunks in {path}")
@@ -260,6 +263,19 @@ def load_distinct_chunks() -> list[tuple[str, str]]:
 def _strip_source_label(labeled_chunk: tuple[str, str]) -> str:
     _, chunk = labeled_chunk
     return chunk
+
+
+def _distinct_chunk_order(chunks: list[tuple[str, str]], slot_idx: int, n: int, seed: int) -> list[tuple[str, str]]:
+    shuffled = chunks[:]
+    random.Random(seed).shuffle(shuffled)
+    primary = shuffled[slot_idx::n]
+    if not primary:
+        primary = [shuffled[slot_idx % len(shuffled)]]
+
+    start = (slot_idx * max(1, len(shuffled) // max(1, n))) % len(shuffled)
+    fallback = shuffled[start:] + shuffled[:start]
+    primary_set = set(primary)
+    return primary + [chunk for chunk in fallback if chunk not in primary_set]
 
 
 def build_chunk_texts_to_length(
@@ -374,16 +390,21 @@ def build_distinct_prompt_ids(
 ) -> list[list[int]]:
     """Build `n` DISTINCT chat prompts of `target_len` tokens, one per batch slot.
 
-    Each prompt is assembled from a per-slot shuffled ordering across multiple
-    built-in corpora plus a varied instruction suffix. That creates different
-    content, prefixes, and task framing per batch slot.
+    Each prompt starts from a different partition of a shuffled multi-corpus
+    pool, then falls back to a rotated full-corpus order if the target context
+    is longer than that partition. That keeps short and medium contexts from
+    sharing their leading content while still supporting long prompts.
     """
+    if n > len(chunks):
+        logger.warning(
+            "distinct prompt count %d exceeds source chunk count %d; some prompt content must overlap",
+            n,
+            len(chunks),
+        )
     prompts: list[list[int]] = []
     for i in range(n):
-        shuffled = chunks[:]
-        rng = random.Random(seed * 100003 + i)
-        rng.shuffle(shuffled)
-        chunk_texts_i = build_chunk_texts_to_length(tokenizer, [_strip_source_label(c) for c in shuffled], max_seq)
+        ordered_chunks = _distinct_chunk_order(chunks, i, n, seed)
+        chunk_texts_i = build_chunk_texts_to_length(tokenizer, [_strip_source_label(c) for c in ordered_chunks], max_seq)
         suffix_text = _DISTINCT_PROMPT_SUFFIXES[i % len(_DISTINCT_PROMPT_SUFFIXES)]
         prompts.append(
             build_chat_prompt_ids(tokenizer, tokenizer_path, model_type, suffix_text, chunk_texts_i, target_len)
