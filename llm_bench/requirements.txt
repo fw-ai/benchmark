@@ -6,6 +6,7 @@ gevent
 locust-plugins
 pandas
 python-dotenv
+scipy
 tabulate
 tiktoken
 transformers

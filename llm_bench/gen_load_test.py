@@ -2,10 +2,10 @@
 """
 Generation (decode) latency benchmark for Fireworks /v1/completions.
 
-For each (seq_len, batch_size) pair, builds a single user message wrapped in
-the model's chat template (applied client-side via the HF tokenizer), sends
-the resulting token-id prompt with n=batch_size and max_tokens output tokens,
-then reports per-forward-pass generation latency derived from
+For each (seq_len, batch_size) pair, builds a deterministic ragged batch of
+distinct prompts whose lengths follow gamma-distribution quantiles, sends all
+token-id prompts in one request, then reports per-forward-pass generation
+latency derived from
 fireworks-generation-duration and the number of target-model forward passes
 (speculation-aware).
 """
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 import requests
 import transformers
 from huggingface_hub import hf_hub_download
+from scipy.special import gammaincinv
 from tabulate import tabulate
 
 FW_HEADER_PREFIX = "fireworks-"
@@ -87,6 +88,9 @@ _FAST_BATCH_SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
 # NB: don't use power of 2 as we will use multiples of this to generate seq pairs
 # and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
 _DEFAULT_MIN_SEQ_LEN = 1000
+_DEFAULT_GAMMA_SHAPE = 0.9
+_DISTINCT_PROMPTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "distinct_prompts_512.jsonl")
+_RAGGED_PROMPT_SUFFIX = "\n\nGive me a detailed analysis of the above content."
 _MAX_SEQ_LEN_CONFIG_FIELDS = (
     "max_position_embeddings",
     "model_max_length",
@@ -204,6 +208,14 @@ def load_chunks(dataset: str) -> list[str]:
     return chunks
 
 
+def load_distinct_prompts(path: str = _DISTINCT_PROMPTS_PATH) -> list[str]:
+    with open(path, "r") as f:
+        prompts = [json.loads(line)["text"].strip() for line in f if line.strip()]
+    if not prompts:
+        raise ValueError(f"No prompts found in {path}")
+    return prompts
+
+
 _DATASET_SUFFIXES = {
     "limericks": "\n\nTranslate the limericks above to Spanish.",
     "code": "\n\nTranslate the code above to C++.",
@@ -310,6 +322,64 @@ def build_chat_prompt_ids(
     return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:lo]) + suffix_text, model_type)
 
 
+def build_repeated_chat_prompt_ids(
+    tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
+    model_type: str,
+    source_text: str,
+    target_len: int,
+) -> list[int]:
+    """Repeat one source row and truncate its tokens to fit target_len."""
+    repeated_unit = source_text.rstrip() + "\n\n"
+    suffix_ids = apply_chat_template_ids(
+        tokenizer,
+        tokenizer_path,
+        _RAGGED_PROMPT_SUFFIX,
+        model_type,
+    )
+    target_len = max(target_len, len(suffix_ids))
+    body_budget = target_len - len(suffix_ids)
+    unit_tokens = max(1, len(tokenizer.encode(repeated_unit, add_special_tokens=False)))
+    repeated_text = repeated_unit * (body_budget // unit_tokens + 2)
+    body_ids = tokenizer.encode(repeated_text, add_special_tokens=False)[:body_budget]
+
+    def render(ids: list[int]) -> list[int]:
+        body = tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+        return apply_chat_template_ids(tokenizer, tokenizer_path, body + _RAGGED_PROMPT_SUFFIX, model_type)
+
+    prompt_ids = render(body_ids)
+    while len(prompt_ids) > target_len and body_ids:
+        body_ids = body_ids[: max(0, len(body_ids) - max(1, len(prompt_ids) - target_len))]
+        prompt_ids = render(body_ids)
+    return prompt_ids
+
+
+def build_ragged_prompt_batch(
+    tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
+    model_type: str,
+    source_prompts: list[str],
+    mean_prompt_len: int,
+    batch_size: int,
+    gamma_shape: float,
+    max_prompt_len: int,
+) -> list[list[int]]:
+    prompts: list[list[int]] = []
+    for index in range(batch_size):
+        percentile = (index + 1) / (batch_size + 1)
+        target_len = round(gammaincinv(gamma_shape, percentile) * mean_prompt_len / gamma_shape)
+        prompts.append(
+            build_repeated_chat_prompt_ids(
+                tokenizer=tokenizer,
+                tokenizer_path=tokenizer_path,
+                model_type=model_type,
+                source_text=source_prompts[index % len(source_prompts)],
+                target_len=min(max(1, target_len), max_prompt_len),
+            )
+        )
+    return prompts
+
+
 def get_header(headers: Mapping[str, str], short_key: str) -> Optional[float]:
     full = FW_HEADER_PREFIX + short_key
     v = headers.get(full)
@@ -358,7 +428,7 @@ def post_completion(
     url: str,
     api_key: Optional[str],
     model: Optional[str],
-    prompt: list[int],
+    prompt: list[int] | list[list[int]],
     max_tokens: int,
     n: int,
     temperature: Optional[float] = None,
@@ -410,20 +480,20 @@ class GenBenchmarkResult:
     client_duration: float
 
 
-def _run_pair_n_mode(
+def _run_pair_batched_prompts_mode(
     session: requests.Session,
     url: str,
     api_key: Optional[str],
     model: Optional[str],
-    prompt_ids: list[int],
+    prompt_ids: list[list[int]],
     max_tokens: int,
     seq_len: int,
     batch_size: int,
     temperature: Optional[float],
 ) -> GenBenchmarkResult:
-    """Single request with n=batch_size."""
+    """Send batch_size distinct prompts together in one request with n=1."""
     logger.info(
-        "Pair (seq_len=%d, batch_size=%d): n=%d, max_tokens=%d",
+        "Pair (seq_len=%d, batch_size=%d): %d ragged prompts in one request, n=1, max_tokens=%d",
         seq_len,
         batch_size,
         batch_size,
@@ -438,7 +508,7 @@ def _run_pair_n_mode(
         model,
         prompt_ids,
         max_tokens=max_tokens,
-        n=batch_size,
+        n=1,
         temperature=temperature,
     )
     wall = time.perf_counter() - wall_start
@@ -577,7 +647,7 @@ def _warmup_seq_len(
     url: str,
     api_key: Optional[str],
     model: Optional[str],
-    prompt_ids: list[int],
+    prompt_ids: list[int] | list[list[int]],
     seq_len: int,
     concurrency: int,
     temperature: Optional[float],
@@ -587,7 +657,7 @@ def _warmup_seq_len(
     routing: Optional[RoutingConfig] = None,
     worker_offset: int = 0,
 ) -> None:
-    """Issue `concurrency` warmup completions in parallel for the same prompt."""
+    """Issue warmup completions for one prompt or one batched prompt payload."""
     if users is not None:
         assert len(users) == concurrency, f"expected {concurrency} users, got {len(users)}"
 
@@ -651,29 +721,47 @@ def run_benchmark(
     retry_delay: float = 30.0,
     seed: int = 0,
     routing: Optional[RoutingConfig] = None,
+    gamma_shape: float = _DEFAULT_GAMMA_SHAPE,
+    max_context_len: Optional[int] = None,
 ) -> list[GenBenchmarkResult]:
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     model_type = resolve_model_type(tokenizer_path)
     if model_type == "deepseek_v4":
         logger.info("Using DeepSeek-V4 benchmark prompt encoder")
-    max_seq = max(seq_len for seq_len, _ in pairs)
-    chunks = load_chunks(dataset)
-    suffix = _DATASET_SUFFIXES.get(dataset, "")
-
-    chunk_texts = build_chunk_texts_to_length(tokenizer, chunks, max_seq)
-
     url = completions_url(base_url)
     session = requests.Session()
 
     # Mode is derived from routing: enabled (num_servers > 1 OR num_gens > 1)
     # implies separate concurrent requests pinned to specific cells; disabled
-    # falls back to a single request with n=batch_size against the LB.
+    # falls back to one request containing batch_size distinct prompts.
     routing = routing or RoutingConfig()
     separate_requests = routing.enabled
     if separate_requests:
         logger.info("Mode: separate concurrent requests (no n>1)")
+        max_seq = max(seq_len for seq_len, _ in pairs)
+        chunks = load_chunks(dataset)
+        suffix = _DATASET_SUFFIXES.get(dataset, "")
+        chunk_texts = build_chunk_texts_to_length(tokenizer, chunks, max_seq)
     else:
-        logger.info("Mode: single request with n=batch_size")
+        source_prompts = load_distinct_prompts()
+        if max_context_len is None:
+            max_context_len = resolve_max_seq_len(tokenizer_path)
+        else:
+            try:
+                max_context_len = min(max_context_len, resolve_max_seq_len(tokenizer_path))
+            except ValueError:
+                pass
+        max_prompt_len = max_context_len - max_tokens
+        min_prompt_len = len(
+            apply_chat_template_ids(tokenizer, tokenizer_path, _RAGGED_PROMPT_SUFFIX, model_type)
+        )
+        if max_prompt_len < min_prompt_len:
+            raise ValueError("model context is too small for max_tokens and the required prompt suffix")
+        logger.info(
+            "Mode: single request with batch_size ragged prompts (gamma shape=%.3f, context-clamped at %d prompt tokens)",
+            gamma_shape,
+            max_prompt_len,
+        )
     logger.info("Routing: %s", routing.describe())
 
     results: list[GenBenchmarkResult] = []
@@ -685,9 +773,10 @@ def run_benchmark(
     pairs = sorted(pairs, key=lambda p: (-p[0], -p[1]))
 
     prompt_ids: list[int] = []
+    ragged_prompt_ids: list[list[int]] = []
     seq_users: list[str] = []
     for seq_len, batch_size in pairs:
-        if seq_len != prev_seq_len:
+        if separate_requests and seq_len != prev_seq_len:
             prompt_ids = build_chat_prompt_ids(
                 tokenizer,
                 tokenizer_path,
@@ -697,65 +786,78 @@ def run_benchmark(
                 target_len=seq_len - max_tokens,
             )
             logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
-            if separate_requests:
-                if prev_seq_len is None:
-                    # HACK: backend OOMs without this pre-warmup on the largest
-                    # seq_len; sending the same prompt 64 times sequentially
-                    # with a fresh random `user` each time primes the backend
-                    # across generators before the user-pinned warmup at full
-                    # batch_size. TODO: fix the backend OOM and remove this.
-                    #
-                    # When routing is enabled we also round-robin the worker
-                    # index across all (server, local) workers so every DP group
-                    # gets primed by this hack instead of relying on the LB.
-                    logger.info(
-                        "Pre-warmup (seq_len=%d): 64 sequential requests with random users (HACK)",
-                        seq_len,
+            if prev_seq_len is None:
+                # HACK: backend OOMs without this pre-warmup on the largest
+                # seq_len; sending the same prompt 64 times sequentially
+                # with a fresh random `user` each time primes the backend
+                # across generators before the user-pinned warmup at full
+                # batch_size. TODO: fix the backend OOM and remove this.
+                #
+                # When routing is enabled we also round-robin the worker
+                # index across all (server, local) workers so every DP group
+                # gets primed by this hack instead of relying on the LB.
+                logger.info(
+                    "Pre-warmup (seq_len=%d): 64 sequential requests with random users (HACK)",
+                    seq_len,
+                )
+                rng = random.Random(seed)
+                for i in range(64):
+                    _warmup_seq_len(
+                        url=url,
+                        api_key=api_key,
+                        model=model,
+                        prompt_ids=prompt_ids,
+                        seq_len=seq_len,
+                        concurrency=1,
+                        temperature=temperature,
+                        retries=retries,
+                        retry_delay=retry_delay,
+                        users=[str(rng.randint(0, 2**63 - 1))],
+                        routing=routing,
+                        worker_offset=i,
                     )
-                    rng = random.Random(seed)
-                    for i in range(64):
-                        _warmup_seq_len(
-                            url=url,
-                            api_key=api_key,
-                            model=model,
-                            prompt_ids=prompt_ids,
-                            seq_len=seq_len,
-                            concurrency=1,
-                            temperature=temperature,
-                            retries=retries,
-                            retry_delay=retry_delay,
-                            users=[str(rng.randint(0, 2**63 - 1))],
-                            routing=routing,
-                            worker_offset=i,
-                        )
-                seq_users = _generate_users(seq_len + seed, batch_size)
-                _warmup_seq_len(
-                    url=url,
-                    api_key=api_key,
-                    model=model,
-                    prompt_ids=prompt_ids,
-                    seq_len=seq_len,
-                    concurrency=len(seq_users),
-                    temperature=temperature,
-                    retries=retries,
-                    retry_delay=retry_delay,
-                    users=seq_users,
-                    routing=routing,
-                )
-            else:
-                # n-mode measurement is unrouted; warmup must match or cache primes the wrong worker.
-                _warmup_seq_len(
-                    url=url,
-                    api_key=api_key,
-                    model=model,
-                    prompt_ids=prompt_ids,
-                    seq_len=seq_len,
-                    concurrency=1,
-                    temperature=temperature,
-                    retries=retries,
-                    retry_delay=retry_delay,
-                )
+            seq_users = _generate_users(seq_len + seed, batch_size)
+            _warmup_seq_len(
+                url=url,
+                api_key=api_key,
+                model=model,
+                prompt_ids=prompt_ids,
+                seq_len=seq_len,
+                concurrency=len(seq_users),
+                temperature=temperature,
+                retries=retries,
+                retry_delay=retry_delay,
+                users=seq_users,
+                routing=routing,
+            )
             prev_seq_len = seq_len
+        elif not separate_requests:
+            mean_prompt_len = seq_len - max_tokens
+            if mean_prompt_len < 1:
+                raise ValueError(
+                    f"seq_len={seq_len} must exceed max_tokens={max_tokens} to leave room for the prompt"
+                )
+            ragged_prompt_ids = build_ragged_prompt_batch(
+                tokenizer=tokenizer,
+                tokenizer_path=tokenizer_path,
+                model_type=model_type,
+                source_prompts=source_prompts,
+                mean_prompt_len=mean_prompt_len,
+                batch_size=batch_size,
+                gamma_shape=gamma_shape,
+                max_prompt_len=max_prompt_len,
+            )
+            _warmup_seq_len(
+                url=url,
+                api_key=api_key,
+                model=model,
+                prompt_ids=ragged_prompt_ids,
+                seq_len=seq_len,
+                concurrency=1,
+                temperature=temperature,
+                retries=retries,
+                retry_delay=retry_delay,
+            )
 
         users: Optional[list[str]] = None
         if separate_requests:
@@ -778,12 +880,12 @@ def run_benchmark(
                         routing=routing,
                     )
                 else:
-                    result = _run_pair_n_mode(
+                    result = _run_pair_batched_prompts_mode(
                         session=session,
                         url=url,
                         api_key=api_key,
                         model=model,
-                        prompt_ids=prompt_ids,
+                        prompt_ids=ragged_prompt_ids,
                         max_tokens=max_tokens,
                         seq_len=seq_len,
                         batch_size=batch_size,
@@ -911,6 +1013,14 @@ def main() -> None:
         help="Number of tokens to generate per completion (default: 100).",
     )
     parser.add_argument(
+        "--gamma-shape-k",
+        "--gamma-shape",
+        dest="gamma_shape",
+        type=float,
+        default=_DEFAULT_GAMMA_SHAPE,
+        help=f"Gamma shape k for deterministic ragged prompt lengths (default: {_DEFAULT_GAMMA_SHAPE}).",
+    )
+    parser.add_argument(
         "-f",
         "--format",
         choices=("table", "csv"),
@@ -971,6 +1081,8 @@ def main() -> None:
         parser.error("--min-batch-size must be >= 1")
     if args.min_batch_size > args.max_batch_size:
         parser.error("--min-batch-size must be <= --max-batch-size")
+    if args.gamma_shape <= 0:
+        parser.error("--gamma-shape-k must be > 0")
     routing = RoutingConfig(
         num_servers=args.num_servers,
         num_gens=args.num_generators_per_server,
@@ -1019,6 +1131,8 @@ def main() -> None:
         retry_delay=args.retry_delay,
         seed=args.seed,
         routing=routing,
+        gamma_shape=args.gamma_shape,
+        max_context_len=args.max_seq_len,
     )
     if args.format == "csv":
         print(format_csv(rows))
