@@ -4,10 +4,9 @@ Generation (decode) latency benchmark for Fireworks /v1/completions.
 
 For each (seq_len, batch_size) pair, builds a deterministic ragged batch of
 distinct prompts whose lengths follow gamma-distribution quantiles, sends all
-token-id prompts in one request, then reports per-forward-pass generation
-latency derived from
-fireworks-generation-duration and the number of target-model forward passes
-(speculation-aware).
+token-id prompts in one request, and reports generation latency per target-model
+forward. Drafting and verification remain enabled, but speculative token
+acceptance is disabled so every sequence commits one token per forward.
 """
 
 from __future__ import annotations
