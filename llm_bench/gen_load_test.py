@@ -440,6 +440,7 @@ def post_completion(
         "max_tokens": max_tokens,
         "n": n,
         "stream": False,
+        "disable_speculation": True,
     }
     if temperature is not None:
         payload["temperature"] = temperature
