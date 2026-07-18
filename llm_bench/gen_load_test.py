@@ -847,17 +847,18 @@ def run_benchmark(
                 gamma_shape=gamma_shape,
                 max_prompt_len=max_prompt_len,
             )
-            _warmup_seq_len(
-                url=url,
-                api_key=api_key,
-                model=model,
-                prompt_ids=ragged_prompt_ids,
-                seq_len=seq_len,
-                concurrency=1,
-                temperature=temperature,
-                retries=retries,
-                retry_delay=retry_delay,
-            )
+            for warmup_prompt_ids in ragged_prompt_ids:
+                _warmup_seq_len(
+                    url=url,
+                    api_key=api_key,
+                    model=model,
+                    prompt_ids=warmup_prompt_ids,
+                    seq_len=seq_len,
+                    concurrency=1,
+                    temperature=temperature,
+                    retries=retries,
+                    retry_delay=retry_delay,
+                )
 
         users: Optional[list[str]] = None
         if separate_requests:
