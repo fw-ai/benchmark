@@ -154,7 +154,7 @@ def resolve_max_seq_len(tokenizer_path: str) -> int:
             v = config.get(name) if isinstance(config, Mapping) else getattr(config, name, None)
             if isinstance(v, int) and v > 0:
                 return v
-    raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
+    raise ValueError("Could not infer max sequence length from config.")
 
 
 def resolve_model_type(tokenizer_path: str) -> str:
@@ -745,12 +745,12 @@ def run_benchmark(
     else:
         source_prompts = load_distinct_prompts()
         if max_context_len is None:
-            max_context_len = resolve_max_seq_len(tokenizer_path)
-        else:
             try:
-                max_context_len = min(max_context_len, resolve_max_seq_len(tokenizer_path))
-            except ValueError:
-                pass
+                max_context_len = resolve_max_seq_len(tokenizer_path)
+            except ValueError as e:
+                raise ValueError(
+                    "Could not infer deployed model context; pass --model-max-context-len explicitly."
+                ) from e
         max_prompt_len = max_context_len - max_tokens
         min_prompt_len = len(
             apply_chat_template_ids(tokenizer, tokenizer_path, _RAGGED_PROMPT_SUFFIX, model_type)
@@ -983,6 +983,12 @@ def main() -> None:
         help="Max sequence length (default: read from HF config). " "Used for auto-generating --seq-lens.",
     )
     parser.add_argument(
+        "--model-max-context-len",
+        type=int,
+        default=None,
+        help="Deployed model context limit used to clamp ragged prompts (default: read from HF config).",
+    )
+    parser.add_argument(
         "--min-seq-len",
         type=int,
         default=_DEFAULT_MIN_SEQ_LEN,
@@ -1082,6 +1088,8 @@ def main() -> None:
         parser.error("--min-batch-size must be >= 1")
     if args.min_batch_size > args.max_batch_size:
         parser.error("--min-batch-size must be <= --max-batch-size")
+    if args.model_max_context_len is not None and args.model_max_context_len < 1:
+        parser.error("--model-max-context-len must be >= 1")
     if args.gamma_shape <= 0:
         parser.error("--gamma-shape-k must be > 0")
     routing = RoutingConfig(
@@ -1133,7 +1141,7 @@ def main() -> None:
         seed=args.seed,
         routing=routing,
         gamma_shape=args.gamma_shape,
-        max_context_len=args.max_seq_len,
+        max_context_len=args.model_max_context_len,
     )
     if args.format == "csv":
         print(format_csv(rows))
