@@ -325,11 +325,10 @@ def build_repeated_chat_prompt_ids(
     tokenizer: transformers.PreTrainedTokenizer,
     tokenizer_path: str,
     model_type: str,
-    source_text: str,
+    source_token_ids: list[int],
     target_len: int,
 ) -> list[int]:
     """Repeat one source row and truncate its tokens to fit target_len."""
-    repeated_unit = source_text.rstrip() + "\n\n"
     suffix_ids = apply_chat_template_ids(
         tokenizer,
         tokenizer_path,
@@ -338,9 +337,7 @@ def build_repeated_chat_prompt_ids(
     )
     target_len = max(target_len, len(suffix_ids))
     body_budget = target_len - len(suffix_ids)
-    unit_tokens = max(1, len(tokenizer.encode(repeated_unit, add_special_tokens=False)))
-    repeated_text = repeated_unit * (body_budget // unit_tokens + 2)
-    body_ids = tokenizer.encode(repeated_text, add_special_tokens=False)[:body_budget]
+    body_ids = (source_token_ids * (body_budget // len(source_token_ids) + 1))[:body_budget]
 
     def render(ids: list[int]) -> list[int]:
         body = tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
@@ -357,7 +354,7 @@ def build_ragged_prompt_batch(
     tokenizer: transformers.PreTrainedTokenizer,
     tokenizer_path: str,
     model_type: str,
-    source_prompts: list[str],
+    source_prompt_token_ids: list[list[int]],
     mean_prompt_len: int,
     batch_size: int,
     gamma_shape: float,
@@ -372,7 +369,7 @@ def build_ragged_prompt_batch(
                 tokenizer=tokenizer,
                 tokenizer_path=tokenizer_path,
                 model_type=model_type,
-                source_text=source_prompts[index % len(source_prompts)],
+                source_token_ids=source_prompt_token_ids[index % len(source_prompt_token_ids)],
                 target_len=min(max(1, target_len), max_prompt_len),
             )
         )
@@ -744,6 +741,10 @@ def run_benchmark(
         chunk_texts = build_chunk_texts_to_length(tokenizer, chunks, max_seq)
     else:
         source_prompts = load_distinct_prompts()
+        source_prompt_token_ids = [
+            _normalize_ids(tokenizer.encode(source_prompts[i].rstrip() + "\n\n", add_special_tokens=False))
+            for i in range(min(max(batch_size for _, batch_size in pairs), len(source_prompts)))
+        ]
         if max_context_len is None:
             try:
                 max_context_len = resolve_max_seq_len(tokenizer_path)
@@ -841,13 +842,32 @@ def run_benchmark(
                 tokenizer=tokenizer,
                 tokenizer_path=tokenizer_path,
                 model_type=model_type,
-                source_prompts=source_prompts,
+                source_prompt_token_ids=source_prompt_token_ids,
                 mean_prompt_len=mean_prompt_len,
                 batch_size=batch_size,
                 gamma_shape=gamma_shape,
                 max_prompt_len=max_prompt_len,
             )
-            for warmup_prompt_ids in ragged_prompt_ids:
+            warmup_token_budget = max(500_000, 2 * max_context_len)
+            warmup_batches: list[list[list[int]]] = []
+            warmup_batch: list[list[int]] = []
+            warmup_tokens = 0
+            for prompt_ids in ragged_prompt_ids:
+                if warmup_batch and warmup_tokens + len(prompt_ids) > warmup_token_budget:
+                    warmup_batches.append(warmup_batch)
+                    warmup_batch = []
+                    warmup_tokens = 0
+                warmup_batch.append(prompt_ids)
+                warmup_tokens += len(prompt_ids)
+            if warmup_batch:
+                warmup_batches.append(warmup_batch)
+            logger.info(
+                "Warming %d prompts in %d batches (token budget=%d)",
+                len(ragged_prompt_ids),
+                len(warmup_batches),
+                warmup_token_budget,
+            )
+            for warmup_prompt_ids in warmup_batches:
                 _warmup_seq_len(
                     url=url,
                     api_key=api_key,
