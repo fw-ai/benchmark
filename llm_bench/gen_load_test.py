@@ -751,7 +751,7 @@ def run_benchmark(
                 raise ValueError(
                     "Could not infer deployed model context; pass --model-max-context-len explicitly."
                 ) from e
-        max_prompt_len = max_context_len - max_tokens
+        max_prompt_len = max_context_len - max_tokens - 1
         min_prompt_len = len(
             apply_chat_template_ids(tokenizer, tokenizer_path, _RAGGED_PROMPT_SUFFIX, model_type)
         )
