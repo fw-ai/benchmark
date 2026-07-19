@@ -3,10 +3,10 @@
 Generation (decode) latency benchmark for Fireworks /v1/completions.
 
 For each (seq_len, batch_size) pair, builds a deterministic ragged batch of
-distinct prompts whose lengths follow gamma-distribution quantiles, sends all
-token-id prompts in one request, and reports generation latency per target-model
-forward. Drafting and verification remain enabled, but speculative token
-acceptance is disabled so every sequence commits one token per forward.
+distinct prompts whose lengths follow gamma-distribution quantiles. It either
+sends them in one request or fans them out as routed concurrent n=1 requests,
+then reports generation latency per target-model forward. Drafting and
+verification remain enabled, but speculative token acceptance is disabled.
 """
 
 from __future__ import annotations
@@ -192,54 +192,12 @@ def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenize
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
 
-def _dataset_path(dataset: str) -> str:
-    name = "limericks.txt" if dataset == "limericks" else "code.txt"
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
-
-
-def load_chunks(dataset: str) -> list[str]:
-    path = _dataset_path(dataset)
-    with open(path, "r") as f:
-        text = f.read()
-    chunks = [p for p in text.split("\n\n") if p.strip()]
-    if not chunks:
-        raise ValueError(f"No chunks in {path}")
-    return chunks
-
-
 def load_distinct_prompts(path: str = _DISTINCT_PROMPTS_PATH) -> list[str]:
     with open(path, "r") as f:
         prompts = [json.loads(line)["text"].strip() for line in f if line.strip()]
     if not prompts:
         raise ValueError(f"No prompts found in {path}")
     return prompts
-
-
-_DATASET_SUFFIXES = {
-    "limericks": "\n\nTranslate the limericks above to Spanish.",
-    "code": "\n\nTranslate the code above to C++.",
-}
-
-
-def build_chunk_texts_to_length(
-    tokenizer: transformers.PreTrainedTokenizer,
-    chunks: list[str],
-    target_len: int,
-) -> list[str]:
-    """Cycle chunks (each followed by `\\n\\n`) until total tokens reach `target_len`.
-
-    Returns one chunk text per element so callers can slice at chunk granularity
-    (never cutting a chunk mid-text).
-    """
-    out: list[str] = []
-    total = 0
-    i = 0
-    while total < target_len and i < 1_000_000:
-        text = chunks[i % len(chunks)] + "\n\n"
-        out.append(text)
-        total += len(tokenizer.encode(text))
-        i += 1
-    return out
 
 
 def apply_chat_template_ids(
@@ -281,44 +239,6 @@ def _normalize_ids(obj: Any) -> list[int]:
             flat = flat[0]
         return [int(t) for t in flat]
     return [int(t) for t in obj]
-
-
-def build_chat_prompt_ids(
-    tokenizer: transformers.PreTrainedTokenizer,
-    tokenizer_path: str,
-    model_type: str,
-    suffix_text: str,
-    chunk_texts: list[str],
-    target_len: int,
-) -> list[int]:
-    """Build chat-templated prompt ids of at most `target_len` tokens, chunk-aligned.
-
-    Bisects on chunk count to find the largest k such that the chat-templated
-    tokenization of `chunks[:k] + suffix` stays within `target_len`. This is
-    exact (no token-count estimation drift from chat template wrapping) at the
-    cost of O(log n) chat template tokenizations.
-    """
-    if not chunk_texts:
-        raise ValueError("no chunks provided")
-
-    def length_for(k: int) -> int:
-        return len(apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:k]) + suffix_text, model_type))
-
-    if length_for(1) > target_len:
-        raise ValueError(f"target_len={target_len} too small to fit even one chunk")
-
-    n = len(chunk_texts)
-    if length_for(n) <= target_len:
-        return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts) + suffix_text, model_type)
-
-    lo, hi = 1, n
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if length_for(mid) <= target_len:
-            lo = mid
-        else:
-            hi = mid - 1
-    return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:lo]) + suffix_text, model_type)
 
 
 def build_repeated_chat_prompt_ids(
@@ -553,7 +473,7 @@ def _run_pair_separate_mode(
     url: str,
     api_key: Optional[str],
     model: Optional[str],
-    prompt_ids: list[int],
+    prompt_ids: list[list[int]],
     max_tokens: int,
     seq_len: int,
     batch_size: int,
@@ -571,6 +491,7 @@ def _run_pair_separate_mode(
         max_tokens,
         (routing or RoutingConfig()).describe(),
     )
+    assert len(prompt_ids) == batch_size, f"expected {batch_size} prompts, got {len(prompt_ids)}"
     assert len(users) == batch_size, f"expected {batch_size} users, got {len(users)}"
 
     def _single_request(worker_idx: int, user: str) -> requests.Response:
@@ -585,7 +506,7 @@ def _run_pair_separate_mode(
             url,
             api_key,
             model,
-            prompt_ids,
+            prompt_ids[worker_idx],
             max_tokens=max_tokens,
             n=1,
             temperature=temperature,
@@ -653,6 +574,7 @@ def _warmup_seq_len(
     users: Optional[list[str]] = None,
     routing: Optional[RoutingConfig] = None,
     worker_offset: int = 0,
+    split_prompt_batch: bool = False,
 ) -> None:
     """Issue warmup completions for one prompt or one batched prompt payload."""
     if users is not None:
@@ -660,12 +582,13 @@ def _warmup_seq_len(
 
     def _single(worker_idx: int, user: Optional[str]) -> requests.Response:
         headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
+        request_prompt_ids = prompt_ids[worker_idx] if split_prompt_batch else prompt_ids
         return post_completion(
             requests.Session(),
             url,
             api_key,
             model,
-            prompt_ids,
+            request_prompt_ids,
             max_tokens=0,
             n=1,
             temperature=temperature,
@@ -710,7 +633,6 @@ def run_benchmark(
     model: Optional[str],
     base_url: str,
     api_key: Optional[str],
-    dataset: str,
     pairs: list[tuple[int, int]],
     max_tokens: int,
     temperature: Optional[float] = None,
@@ -733,63 +655,58 @@ def run_benchmark(
     # falls back to one request containing batch_size distinct prompts.
     routing = routing or RoutingConfig()
     separate_requests = routing.enabled
-    if separate_requests:
-        logger.info("Mode: separate concurrent requests (no n>1)")
-        max_seq = max(seq_len for seq_len, _ in pairs)
-        chunks = load_chunks(dataset)
-        suffix = _DATASET_SUFFIXES.get(dataset, "")
-        chunk_texts = build_chunk_texts_to_length(tokenizer, chunks, max_seq)
-    else:
-        source_prompts = load_distinct_prompts()
-        source_prompt_token_ids = [
-            _normalize_ids(tokenizer.encode(source_prompts[i].rstrip() + "\n\n", add_special_tokens=False))
-            for i in range(min(max(batch_size for _, batch_size in pairs), len(source_prompts)))
-        ]
-        if max_context_len is None:
-            try:
-                max_context_len = resolve_max_seq_len(tokenizer_path)
-            except ValueError as e:
-                raise ValueError(
-                    "Could not infer deployed model context; pass --model-max-context-len explicitly."
-                ) from e
-        max_prompt_len = max_context_len - max_tokens - 1
-        min_prompt_len = len(
-            apply_chat_template_ids(tokenizer, tokenizer_path, _RAGGED_PROMPT_SUFFIX, model_type)
-        )
-        if max_prompt_len < min_prompt_len:
-            raise ValueError("model context is too small for max_tokens and the required prompt suffix")
-        logger.info(
-            "Mode: single request with batch_size ragged prompts (gamma shape=%.3f, context-clamped at %d prompt tokens)",
-            gamma_shape,
-            max_prompt_len,
-        )
+    logger.info(
+        "Mode: %s",
+        "separate routed requests" if separate_requests else "single batched request",
+    )
+    source_prompts = load_distinct_prompts()
+    source_prompt_token_ids = [
+        _normalize_ids(tokenizer.encode(source_prompts[i].rstrip() + "\n\n", add_special_tokens=False))
+        for i in range(min(max(batch_size for _, batch_size in pairs), len(source_prompts)))
+    ]
+    if max_context_len is None:
+        try:
+            max_context_len = resolve_max_seq_len(tokenizer_path)
+        except ValueError as e:
+            raise ValueError("Could not infer deployed model context; pass --model-max-context-len explicitly.") from e
+    max_prompt_len = max_context_len - max_tokens - 1
+    min_prompt_len = len(apply_chat_template_ids(tokenizer, tokenizer_path, _RAGGED_PROMPT_SUFFIX, model_type))
+    if max_prompt_len < min_prompt_len:
+        raise ValueError("model context is too small for max_tokens and the required prompt suffix")
+    logger.info(
+        "Ragged prompts: gamma shape=%.3f, context clamp=%d prompt tokens",
+        gamma_shape,
+        max_prompt_len,
+    )
     logger.info("Routing: %s", routing.describe())
 
     results: list[GenBenchmarkResult] = []
-    prev_seq_len: Optional[int] = None
 
     # Sort by seq_len descending (longer prompts first for full prompt-cache
     # hit rate) and batch_size descending so the largest batch for a given
     # seq_len comes first.
     pairs = sorted(pairs, key=lambda p: (-p[0], -p[1]))
 
-    prompt_ids: list[int] = []
-    ragged_prompt_ids: list[list[int]] = []
-    seq_users: list[str] = []
     for seq_len, batch_size in pairs:
-        if separate_requests and seq_len != prev_seq_len:
-            prompt_ids = build_chat_prompt_ids(
-                tokenizer,
-                tokenizer_path,
-                model_type,
-                suffix,
-                chunk_texts,
-                target_len=seq_len - max_tokens,
-            )
-            logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
-            if prev_seq_len is None:
+        mean_prompt_len = seq_len - max_tokens
+        if mean_prompt_len < 1:
+            raise ValueError(f"seq_len={seq_len} must exceed max_tokens={max_tokens} to leave room for the prompt")
+        ragged_prompt_ids = build_ragged_prompt_batch(
+            tokenizer=tokenizer,
+            tokenizer_path=tokenizer_path,
+            model_type=model_type,
+            source_prompt_token_ids=source_prompt_token_ids,
+            mean_prompt_len=mean_prompt_len,
+            batch_size=batch_size,
+            gamma_shape=gamma_shape,
+            max_prompt_len=max_prompt_len,
+        )
+        users = _generate_users(seq_len + seed, batch_size) if separate_requests else None
+
+        if separate_requests:
+            if not results:
                 # HACK: backend OOMs without this pre-warmup on the largest
-                # seq_len; sending the same prompt 64 times sequentially
+                # seq_len; sending 64 prompts sequentially
                 # with a fresh random `user` each time primes the backend
                 # across generators before the user-pinned warmup at full
                 # batch_size. TODO: fix the backend OOM and remove this.
@@ -807,7 +724,7 @@ def run_benchmark(
                         url=url,
                         api_key=api_key,
                         model=model,
-                        prompt_ids=prompt_ids,
+                        prompt_ids=ragged_prompt_ids[i % batch_size],
                         seq_len=seq_len,
                         concurrency=1,
                         temperature=temperature,
@@ -817,37 +734,22 @@ def run_benchmark(
                         routing=routing,
                         worker_offset=i,
                     )
-            seq_users = _generate_users(seq_len + seed, batch_size)
+            assert users is not None
             _warmup_seq_len(
                 url=url,
                 api_key=api_key,
                 model=model,
-                prompt_ids=prompt_ids,
+                prompt_ids=ragged_prompt_ids,
                 seq_len=seq_len,
-                concurrency=len(seq_users),
+                concurrency=batch_size,
                 temperature=temperature,
                 retries=retries,
                 retry_delay=retry_delay,
-                users=seq_users,
+                users=users,
                 routing=routing,
+                split_prompt_batch=True,
             )
-            prev_seq_len = seq_len
-        elif not separate_requests:
-            mean_prompt_len = seq_len - max_tokens
-            if mean_prompt_len < 1:
-                raise ValueError(
-                    f"seq_len={seq_len} must exceed max_tokens={max_tokens} to leave room for the prompt"
-                )
-            ragged_prompt_ids = build_ragged_prompt_batch(
-                tokenizer=tokenizer,
-                tokenizer_path=tokenizer_path,
-                model_type=model_type,
-                source_prompt_token_ids=source_prompt_token_ids,
-                mean_prompt_len=mean_prompt_len,
-                batch_size=batch_size,
-                gamma_shape=gamma_shape,
-                max_prompt_len=max_prompt_len,
-            )
+        else:
             warmup_token_budget = max(500_000, 2 * max_context_len)
             warmup_batches: list[list[list[int]]] = []
             warmup_batch: list[list[int]] = []
@@ -880,10 +782,6 @@ def run_benchmark(
                     retry_delay=retry_delay,
                 )
 
-        users: Optional[list[str]] = None
-        if separate_requests:
-            users = seq_users[:batch_size]
-
         for attempt in range(1, retries + 1):
             try:
                 if separate_requests:
@@ -892,7 +790,7 @@ def run_benchmark(
                         url=url,
                         api_key=api_key,
                         model=model,
-                        prompt_ids=prompt_ids,
+                        prompt_ids=ragged_prompt_ids,
                         max_tokens=max_tokens,
                         seq_len=seq_len,
                         batch_size=batch_size,
@@ -980,7 +878,6 @@ def main() -> None:
         help="Bearer token (default: API_KEY or FIREWORKS_API_KEY). "
         "Optional; omit for servers that don't require auth.",
     )
-    parser.add_argument("--dataset", choices=("limericks", "code"), default="limericks")
     parser.add_argument(
         "-p",
         "--seq-batch-pairs",
@@ -1152,7 +1049,6 @@ def main() -> None:
         model=args.model,
         base_url=args.base_url,
         api_key=args.api_key,
-        dataset=args.dataset,
         pairs=pairs,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
