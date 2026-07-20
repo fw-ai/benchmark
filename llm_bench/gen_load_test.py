@@ -88,7 +88,7 @@ _FAST_BATCH_SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
 # and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
 _DEFAULT_MIN_SEQ_LEN = 1000
 _DEFAULT_GAMMA_SHAPE = 0.9
-_DISTINCT_PROMPTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "distinct_prompts_512.jsonl")
+_DISTINCT_PROMPTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "distinct_prompts_256.jsonl")
 _RAGGED_PROMPT_SUFFIX = "\n\nGive me a detailed analysis of the above content."
 _MAX_SEQ_LEN_CONFIG_FIELDS = (
     "max_position_embeddings",
