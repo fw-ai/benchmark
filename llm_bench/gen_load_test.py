@@ -280,10 +280,15 @@ def build_ragged_prompt_batch(
     gamma_shape: float,
     max_prompt_len: int,
 ) -> list[list[int]]:
+    target_lengths = [
+        gammaincinv(gamma_shape, (index + 1) / (batch_size + 1)) * mean_prompt_len / gamma_shape
+        for index in range(batch_size)
+    ]
+    mean_shift = mean_prompt_len - sum(target_lengths) / batch_size
+
     prompts: list[list[int]] = []
-    for index in range(batch_size):
-        percentile = (index + 1) / (batch_size + 1)
-        target_len = round(gammaincinv(gamma_shape, percentile) * mean_prompt_len / gamma_shape)
+    for index, target_len in enumerate(target_lengths):
+        target_len = round(target_len + mean_shift)
         prompts.append(
             build_repeated_chat_prompt_ids(
                 tokenizer=tokenizer,
