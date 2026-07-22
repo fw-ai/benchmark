@@ -267,6 +267,16 @@ class JsonlDataset:
             yield item
 
 
+def _prompt_cache_common_tokens(options: argparse.Namespace) -> int:
+    if getattr(options, "prompt_cache_max_pct", None) is not None:
+        if options.prompt_cache_max_pct < 0 or options.prompt_cache_max_pct > 100:
+            raise ValueError(
+                f"prompt_cache_max_pct must be between 0 and 100 (inclusive): {options.prompt_cache_max_pct}"
+            )
+        return (options.prompt_tokens * options.prompt_cache_max_pct) // 100
+    return options.prompt_cache_max_len
+
+
 class DatasetHolder:
     _instance = None
     _forced_generation_instance = None
@@ -293,7 +303,7 @@ class DatasetHolder:
                     prompt = options.prompt
                 dataset_file = "code.txt"
 
-            common_tokens = options.prompt_cache_max_len
+            common_tokens = _prompt_cache_common_tokens(options)
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
             tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
@@ -679,8 +689,16 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 
     For max-requests: we store the limit and check it after each request completes.
     """
+    options = environment.parsed_options
+    # GHA load_test.yml passes prompt_cache_max_len via test_parameters; negative
+    # values encode prompt_cache_max_pct (e.g. -90 → 90%) for backward compatibility.
+    if options.prompt_cache_max_len < 0 and getattr(options, "prompt_cache_max_pct", None) is None:
+        options.prompt_cache_max_pct = -options.prompt_cache_max_len
+        options.prompt_cache_max_len = 0
+    if getattr(options, "prompt_cache_max_pct", None) is not None and options.prompt_cache_max_len > 0:
+        raise ValueError("Cannot specify both --prompt-cache-max-len and --prompt-cache-max-pct")
     try:
-        run_time_value = getattr(environment.parsed_options, "run_time", None)
+        run_time_value = getattr(options, "run_time", None)
     except Exception:
         run_time_value = None
     seconds = _parse_run_time_to_seconds(run_time_value) if run_time_value else None
@@ -981,11 +999,13 @@ class FireworksProvider(OpenAIProvider):
             data["min_tokens"] = max_tokens
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
-        # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
-        # default (0 = no caching) is a no-op for the server, but unconditionally
-        # adding the key breaks deployments whose OpenAI-compat schema is configured
-        # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
+        # Only send prompt-cache hints when the user explicitly opted in. The default
+        # (0 = no caching) is a no-op for the server, but unconditionally adding the
+        # key breaks deployments whose OpenAI-compat schema is configured with
+        # extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
+        if getattr(self.parsed_options, "prompt_cache_max_pct", None) is not None:
+            data["prompt_cache_max_pct"] = self.parsed_options.prompt_cache_max_pct
+        elif self.parsed_options.prompt_cache_max_len > 0:
             data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
@@ -1998,7 +2018,17 @@ def init_parser(parser):
         env_var="PROMPT_CACHE_MAX_LEN",
         type=int,
         default=0,
-        help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+        help="Maximum length of the prompt cache to use. Defaults to 0 (no caching). "
+        "Mutually exclusive with --prompt-cache-max-pct.",
+    )
+    parser.add_argument(
+        "-pcmp",
+        "--prompt-cache-max-pct",
+        env_var="PROMPT_CACHE_MAX_PCT",
+        type=int,
+        default=None,
+        help="Maximum percentage (0-100) of the prompt eligible for KV prompt caching. "
+        "Mutually exclusive with --prompt-cache-max-len.",
     )
     parser.add_argument(
         "--acceptance-probs-override",
