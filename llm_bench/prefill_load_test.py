@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import logging
 import os
 import random
@@ -32,9 +31,16 @@ logger = logging.getLogger(__name__)
 
 import requests
 import transformers
-from huggingface_hub import hf_hub_download
 
 from tabulate import tabulate
+
+from context_utils import (
+    generate_geometric_lengths,
+    prefill_prompt_limit,
+    read_config_json,
+    resolve_max_seq_len,
+    tokenizer_asset_path,
+)
 
 FW_HEADER_PREFIX = "fireworks-"
 STAGE_HEADER_KEYS = (
@@ -97,53 +103,12 @@ def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) ->
     local = flat // cfg.num_servers
     return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
 
-# NB: don't use power of 2 as we will use multiples of this to generate seq pairs
-# and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
+
 _DEFAULT_MIN_SEQ_LEN = 500
-_MAX_SEQ_LEN_CONFIG_FIELDS = (
-    "max_position_embeddings",
-    "model_max_length",
-    "max_sequence_length",
-    "seq_length",
-    "n_positions",
-)
-
-
-def _tokenizer_asset_path(tokenizer_path: str, filename: str) -> str:
-    if os.path.isdir(tokenizer_path):
-        path = os.path.join(tokenizer_path, filename)
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"Missing {filename} in local tokenizer directory {tokenizer_path}")
-        return path
-    return hf_hub_download(repo_id=tokenizer_path, filename=filename)
-
-
-def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
-    config_path = _tokenizer_asset_path(tokenizer_path, "config.json")
-    with open(config_path) as f:
-        return json.load(f)
 
 
 def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenizer:
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
-
-
-def resolve_max_seq_len(tokenizer_path: str) -> int:
-    try:
-        config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
-        # For VLMs (e.g. Kimi K2.5, LLaMA Vision), max_position_embeddings lives
-        # under text_config rather than at the top level.
-        configs: tuple[Any, ...] = (config.get_text_config(),)
-    except ValueError:
-        config_json = _read_config_json(tokenizer_path)
-        configs = (config_json.get("text_config") or {}, config_json)
-
-    for config in configs:
-        for name in _MAX_SEQ_LEN_CONFIG_FIELDS:
-            v = config.get(name) if isinstance(config, Mapping) else getattr(config, name, None)
-            if isinstance(v, int) and v > 0:
-                return v
-    raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
 
 
 def resolve_model_type(tokenizer_path: str) -> str:
@@ -151,15 +116,15 @@ def resolve_model_type(tokenizer_path: str) -> str:
         config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
         text_config = config.get_text_config()
         return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
-    except ValueError:
-        config_json = _read_config_json(tokenizer_path)
+    except Exception:
+        config_json = read_config_json(tokenizer_path)
         text_config = config_json.get("text_config") or {}
         return text_config.get("model_type") or config_json.get("model_type", "")
 
 
 @lru_cache(maxsize=None)
 def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
-    path = _tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
+    path = tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
     spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load DSV4 encoding module from {path}")
@@ -170,8 +135,7 @@ def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
 
 def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
     pairs: list[tuple[int, int]] = []
-    s = min_seq_len
-    while s <= max_seq_len:
+    for s in generate_geometric_lengths(min_seq_len, max_seq_len, factor=4):
         step = s // 8
         cached_points = [step * multiplier for multiplier in [0, 1, 3, 5, 7]]
         if step >= 4000:
@@ -182,7 +146,6 @@ def generate_pairs(max_seq_len: int, min_seq_len: int) -> list[tuple[int, int]]:
         for c in sorted(set(cached_points)):
             if c <= s:
                 pairs.append((s, c))
-        s *= 4
     return pairs
 
 
@@ -454,6 +417,11 @@ def _send_and_parse_measurement(
     if r.status_code != 200:
         raise RuntimeError(f"Request failed HTTP {r.status_code}: {r.text[:500]}")
 
+    validate_completion_usage(
+        r.json(),
+        expected_prompt_tokens=sum(len(prompt) for prompt in prompt_token_ids),
+        expected_completion_tokens=max_tokens * len(prompt_token_ids),
+    )
     fwp = get_int_header(r.headers, "prompt-tokens")
     fwc = get_int_header(r.headers, "cached-prompt-tokens")
     server_processing = get_header(r.headers, "server-processing-time")
@@ -491,12 +459,12 @@ def _measure_pair_split_across_workers(
     total_workers = routing.total_workers
     # Stride-slice for even round-robin distribution. Uneven splits handled
     # naturally (e.g. 1985 / 4 -> [497, 496, 496, 496]).
-    chunks: list[list[list[int]]] = [
-        prompt_token_ids[i::total_workers] for i in range(total_workers)
-    ]
+    chunks: list[list[list[int]]] = [prompt_token_ids[i::total_workers] for i in range(total_workers)]
     active_workers = [i for i, c in enumerate(chunks) if c]
 
-    def _run_worker(worker_idx: int) -> tuple[int, float, float, Optional[int], Optional[int]]:
+    def _run_worker(
+        worker_idx: int,
+    ) -> tuple[int, float, float, Optional[int], Optional[int]]:
         # Distinct session per worker to avoid HTTP/2 multiplexing bias on a shared session.
         s = requests.Session()
         try:
@@ -560,6 +528,8 @@ def post_completion(
         "max_tokens": max_tokens,
         "stream": False,
         "temperature": 0.0,
+        "ignore_eos": True,
+        "context_length_exceeded_behavior": "error",
         "user": "0",  # NB: in case of DP w/ inline prefill we need to ensure generator stickiness
     }
     if prompt_cache_max_len is not None:
@@ -572,6 +542,23 @@ def post_completion(
     if extra_headers:
         headers.update(extra_headers)
     return session.post(url, headers=headers, json=payload, timeout=3600)
+
+
+def validate_completion_usage(
+    response_data: dict[str, Any],
+    expected_prompt_tokens: int,
+    expected_completion_tokens: int,
+) -> None:
+    """Verify the server used the exact pre-tokenized request boundary."""
+    usage = response_data.get("usage")
+    if not isinstance(usage, dict):
+        raise RuntimeError("Completion response is missing usage")
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    if prompt_tokens != expected_prompt_tokens:
+        raise RuntimeError(f"Server reported {prompt_tokens} prompt tokens; sent {expected_prompt_tokens} token IDs")
+    if completion_tokens != expected_completion_tokens:
+        raise RuntimeError(f"Server generated {completion_tokens} tokens; requested {expected_completion_tokens}")
 
 
 def run_benchmark(
@@ -617,7 +604,13 @@ def run_benchmark(
     def do_warmup(cached_tokens: int, extra_headers: Optional[dict[str, str]] = None) -> None:
         warmup_ids = build_warmup_ids(chat_prefix_ids, base_ids, cached_tokens)
         w = post_completion(
-            session, url, api_key, model, warmup_ids, max_tokens, extra_headers=extra_headers
+            session,
+            url,
+            api_key,
+            model,
+            warmup_ids,
+            max_tokens,
+            extra_headers=extra_headers,
         )
         if w.status_code != 200:
             raise RuntimeError(f"Warmup failed HTTP {w.status_code}: {w.text[:500]}")
@@ -744,8 +737,12 @@ def format_table(rows: list[PairBenchmarkResult]) -> str:
                 row.num_prompts,
                 row.duration,
                 row.client_duration,
-                row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else "",
-                row.mean_fireworks_cached_prompt_tokens if row.mean_fireworks_cached_prompt_tokens is not None else "",
+                (row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else ""),
+                (
+                    row.mean_fireworks_cached_prompt_tokens
+                    if row.mean_fireworks_cached_prompt_tokens is not None
+                    else ""
+                ),
             ]
         )
     return tabulate(
@@ -786,7 +783,7 @@ def format_csv(rows: list[PairBenchmarkResult]) -> str:
                     row.num_prompts,
                     f"{row.duration:.6f}",
                     f"{row.client_duration:.6f}",
-                    row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else "",
+                    (row.mean_fireworks_prompt_tokens if row.mean_fireworks_prompt_tokens is not None else ""),
                     (
                         row.mean_fireworks_cached_prompt_tokens
                         if row.mean_fireworks_cached_prompt_tokens is not None
@@ -831,7 +828,8 @@ def main() -> None:
         "--max-seq-len",
         type=int,
         default=None,
-        help="Max sequence length (default: read from HF config).",
+        help="Prompt-length cap used to generate geometric points plus the exact endpoint. "
+        "The default is the model config limit minus Fireworks prefill headroom.",
     )
     parser.add_argument(
         "--min-seq-len",
@@ -852,7 +850,12 @@ def main() -> None:
         default=131072,
         help="Minimum total prompt tokens to accumulate per batch (default 64K).",
     )
-    parser.add_argument("--max-tokens", type=int, default=0, help="max_tokens for completions (default 0).")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=0,
+        help="max_tokens for completions (default 0).",
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -915,22 +918,32 @@ def main() -> None:
 
     max_seq_len = args.max_seq_len
     try:
-        hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
-        logger.info("Resolved max_seq_len=%s from HF config", hf_max_seq_len)
-    except ValueError:
-        hf_max_seq_len = None
+        model_max_seq_len = resolve_max_seq_len(args.tokenizer)
+        hf_prompt_limit = prefill_prompt_limit(model_max_seq_len, max_tokens=args.max_tokens)
+        logger.info(
+            "Resolved model max_seq_len=%d; completions prefill prompt limit=%d",
+            model_max_seq_len,
+            hf_prompt_limit,
+        )
+    except ValueError as error:
+        hf_prompt_limit = None
         if max_seq_len is None:
-            parser.error("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
+            parser.error(str(error))
     if max_seq_len is None:
-        max_seq_len = hf_max_seq_len
-    elif hf_max_seq_len is not None:
-        max_seq_len = min(max_seq_len, hf_max_seq_len)
+        max_seq_len = hf_prompt_limit
+    elif hf_prompt_limit is not None:
+        max_seq_len = min(max_seq_len, hf_prompt_limit)
 
     if args.seq_pairs is not None:
         pairs = parse_pairs_arg(args.seq_pairs)
     else:
         pairs = generate_pairs(max_seq_len, min_seq_len=args.min_seq_len)
-        logger.info("Auto-generated %d pairs: %s", len(pairs), pairs)
+        logger.info(
+            "Auto-generated %d pairs including exact prompt endpoint=%d: %s",
+            len(pairs),
+            max_seq_len,
+            pairs,
+        )
 
     rows = run_benchmark(
         tokenizer_path=args.tokenizer,

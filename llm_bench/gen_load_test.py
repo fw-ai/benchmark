@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import logging
 import os
 import random
@@ -30,8 +29,15 @@ logger = logging.getLogger(__name__)
 
 import requests
 import transformers
-from huggingface_hub import hf_hub_download
 from tabulate import tabulate
+
+from context_utils import (
+    generate_geometric_lengths,
+    generation_sequence_limit,
+    read_config_json,
+    resolve_max_seq_len,
+    tokenizer_asset_path,
+)
 
 FW_HEADER_PREFIX = "fireworks-"
 
@@ -84,31 +90,7 @@ def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) ->
 
 _FAST_BATCH_SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
 
-# NB: don't use power of 2 as we will use multiples of this to generate seq pairs
-# and in some cases it will batch max seq len of a model, which is the edge case we don't want to benchmark.
 _DEFAULT_MIN_SEQ_LEN = 1000
-_MAX_SEQ_LEN_CONFIG_FIELDS = (
-    "max_position_embeddings",
-    "model_max_length",
-    "max_sequence_length",
-    "seq_length",
-    "n_positions",
-)
-
-
-def _tokenizer_asset_path(tokenizer_path: str, filename: str) -> str:
-    if os.path.isdir(tokenizer_path):
-        path = os.path.join(tokenizer_path, filename)
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"Missing {filename} in local tokenizer directory {tokenizer_path}")
-        return path
-    return hf_hub_download(repo_id=tokenizer_path, filename=filename)
-
-
-def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
-    config_path = _tokenizer_asset_path(tokenizer_path, "config.json")
-    with open(config_path) as f:
-        return json.load(f)
 
 
 def get_profile_batch_sizes(max_batch_size: int, min_batch_size: int = 1) -> list[int]:
@@ -136,38 +118,20 @@ def get_profile_batch_sizes(max_batch_size: int, min_batch_size: int = 1) -> lis
     return r
 
 
-def resolve_max_seq_len(tokenizer_path: str) -> int:
-    try:
-        config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
-        # For VLMs (e.g. Kimi K2.5, LLaMA Vision), max_position_embeddings lives
-        # under text_config rather than at the top level.
-        configs: tuple[Any, ...] = (config.get_text_config(),)
-    except ValueError:
-        config_json = _read_config_json(tokenizer_path)
-        configs = (config_json.get("text_config") or {}, config_json)
-
-    for config in configs:
-        for name in _MAX_SEQ_LEN_CONFIG_FIELDS:
-            v = config.get(name) if isinstance(config, Mapping) else getattr(config, name, None)
-            if isinstance(v, int) and v > 0:
-                return v
-    raise ValueError("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
-
-
 def resolve_model_type(tokenizer_path: str) -> str:
     try:
         config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
         text_config = config.get_text_config()
         return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
-    except ValueError:
-        config_json = _read_config_json(tokenizer_path)
+    except Exception:
+        config_json = read_config_json(tokenizer_path)
         text_config = config_json.get("text_config") or {}
         return text_config.get("model_type") or config_json.get("model_type", "")
 
 
 @lru_cache(maxsize=None)
 def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
-    path = _tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
+    path = tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
     spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load DSV4 encoding module from {path}")
@@ -177,12 +141,7 @@ def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
 
 
 def generate_seq_lens(min_seq_len: int, max_seq_len: int) -> list[int]:
-    lens: list[int] = []
-    s = min_seq_len
-    while s <= max_seq_len:
-        lens.append(s)
-        s *= 2
-    return lens
+    return generate_geometric_lengths(min_seq_len, max_seq_len, factor=2)
 
 
 def _load_auto_tokenizer(tokenizer_path: str) -> transformers.PreTrainedTokenizer:
@@ -272,6 +231,24 @@ def _normalize_ids(obj: Any) -> list[int]:
     return [int(t) for t in obj]
 
 
+def split_chat_template_ids(
+    tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
+    model_type: str,
+) -> tuple[list[int], list[int]]:
+    """Return the template token IDs before and after one user message."""
+    sentinel = "abcdefghij"
+    sentinel_ids = _normalize_ids(tokenizer.encode(sentinel, add_special_tokens=False))
+    if not sentinel_ids:
+        raise RuntimeError("Sentinel tokenized to an empty sequence")
+    templated = apply_chat_template_ids(tokenizer, tokenizer_path, sentinel, model_type)
+    width = len(sentinel_ids)
+    for index in range(len(templated) - width + 1):
+        if templated[index : index + width] == sentinel_ids:
+            return templated[:index], templated[index + width :]
+    raise RuntimeError(f"Could not locate sentinel IDs {sentinel_ids} in templated prompt")
+
+
 def build_chat_prompt_ids(
     tokenizer: transformers.PreTrainedTokenizer,
     tokenizer_path: str,
@@ -280,34 +257,32 @@ def build_chat_prompt_ids(
     chunk_texts: list[str],
     target_len: int,
 ) -> list[int]:
-    """Build chat-templated prompt ids of at most `target_len` tokens, chunk-aligned.
-
-    Bisects on chunk count to find the largest k such that the chat-templated
-    tokenization of `chunks[:k] + suffix` stays within `target_len`. This is
-    exact (no token-count estimation drift from chat template wrapping) at the
-    cost of O(log n) chat template tokenizations.
-    """
+    """Build an exact-length, client-templated prompt token sequence."""
     if not chunk_texts:
         raise ValueError("no chunks provided")
 
-    def length_for(k: int) -> int:
-        return len(apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:k]) + suffix_text, model_type))
+    prefix_ids, suffix_ids = split_chat_template_ids(tokenizer, tokenizer_path, model_type)
+    instruction_ids = _normalize_ids(tokenizer.encode(suffix_text, add_special_tokens=False))
+    content_len = target_len - len(prefix_ids) - len(suffix_ids)
+    body_len = content_len - len(instruction_ids)
+    if body_len < 0:
+        raise ValueError(f"target_len={target_len} is too small for the chat template and instruction")
 
-    if length_for(1) > target_len:
-        raise ValueError(f"target_len={target_len} too small to fit even one chunk")
+    body_ids: list[int] = []
+    chunk_index = 0
+    while len(body_ids) < body_len and chunk_index < 1_000_000:
+        chunk = chunk_texts[chunk_index % len(chunk_texts)]
+        body_ids.extend(_normalize_ids(tokenizer.encode(chunk, add_special_tokens=False)))
+        chunk_index += 1
+    if len(body_ids) < body_len:
+        raise RuntimeError(f"Could not build {body_len} dataset tokens")
 
-    n = len(chunk_texts)
-    if length_for(n) <= target_len:
-        return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts) + suffix_text, model_type)
-
-    lo, hi = 1, n
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if length_for(mid) <= target_len:
-            lo = mid
-        else:
-            hi = mid - 1
-    return apply_chat_template_ids(tokenizer, tokenizer_path, "".join(chunk_texts[:lo]) + suffix_text, model_type)
+    # The completions endpoint accepts these IDs directly; it validates them but
+    # does not re-tokenize or add BOS/EOS tokens.
+    prompt_ids = prefix_ids + body_ids[:body_len] + instruction_ids + suffix_ids
+    if len(prompt_ids) != target_len:
+        raise RuntimeError(f"Built {len(prompt_ids)} prompt tokens, expected {target_len}")
+    return prompt_ids
 
 
 def get_header(headers: Mapping[str, str], short_key: str) -> Optional[float]:
@@ -370,6 +345,8 @@ def post_completion(
         "max_tokens": max_tokens,
         "n": n,
         "stream": False,
+        "ignore_eos": True,
+        "context_length_exceeded_behavior": "error",
     }
     if temperature is not None:
         payload["temperature"] = temperature
@@ -383,6 +360,23 @@ def post_completion(
     if extra_headers:
         headers.update(extra_headers)
     return session.post(url, headers=headers, json=payload, timeout=3600)
+
+
+def validate_completion_usage(
+    response_data: dict[str, Any],
+    expected_prompt_tokens: int,
+    expected_completion_tokens: int,
+) -> None:
+    """Verify the server used the exact pre-tokenized request boundary."""
+    usage = response_data.get("usage")
+    if not isinstance(usage, dict):
+        raise RuntimeError("Completion response is missing usage")
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    if prompt_tokens != expected_prompt_tokens:
+        raise RuntimeError(f"Server reported {prompt_tokens} prompt tokens; sent {expected_prompt_tokens} token IDs")
+    if completion_tokens != expected_completion_tokens:
+        raise RuntimeError(f"Server generated {completion_tokens} tokens; requested {expected_completion_tokens}")
 
 
 def parse_num_forward_passes(headers: Mapping[str, str], batch_size: int, completion_tokens: int) -> int:
@@ -454,7 +448,12 @@ def _run_pair_n_mode(
         )
 
     resp_json = r.json()
-    completion_tokens = resp_json.get("usage", {}).get("completion_tokens", max_tokens * batch_size)
+    completion_tokens = max_tokens * batch_size
+    validate_completion_usage(
+        resp_json,
+        expected_prompt_tokens=len(prompt_ids),
+        expected_completion_tokens=completion_tokens,
+    )
     num_fwd = parse_num_forward_passes(r.headers, batch_size, completion_tokens)
 
     fwp = get_int_header(r.headers, "prompt-tokens")
@@ -511,7 +510,10 @@ def _run_pair_separate_mode(
         headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
         if headers and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "  worker=%d server=%s local=%s", worker_idx, headers.get(_SERVICE_INDEX_HEADER), headers.get(_LOCAL_INDEX_HEADER)
+                "  worker=%d server=%s local=%s",
+                worker_idx,
+                headers.get(_SERVICE_INDEX_HEADER),
+                headers.get(_LOCAL_INDEX_HEADER),
             )
         return post_completion(
             s,
@@ -547,8 +549,12 @@ def _run_pair_separate_mode(
             )
         gen_durs.append(gd)
         resp_json = r.json()
-        ct = resp_json.get("usage", {}).get("completion_tokens", max_tokens)
-        fwd_counts.append(parse_num_forward_passes(r.headers, batch_size=1, completion_tokens=ct))
+        validate_completion_usage(
+            resp_json,
+            expected_prompt_tokens=len(prompt_ids),
+            expected_completion_tokens=max_tokens,
+        )
+        fwd_counts.append(parse_num_forward_passes(r.headers, batch_size=1, completion_tokens=max_tokens))
 
     avg_gen_dur = sum(gen_durs) / len(gen_durs)
     avg_fwd = sum(fwd_counts) / len(fwd_counts)
@@ -688,15 +694,23 @@ def run_benchmark(
     seq_users: list[str] = []
     for seq_len, batch_size in pairs:
         if seq_len != prev_seq_len:
+            prompt_len = seq_len - max_tokens
+            if prompt_len < 1:
+                raise ValueError(f"seq_len={seq_len} must exceed max_tokens={max_tokens}")
             prompt_ids = build_chat_prompt_ids(
                 tokenizer,
                 tokenizer_path,
                 model_type,
                 suffix,
                 chunk_texts,
-                target_len=seq_len - max_tokens,
+                target_len=prompt_len,
             )
-            logger.info("Built prompt for seq_len=%d: %d tokens", seq_len, len(prompt_ids))
+            logger.info(
+                "Built exact boundary for seq_len=%d: prompt=%d + output=%d",
+                seq_len,
+                len(prompt_ids),
+                max_tokens,
+            )
             if separate_requests:
                 if prev_seq_len is None:
                     # HACK: backend OOMs without this pre-warmup on the largest
@@ -877,7 +891,8 @@ def main() -> None:
         "--max-seq-len",
         type=int,
         default=None,
-        help="Max sequence length (default: read from HF config). " "Used for auto-generating --seq-lens.",
+        help="Sequence-length cap used to generate geometric points plus the exact endpoint. "
+        "The default is the model config limit minus Fireworks generation headroom.",
     )
     parser.add_argument(
         "--min-seq-len",
@@ -901,7 +916,7 @@ def main() -> None:
         "--max-kv-cache-entries",
         type=int,
         default=None,
-        help="Cap batch size so (seq_len + max_tokens) * batch_size <= this value. "
+        help="Cap batch size so seq_len * batch_size <= this value. "
         "Applied to both auto-generated and explicit pairs.",
     )
     parser.add_argument(
@@ -984,22 +999,32 @@ def main() -> None:
         else:
             max_seq_len = args.max_seq_len
             try:
-                hf_max_seq_len = resolve_max_seq_len(args.tokenizer)
-                logger.info("Resolved max_seq_len=%d from HF config", hf_max_seq_len)
-            except ValueError:
-                hf_max_seq_len = None
+                model_max_seq_len = resolve_max_seq_len(args.tokenizer)
+                hf_sequence_limit = generation_sequence_limit(model_max_seq_len)
+                logger.info(
+                    "Resolved model max_seq_len=%d; completions generation limit=%d",
+                    model_max_seq_len,
+                    hf_sequence_limit,
+                )
+            except ValueError as error:
+                hf_sequence_limit = None
                 if max_seq_len is None:
-                    parser.error("Could not infer max sequence length from config; pass --max-seq-len explicitly.")
+                    parser.error(str(error))
             if max_seq_len is None:
-                max_seq_len = hf_max_seq_len
-            elif hf_max_seq_len is not None:
-                max_seq_len = min(max_seq_len, hf_max_seq_len)
+                max_seq_len = hf_sequence_limit
+            elif hf_sequence_limit is not None:
+                max_seq_len = min(max_seq_len, hf_sequence_limit)
             seq_lens = generate_seq_lens(args.min_seq_len, max_seq_len)
+            logger.info(
+                "Auto-generated sequence lengths including exact endpoint=%d: %s",
+                max_seq_len,
+                seq_lens,
+            )
         batch_sizes = get_profile_batch_sizes(args.max_batch_size, args.min_batch_size)
         pairs = [(s, b) for s in seq_lens for b in batch_sizes]
 
     if args.max_kv_cache_entries is not None:
-        pairs = [(s, b) for s, b in pairs if (s + args.max_tokens) * b <= args.max_kv_cache_entries]
+        pairs = [(s, b) for s, b in pairs if s * b <= args.max_kv_cache_entries]
 
     if len(pairs) == 0:
         raise RuntimeError("No seq:batch pairs")
