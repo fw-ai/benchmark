@@ -11,6 +11,7 @@ import random
 import sys
 import threading
 import traceback
+import uuid
 from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
 import copy
@@ -230,6 +231,98 @@ class TranslationDataset:
         return self
 
 
+def session_limits(prompt_tokens: int, prompt_cache_max_len: int) -> tuple[int, int]:
+    """Return (turn_tokens, max_prompt_tokens) for a --session-mode run.
+
+    A session starts at one turn and grows linearly until it is restarted, so
+    restarting at 2x the requested prompt length is what keeps the average request
+    at -p/--prompt-tokens. Each turn appends the part of an average prompt that the
+    cache would not have covered, -p minus -pcml.
+    """
+    if prompt_cache_max_len <= 0:
+        raise ValueError(
+            "--session-mode requires -pcml/--prompt-cache-max-len > 0: the cached portion of the "
+            "prompt is what determines how much new text each turn appends"
+        )
+    if prompt_cache_max_len >= prompt_tokens:
+        raise ValueError(
+            f"--session-mode requires -pcml/--prompt-cache-max-len ({prompt_cache_max_len}) to be smaller "
+            f"than -p/--prompt-tokens ({prompt_tokens}): otherwise a turn appends no new text"
+        )
+    return prompt_tokens - prompt_cache_max_len, 2 * prompt_tokens
+
+
+class ChatSession:
+    """One growing conversation, owned by a single Locust user.
+
+    Agent clients send each request as an exact continuation of the previous one
+    plus a small tail of new tokens, which is what a model that only hits the cache
+    on exact continuation (DSv4) needs. A turn is committed only after its response
+    has been read in full, so a failed or cancelled request leaves the conversation
+    untouched and the next turn retries from the same history with fresh text.
+
+    Every request carries the same `user` id, which Fireworks reads as a session
+    affinity key so consecutive turns are served by the same generator and can
+    actually hit the cache the previous turn populated.
+    """
+
+    def __init__(self, max_prompt_tokens: int, session_id: str):
+        self._max_prompt_tokens = max_prompt_tokens
+        self._session_id = session_id
+        self._history: list[dict[str, str]] = []
+        self._history_tokens = 0
+        self._pending_user: Optional[dict[str, str]] = None
+        self._pending_user_tokens = 0
+
+    @property
+    def turns(self) -> int:
+        return len(self._history) // 2
+
+    def start_turn(self, text: str, text_tokens: int) -> tuple[dict[str, Any], int]:
+        """Append text as the next user turn and return (payload, prompt token estimate)."""
+        self._pending_user = {"role": "user", "content": text}
+        self._pending_user_tokens = text_tokens
+        payload = {
+            "messages": [*self._history, self._pending_user],
+            "user": self._session_id,
+        }
+        return payload, self._history_tokens + text_tokens
+
+    def complete_turn(
+        self,
+        assistant_text: str,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+    ) -> bool:
+        """Commit the turn that just finished. Returns True if the session was restarted.
+
+        assistant_text must be the visible content exactly as the server produced it;
+        anything else breaks the continuation the next request depends on.
+        """
+        if self._pending_user is None:
+            return False
+
+        self._history.append(self._pending_user)
+        self._history.append({"role": "assistant", "content": assistant_text})
+        # Prefer the server's prompt count so the estimate re-syncs every turn instead
+        # of drifting on per-message chat template overhead.
+        served_prompt_tokens = prompt_tokens or self._history_tokens + self._pending_user_tokens
+        self._history_tokens = served_prompt_tokens + (completion_tokens or 0)
+        self._pending_user = None
+        self._pending_user_tokens = 0
+
+        if self._history_tokens >= self._max_prompt_tokens:
+            self.reset()
+            return True
+        return False
+
+    def reset(self) -> None:
+        self._history = []
+        self._history_tokens = 0
+        self._pending_user = None
+        self._pending_user_tokens = 0
+
+
 class JsonlDataset:
     def __init__(
         self,
@@ -293,9 +386,14 @@ class DatasetHolder:
                     prompt = options.prompt
                 dataset_file = "code.txt"
 
-            common_tokens = options.prompt_cache_max_len
-            if common_tokens > options.prompt_tokens:
-                common_tokens = options.prompt_tokens
+            if options.session_mode:
+                # Session mode grows the cache through the conversation itself, so each
+                # draw is just one turn's worth of fresh text with no shared prefix.
+                num_tokens, _ = session_limits(options.prompt_tokens, options.prompt_cache_max_len)
+                common_tokens = 0
+            else:
+                num_tokens = options.prompt_tokens
+                common_tokens = min(options.prompt_cache_max_len, options.prompt_tokens)
             tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
@@ -303,7 +401,7 @@ class DatasetHolder:
                 tokenizer=InitTracker.load_tokenizer(options.tokenizer),
                 tokenizer_path=tokenizer_path,
                 chat=options.chat and not getattr(options, "rerank", False),
-                num_tokens=options.prompt_tokens,
+                num_tokens=num_tokens,
                 common_tokens=common_tokens,
             )
         else:
@@ -713,6 +811,9 @@ class ChunkMetadata:
     prompt_tokens: Optional[int]
     cached_tokens: Optional[int]
     has_reasoning_only: bool = False  # chunk has reasoning/thinking content but no visible content
+    # Visible content only, excluding reasoning. Session mode echoes this back as the
+    # assistant turn, and real clients never resend thinking.
+    content_text: str = ""
 
 
 class BaseProvider(abc.ABC):
@@ -884,19 +985,17 @@ class OpenAIProvider(BaseProvider):
                 block = choice["delta"]
             else:
                 block = choice["message"]
-            has_content = bool(block.get("content"))
+            content_text = block.get("content", "") or ""
+            has_content = bool(content_text)
             has_reasoning = bool(block.get("reasoning_content") or block.get("reasoning"))
             has_reasoning_only = has_reasoning and not has_content
-            text = (
-                (block.get("reasoning", "") or "")
-                + (block.get("reasoning_content", "") or "")
-                + (block.get("content", "") or "")
-            )
+            text = (block.get("reasoning", "") or "") + (block.get("reasoning_content", "") or "") + content_text
         else:
             # Completions API: no reasoning_content field exists in the schema;
             # thinking tokens (if any) appear raw in text and cannot be separated.
             has_reasoning_only = False
             text = choice["text"]
+            content_text = text
 
         logprobs = choice.get("logprobs", None)
         if logprobs and "tokens" in logprobs:
@@ -911,6 +1010,7 @@ class OpenAIProvider(BaseProvider):
 
         return ChunkMetadata(
             text=text,
+            content_text=content_text,
             has_reasoning_only=has_reasoning_only,
             logprob_tokens=logprob_tokens,
             completion_tokens=usage["completion_tokens"] if usage else None,
@@ -985,7 +1085,11 @@ class FireworksProvider(OpenAIProvider):
         # default (0 = no caching) is a no-op for the server, but unconditionally
         # adding the key breaks deployments whose OpenAI-compat schema is configured
         # with extra="forbid" (e.g. some TRT-LLM and vLLM-style serving images).
-        if self.parsed_options.prompt_cache_max_len > 0:
+        #
+        # In session mode -pcml only sizes how much text each turn appends. Sending it
+        # would also truncate the cacheable prefix to that length, which would leave the
+        # later turns of a conversation re-prefilling the part they just cached.
+        if self.parsed_options.prompt_cache_max_len > 0 and not self.parsed_options.session_mode:
             data["prompt_cache_max_len"] = self.parsed_options.prompt_cache_max_len
         if self._acceptance_probs_override is not None:
             data["acceptance_probs_override"] = self._acceptance_probs_override
@@ -1434,8 +1538,15 @@ class LLMUser(HttpUser):
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
+        self.chat_session = self._create_chat_session() if self.environment.parsed_options.session_mode else None
+
         tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        if self.chat_session is None:
+            self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        else:
+            # A session's prompt grows every turn, so there is no single representative
+            # length to measure here; the per-request estimate comes from the session.
+            self.prompt_tokenizer_tokens = 0
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
@@ -1449,6 +1560,29 @@ class LLMUser(HttpUser):
             synthetic_prompt = "\n\n".join(PROMPT_PREFIX_TOKEN * tokens_per_doc for _ in range(num_docs))
             self.dataset = iter(itertools.cycle([(synthetic_prompt, num_docs * tokens_per_doc)]))
 
+    def _create_chat_session(self):
+        options = self.environment.parsed_options
+        if not options.chat:
+            raise AssertionError("--session-mode requires --chat: conversation history is sent as chat messages.")
+        if options.rerank or options.embeddings:
+            raise AssertionError("--session-mode is not supported with --rerank or --embeddings.")
+        if options.dataset.startswith("@"):
+            raise AssertionError(
+                "--session-mode builds turns from the 'limericks' or 'code' datasets; a JSONL dataset "
+                "already carries its own messages."
+            )
+        if self.prompt_images:
+            raise AssertionError("--session-mode does not support --prompt-images-with-resolutions.")
+
+        turn_tokens, max_prompt_tokens = session_limits(options.prompt_tokens, options.prompt_cache_max_len)
+        session_id = str(uuid.uuid4())
+        logger.info(
+            f"Session mode: appending ~{turn_tokens} prompt tokens per turn, "
+            f"restarting the conversation once it passes {max_prompt_tokens} prompt tokens "
+            f"(session {session_id})"
+        )
+        return ChatSession(max_prompt_tokens=max_prompt_tokens, session_id=session_id)
+
     def _create_base64_image(self, width, height):
         """Create a random RGB image with the given dimensions and return as base64 data URI."""
         img = Image.new("RGB", (width, height))
@@ -1459,6 +1593,10 @@ class LLMUser(HttpUser):
 
     def _get_input(self):
         prompt, prompt_tokens = next(self.dataset)
+
+        if self.chat_session is not None:
+            payload, session_prompt_tokens = self.chat_session.start_turn(prompt, prompt_tokens)
+            return payload, session_prompt_tokens, None
 
         if self.prompt_images:
             images = self.prompt_images
@@ -1550,6 +1688,7 @@ class LLMUser(HttpUser):
             timeout=60,
         ) as response:
             combined_text = ""
+            assistant_content = ""
             done = False
             completion_tokens = None
             total_logprob_tokens = None
@@ -1611,6 +1750,7 @@ class LLMUser(HttpUser):
                     if out.cached_tokens is not None:
                         cached_tokens = out.cached_tokens
                     combined_text += out.text
+                    assistant_content += out.content_text
 
                     # some providers (SGLang) send an empty chunk first skewing the TTFT;
                     # completion_tokens handles invisible-token deployments where combined_text
@@ -1724,6 +1864,15 @@ class LLMUser(HttpUser):
 
             # Mark response as success (required when using catch_response=True)
             response.success()
+
+            if self.chat_session is not None:
+                # Recorded before committing, since committing may restart the session.
+                add_custom_metric("session_turn", self.chat_session.turns + 1)
+                self.chat_session.complete_turn(
+                    assistant_content,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=num_tokens,
+                )
 
             if not self.first_done:
                 self.first_done = True
@@ -1879,6 +2028,17 @@ def init_parser(parser):
         type=int,
         default=512,
         help="Length of the prompt in tokens. Default 512",
+    )
+    parser.add_argument(
+        "--session-mode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Simulate conversation history: every user keeps one growing chat session instead of "
+        "re-sending a fixed prefix, so each request is an exact continuation of the previous one. "
+        "A turn appends (-p minus -pcml) tokens of new text plus the previous response, and the "
+        "session restarts once the prompt passes 2x -p, which keeps the average request at -p. "
+        "Requires --chat and -pcml smaller than -p. Pair with --max-tokens-distribution uniform so "
+        "sessions do not stay in lockstep.",
     )
     parser.add_argument(
         "--prompt-images-with-resolutions",

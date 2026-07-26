@@ -61,6 +61,45 @@ The benchmark makes the best effort to ensure the desired `max_tokens` number is
 - it verifies the number of tokens actually generated and prints warnings on mismatch. Different providers use varying mechanisms of returning generated number of tokens. For some of them `--logprobs` might be needed in the streaming mode.
 - optionally, `--tokenizer` can be passed specifying Huggingface tokenizer to be used to count the output tokens on client side.
 
+### Conversation history (`--session-mode`)
+
+By default every request re-sends the same fixed prefix, so a prompt cache is either
+warm for the whole prefix or not warm at all. Agent clients (Claude Code, Cursor, Codex)
+instead grow one conversation a turn at a time, and a model that only hits the cache on
+an exact continuation of the previous request (DSv4) behaves very differently under the
+two patterns. `--session-mode` reproduces the agent pattern:
+
+- each Locust user owns one conversation, and every request is the previous request plus
+  the response it got plus a new chunk of text
+- a turn appends `-p` minus `-pcml` tokens of new text, so the part of the prompt that
+  the cache did not already cover matches what `-pcml` describes
+- the conversation restarts once the prompt passes `2 * -p`, which keeps the average
+  request length at the `-p` you asked for
+- the dataset text is drawn per turn from `limericks`/`code` and still carries the
+  translation instruction, so the model has something coherent to answer every turn
+- every request in a session carries the same `user` id, which Fireworks reads as a
+  session affinity key so consecutive turns land on the same generator
+
+`-pcml` only sizes the turns here; unlike the default mode it is not sent to the server,
+because capping the cacheable prefix at `-pcml` would make the later turns of a
+conversation re-prefill the tokens they just cached. Requires `--chat`, and `-pcml` must
+be smaller than `-p`.
+
+Example, 60k average prompt with 54k of it typically cached, 600 generated tokens, 32
+concurrent conversations:
+
+```bash
+locust -u 32 -r 4 -p 60000 -pcml 54000 -o 600 --session-mode --chat --stream \
+  --max-tokens-distribution uniform -t 10min \
+  -H https://api.fireworks.ai/inference --api-key $FIREWORKS_API_KEY \
+  -m accounts/fireworks/models/MODEL --tokenizer /path/to/tokenizer
+```
+
+A gradual `-r` and a non-constant `--max-tokens-distribution` matter more here than in
+the default mode: without them the sessions stay in lockstep and their turns arrive in
+bursts. The `session_turn` metric row reports how deep the conversations were, and
+`cached_tokens` reports what the server actually reused.
+
 Generation options:
 - `--chat`: specify to call chat API instead of raw completions
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
