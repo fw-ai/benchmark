@@ -66,6 +66,13 @@ Generation options:
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
 
+Session mode (progressive cache / agentic-traffic simulation):
+- `--session-mode`: simulate conversation history like Claude Code / Cursor / Codex traffic. Each locust user (connection) runs a progressively growing multi-turn conversation: it starts with a single small user message and, after each generation, appends a fresh user turn while reusing the prior messages as an exact-continuation cacheable prefix. This is the pattern that produces prompt-cache hits on serving stacks which require exact message continuation (e.g. DeepSeek-V4), unlike the default fixed-prefix-replay workload which does not. Requires `--chat`.
+- `--session-turn-tokens`: with `--session-mode`, the number of *new* prompt tokens appended each turn (the uncached delta). Defaults to `--prompt-tokens` minus `--prompt-cache-max-len` (e.g. `-p 60000 -pcml 54000` -> 6000 new tokens per turn).
+- The conversation resets once it reaches `2 * --prompt-tokens`, so the *average* requested prompt length across the run stays around `--prompt-tokens` even though each session grows from ~`session-turn-tokens` up to `2 * --prompt-tokens`.
+- Each turn's user content is drawn from the existing `limericks`/`code` datasets and ends with the usual translate-to-Spanish/C++ suffix so responses stay coherent and the assistant turn becomes part of the cached prefix on the next turn.
+- Recommended companion flags to avoid request clumping: a meaningful spawn rate (`-r 4` or so) and `--max-tokens-distribution uniform`.
+
 Embeddings and rerank options:
 - `--embeddings`: use the `/v1/embeddings` API instead of completions
 - `--rerank`: use the `/v1/rerank` API. The generated prompt text is split into documents (by paragraph), and `--rerank-query` is used as the query.
@@ -152,6 +159,17 @@ Benchmark OpenAI deployment reading prompts from a file at 1 QPS:
 
 ```bash
 locust --dataset '@input.jsonl' -u 1 -H https://api.openai.com -o 200 --api-key $OPENAI_API_KEY --model=gpt-3.5-turbo --chat
+```
+
+Simulate agentic / Claude Code style progressive-cache traffic (avg prompt ~60K, 54K cached, 32 concurrent users, ~600-token turns, requests de-clumped via uniform output-length distribution and a 4/s spawn rate). Each user grows a multi-turn conversation from ~6K up to ~120K, then resets:
+
+```bash
+locust -f llm_bench/load_test.py -t 10m -u 32 -r 4 \
+  -p 60000 -pcml 54000 -o 600 --max-tokens-distribution uniform \
+  --session-mode --chat --stream \
+  -H https://api.fireworks.ai/inference --api-key $FIREWORKS_API_KEY \
+  -m accounts/fireworks/models/<model> --tokenizer $TOKENIZER \
+  --summary-file session_results.csv
 ```
 
 ## UI mode

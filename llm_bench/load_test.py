@@ -230,6 +230,77 @@ class TranslationDataset:
         return self
 
 
+class SessionDataset:
+    """Shared-common-prefix + per-user-unique-increment dataset for ``--session-mode``.
+
+    Models Claude Code / Cursor / Codex traffic where every user shares a large
+    common context (a warmable cache prefix) and then grows their own conversation
+    with unique additions:
+
+    * **Shared prefix** -- a deterministic contiguous run of paragraphs (wrapping
+      through the file) of ~``init_tokens`` tokens, IDENTICAL for every user.
+      The first request (or an explicit ``--session-prewarm`` request) warms it;
+      every subsequent user's first turn hits the cache on it.
+    * **Per-user increments** -- each user draws ~``turn_tokens`` blocks starting
+      at a DISTINCT paragraph index (assigned per user, never 0 which is the
+      shared-prefix start), so no two users' increment streams share a leading
+      paragraph -> no cross-user prefix match on the unique portion. Cross-user
+      cache hits are therefore exactly the shared prefix.
+
+    The source file is small (e.g. limericks.txt ~4.8K tokens / 119 paragraphs),
+    so both the shared prefix and the increments wrap through the file; distinct
+    starting paragraphs still guarantee prefix-disjointness because paragraphs are
+    atomic and distinct.
+    """
+
+    def __init__(self, path: str, prompt: str, tokenizer, init_tokens: int, turn_tokens: int):
+        self._tokenizer = tokenizer
+        self._suffix = prompt
+        self._suffix_tokens = len(self._tokenizer.encode(prompt, add_special_tokens=False))
+        self._init_tokens = init_tokens
+        self._turn_tokens = turn_tokens
+        self._paras = []
+        with open(path, "r") as f:
+            for lim in f.read().split("\n\n"):
+                self._paras.append((lim, len(self._tokenizer.encode(lim, add_special_tokens=False))))
+        self._nparas = len(self._paras)
+        # Deterministic shared prefix, identical for all users (starts at paragraph 0).
+        self._shared_prefix, self._shared_prefix_tokens, _ = self._build_block(0, init_tokens)
+
+    def _build_block(self, start_para: int, target_tokens: int):
+        """Contiguous (wrapping) run of paragraphs from ``start_para`` until the
+        token count reaches ``target_tokens``, with the translation suffix appended.
+        Returns (text, token_count, next_paragraph_index)."""
+        parts = []
+        toks = self._suffix_tokens
+        i = start_para % self._nparas
+        while toks < target_tokens:
+            lim, n = self._paras[i]
+            parts.append(lim)
+            toks += n
+            i = (i + 1) % self._nparas
+        next_para = i % self._nparas
+        text = "".join(p + "\n\n" for p in parts) + self._suffix
+        return text, toks, next_para
+
+    def shared_prefix(self):
+        """The common prefix. Returns (text, token_count). Identical for all users."""
+        return self._shared_prefix, self._shared_prefix_tokens
+
+    def build_increment(self, start_para: int, target_tokens: int = None):
+        """A per-user unique increment block starting at ``start_para``.
+        Returns (text, token_count, next_paragraph_index)."""
+        target = target_tokens if target_tokens is not None else self._turn_tokens
+        return self._build_block(start_para, target)
+
+    @property
+    def num_paragraphs(self):
+        return self._nparas
+
+    def __iter__(self):
+        return self
+
+
 class JsonlDataset:
     def __init__(
         self,
@@ -293,10 +364,37 @@ class DatasetHolder:
                     prompt = options.prompt
                 dataset_file = "code.txt"
 
+            tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
+
+            # Session mode: each turn appends a fresh, independent block of dataset
+            # text (no shared prefix). The cache comes from exact continuation of the
+            # growing message history, not from a repeated text prefix.
+            if getattr(options, "session_mode", False):
+                turn_tokens = getattr(options, "session_turn_tokens", None)
+                if turn_tokens is None:
+                    # Uncached delta per turn, e.g. -p 60K -pcml 54K -> 6K new tokens/turn.
+                    turn_tokens = options.prompt_tokens - options.prompt_cache_max_len
+                turn_tokens = max(1, turn_tokens)
+                init_tokens = getattr(options, "session_init_tokens", None)
+                if init_tokens is None:
+                    init_tokens = turn_tokens
+                session_max = getattr(options, "session_max_tokens", None) or (2 * options.prompt_tokens)
+                logger.info(
+                    f"Session mode: SHARED {init_tokens}-token prefix (identical for all users), "
+                    f"+{turn_tokens} unique/turn per user (distinct start paragraph), "
+                    f"resets at ~{session_max} prompt tokens"
+                )
+                return SessionDataset(
+                    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
+                    prompt="\n\n" + prompt,
+                    tokenizer=InitTracker.load_tokenizer(options.tokenizer),
+                    init_tokens=init_tokens,
+                    turn_tokens=turn_tokens,
+                )
+
             common_tokens = options.prompt_cache_max_len
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
-            tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
@@ -1268,6 +1366,10 @@ def _load_curl_like_data(text):
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
 
+    # Per-user sequence counter for assigning distinct increment start paragraphs.
+    _session_user_seq = 0
+    _session_seq_lock = threading.Lock()
+
     def on_start(self):
         try:
             self._on_start()
@@ -1387,6 +1489,20 @@ class LLMUser(HttpUser):
             "temperature": self.temperature,
             "logprobs": self.environment.parsed_options.logprobs,
         }
+        if self.environment.parsed_options.prompt_cache_max_len:
+            logging_params["prompt_cache_max_len"] = self.environment.parsed_options.prompt_cache_max_len
+        if getattr(self.environment.parsed_options, "session_mode", False):
+            logging_params["session_mode"] = True
+            _opts = self.environment.parsed_options
+            turn_tokens = getattr(_opts, "session_turn_tokens", None)
+            if turn_tokens is None:
+                turn_tokens = _opts.prompt_tokens - _opts.prompt_cache_max_len
+            logging_params["session_turn_tokens"] = turn_tokens
+            init_tokens = getattr(_opts, "session_init_tokens", None)
+            logging_params["session_init_tokens"] = init_tokens if init_tokens is not None else turn_tokens
+            max_tokens = getattr(_opts, "session_max_tokens", None)
+            if max_tokens is not None:
+                logging_params["session_max_tokens"] = max_tokens
 
         if self.environment.parsed_options.top_k is not None:
             logging_params["top_k"] = self.environment.parsed_options.top_k
@@ -1432,10 +1548,59 @@ class LLMUser(HttpUser):
         self.first_done = False
 
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
-        self.dataset = iter(dataset)
+        # SessionDataset is accessed via shared_prefix()/build_increment() (not next()),
+        # so don't wrap it in iter() (it has no __next__).
+        self.dataset = dataset if isinstance(dataset, SessionDataset) else iter(dataset)
+
+        # Session mode: each user runs a progressively growing multi-turn
+        # conversation (Claude Code / Cursor / Codex style), appending a fresh
+        # prompt block each turn and reusing the prior messages as a cacheable
+        # prefix. Requires the chat completions API.
+        self.session_mode = bool(getattr(self.environment.parsed_options, "session_mode", False))
+        if self.session_mode:
+            opts = self.environment.parsed_options
+            if not opts.chat:
+                raise AssertionError("--session-mode requires --chat (multi-turn messages).")
+            if opts.rerank or opts.embeddings:
+                raise AssertionError("--session-mode is only supported for chat completions.")
+            # Per-turn increment (the SessionDataset's block size).
+            turn_tokens = getattr(opts, "session_turn_tokens", None)
+            if turn_tokens is None:
+                turn_tokens = opts.prompt_tokens - opts.prompt_cache_max_len
+            self.session_turn_tokens = max(1, turn_tokens)
+            # Initiation context (turn 1). Defaults to the per-turn increment so the
+            # original behavior (start small, grow by the increment) is preserved.
+            self.session_init_tokens = getattr(opts, "session_init_tokens", None)
+            if self.session_init_tokens is None:
+                self.session_init_tokens = self.session_turn_tokens
+            # Reset cap. Defaults to 2x --prompt-tokens.
+            self.session_max_tokens = getattr(opts, "session_max_tokens", None) or (2 * opts.prompt_tokens)
+            # Assign this user a unique starting paragraph for their unique increment
+            # stream: distinct from every other user and from paragraph 0 (the shared
+            # prefix start) -> no cross-user prefix match on the unique increments.
+            nparas = getattr(self.dataset, "num_paragraphs", None) or 1
+            with LLMUser._session_seq_lock:
+                seq = LLMUser._session_user_seq
+                LLMUser._session_user_seq = (seq + 1) % max(1, nparas - 1)
+            self.session_start_para = (seq % max(1, nparas - 1)) + 1  # 1..nparas-1, never 0
+            self.session_cursor = self.session_start_para
+            self.session_messages: list = []
+            self.session_estimated_tokens = 0
+            self.session_turn = 0
+            logger.info(
+                f"Session mode enabled for user {self.__class__.__name__}: "
+                f"SHARED {self.session_init_tokens}-token prefix (turn 1), "
+                f"+{self.session_turn_tokens} unique/turn from paragraph {self.session_start_para}, "
+                f"resets at ~{self.session_max_tokens} prompt tokens"
+            )
 
         tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        if self.session_mode:
+            # No single-shot prompt estimate is representative of a growing session;
+            # the server reports the real per-request prompt_tokens via usage.
+            self.prompt_tokenizer_tokens = 0
+        else:
+            self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
@@ -1468,6 +1633,93 @@ class LLMUser(HttpUser):
             images = None
 
         return prompt, prompt_tokens, images
+
+    def _session_next_turn(self):
+        """Build the messages list for the next session turn.
+
+        Turn 1 (and the first turn after a reset) sends the **shared common
+        prefix** (``session_init_tokens``, identical for all users) so the first
+        request warms the cache and every other user's turn 1 hits it. Subsequent
+        turns append a **per-user unique increment** (``session_turn_tokens``)
+        drawn from this user's own paragraph cursor, which is prefix-disjoint
+        from every other user's increments. When the next increment would push
+        the session past ``session_max_tokens``, the session resets to a fresh
+        shared-prefix turn.
+        """
+        if not self.session_messages:
+            # Turn 1 / first turn after reset: the shared common prefix.
+            user_text, user_tokens = self.dataset.shared_prefix()
+        else:
+            # Additional turn: per-user unique increment (prefix-disjoint across users).
+            user_text, user_tokens, self.session_cursor = self.dataset.build_increment(
+                self.session_cursor, self.session_turn_tokens
+            )
+            if self.session_estimated_tokens + user_tokens >= self.session_max_tokens:
+                logger.info(
+                    f"Session reached ~{self.session_estimated_tokens} tokens over "
+                    f"{self.session_turn} turns; resetting session"
+                )
+                self.session_messages = []
+                self.session_estimated_tokens = 0
+                self.session_turn = 0
+                self.session_cursor = self.session_start_para
+                user_text, user_tokens = self.dataset.shared_prefix()
+
+        messages = list(self.session_messages) + [{"role": "user", "content": user_text}]
+        return messages, user_tokens, None
+
+    def _session_commit(self, prompt_tokens, num_tokens, assistant_text):
+        """Append the just-sent user turn and received assistant reply to history.
+
+        Uses the server-reported ``prompt_tokens`` (full conversation length for
+        this request) plus the generated token count to update the running
+        estimate of committed-history tokens, which drives the reset decision in
+        ``_session_next_turn``.
+        """
+        if not assistant_text:
+            # Don't commit empty/broken generations into the cacheable prefix.
+            return
+        self.session_messages.append({"role": "user", "content": self._session_user_text})
+        self.session_messages.append({"role": "assistant", "content": assistant_text})
+        self.session_turn += 1
+        if prompt_tokens:
+            self.session_estimated_tokens = prompt_tokens + (num_tokens or 0)
+        else:
+            self.session_estimated_tokens += self._session_user_tokens + (num_tokens or 0)
+
+    def _validate_token_counts(self, server_prompt_tokens, server_completion_tokens, max_tokens):
+        """Check server-reported token counts are within 500 of expected.
+
+        Compares the server's ``prompt_tokens`` against the pre-send expected
+        prompt size and the server's completion tokens against the requested
+        ``max_tokens``. Records the deltas as metrics (so averages show up in the
+        summary/CSV) and emits a ``token_count_validation_failure`` metric for
+        any request that is off by more than 500 tokens. Best-effort: never marks
+        the request as failed, so it does not perturb the success/fail ratio.
+        """
+        TOL = getattr(self.environment.parsed_options, "token_validation_tolerance", 500)
+        expected_prompt = getattr(self, "_expected_prompt_tokens", None)
+        failed = False
+        if expected_prompt and server_prompt_tokens:
+            pdelta = abs(server_prompt_tokens - expected_prompt)
+            add_custom_metric("prompt_token_delta", pdelta)
+            if pdelta > TOL:
+                logger.warning(
+                    f"prompt token delta {pdelta} > {TOL}: server={server_prompt_tokens} "
+                    f"expected={expected_prompt}"
+                )
+                failed = True
+        if server_completion_tokens and max_tokens:
+            cdelta = abs(server_completion_tokens - max_tokens)
+            add_custom_metric("completion_token_delta", cdelta)
+            if cdelta > TOL:
+                logger.warning(
+                    f"completion token delta {cdelta} > {TOL}: server={server_completion_tokens} "
+                    f"expected={max_tokens}"
+                )
+                failed = True
+        if failed:
+            add_custom_metric("token_count_validation_failure", 1)
 
     def _wait_for_ramping_capacity(self):
         """Block until ramping pacer allows a new request (below target concurrency)."""
@@ -1527,19 +1779,37 @@ class LLMUser(HttpUser):
         max_tokens = self.max_tokens_sampler.sample()
         is_embeddings = self.provider_formatter.parsed_options.embeddings
         batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
-        if is_embeddings and batch_size > 1:
+        if self.session_mode:
+            prompt, prompt_tokens, images = self._session_next_turn()
+            # Hand the full, growing message history to the provider. format_payload
+            # merges a dict prompt's keys into the request body, so {"messages": ...}
+            # replaces the default single-user-message construction and gives the
+            # server an exact continuation of the prior turn -> cache hit on prefix.
+            data = self.provider_formatter.format_payload({"messages": prompt}, max_tokens, None)
+            self._session_user_text = prompt[-1]["content"]
+            self._session_user_tokens = prompt_tokens
+        elif is_embeddings and batch_size > 1:
             prompts = []
             for _ in range(batch_size):
                 p, _, _ = self._get_input()
                 prompts.append(p)
             prompt, prompt_tokens, images = prompts, 0, None
+            data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         else:
             prompt, prompt_tokens, images = self._get_input()
-        data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+            data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
             print(json.dumps(data, indent=2))
             print("---")
+        # Pre-send expected prompt token count, for post-response validation
+        # (the response loop overwrites `prompt_tokens` with the server's count).
+        if self.session_mode:
+            self._expected_prompt_tokens = self.session_estimated_tokens + (
+                getattr(self, "_session_user_tokens", 0) or 0
+            )
+        else:
+            self._expected_prompt_tokens = prompt_tokens or 0
         t_start = time.perf_counter()
 
         with self.client.post(
@@ -1722,8 +1992,17 @@ class LLMUser(HttpUser):
             # Allow provider to process response (e.g., for custom metrics)
             self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
 
+            # Validate server-reported token counts are within tolerance of what
+            # we requested/expected (catches tokenizer mismatches and bad gens).
+            self._validate_token_counts(prompt_tokens, num_tokens, max_tokens)
+
             # Mark response as success (required when using catch_response=True)
             response.success()
+
+            # Commit the assistant turn into the growing session history so the
+            # next request is an exact continuation (cache hit on the prefix).
+            if self.session_mode:
+                self._session_commit(prompt_tokens, num_tokens, combined_text)
 
             if not self.first_done:
                 self.first_done = True
@@ -2027,6 +2306,115 @@ def init_parser(parser):
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
     )
     parser.add_argument(
+        "--session-mode",
+        env_var="SESSION_MODE",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Simulate conversation history like Claude Code / Cursor / Codex traffic: each user "
+            "(locust connection) runs a progressively growing multi-turn conversation, appending a "
+            "fresh prompt block every turn and reusing the prior messages as an exact-continuation "
+            "cacheable prefix. Unlike the default fixed-prefix-replay pattern, this produces cache "
+            "hits on serving stacks that require exact message continuation (e.g. DeepSeek-V4). "
+            "The conversation resets once it reaches 2x --prompt-tokens, keeping the average "
+            "requested prompt length around --prompt-tokens. Requires --chat. "
+            "Recommended: -u 32 -r 4 --max-tokens-distribution uniform -o 600."
+        ),
+    )
+    parser.add_argument(
+        "--session-turn-tokens",
+        env_var="SESSION_TURN_TOKENS",
+        type=int,
+        default=None,
+        help=(
+            "With --session-mode: number of NEW prompt tokens appended each turn (the per-turn "
+            "increment). Defaults to --prompt-tokens minus --prompt-cache-max-len, e.g. -p 60000 "
+            "-pcml 54000 -> 6000 new tokens/turn."
+        ),
+    )
+    parser.add_argument(
+        "--session-init-tokens",
+        env_var="SESSION_INIT_TOKENS",
+        type=int,
+        default=None,
+        help=(
+            "With --session-mode: token size of the FIRST user turn (the initiation context). "
+            "Defaults to --session-turn-tokens, so the session starts at the per-turn increment "
+            "size. Set this larger than --session-turn-tokens to simulate a session that begins "
+            "with a big context (e.g. 64K) and then grows by --session-turn-tokens each turn."
+        ),
+    )
+    parser.add_argument(
+        "--session-max-tokens",
+        env_var="SESSION_MAX_TOKENS",
+        type=int,
+        default=None,
+        help=(
+            "With --session-mode: prompt-token threshold at which the session resets to a fresh "
+            "initiation turn. Defaults to 2 * --prompt-tokens."
+        ),
+    )
+    parser.add_argument(
+        "--session-prewarm",
+        env_var="SESSION_PREWARM",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "With --session-mode: before the concurrent sweep starts, send a single request with "
+            "the shared common prefix so the cache is warm for every user's turn 1 (turn 1 becomes "
+            "a cache HIT on the shared prefix instead of a cold prefill). Requires the shared-prefix "
+            "session design (the default with --session-init-tokens)."
+        ),
+    )
+    parser.add_argument(
+        "--token-validation-tolerance",
+        env_var="TOKEN_VALIDATION_TOLERANCE",
+        type=int,
+        default=500,
+        help=(
+            "Tolerance (in tokens) for post-response token-count validation. If the server-reported "
+            "prompt_tokens or completion_tokens differ from the expected/requested counts by more "
+            "than this, a token_count_validation_failure metric is emitted and a warning is logged. "
+            "Defaults to 500."
+        ),
+    )
+    parser.add_argument(
+        "--metrics-url",
+        env_var="METRICS_URL",
+        type=str,
+        default=None,
+        help=(
+            "Prometheus /metrics endpoint to scrape periodically during the run for server-side "
+            "metrics (e.g. http://<deploy>:<port>/metrics). Aggregates --metrics-names into the "
+            "summary CSV and writes a full timeseries to --metrics-file."
+        ),
+    )
+    parser.add_argument(
+        "--metrics-interval",
+        env_var="METRICS_INTERVAL",
+        type=float,
+        default=5.0,
+        help="Seconds between Prometheus scrapes. Default 5.",
+    )
+    parser.add_argument(
+        "--metrics-names",
+        env_var="METRICS_NAMES",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated Prometheus metric names to aggregate (run-wide average) into the summary "
+            "CSV, e.g. 'nv_gpu_utilization,kv_cache_usage_ratio'. If omitted, all scraped metrics are "
+            "written to the timeseries file but none are added to the summary."
+        ),
+    )
+    parser.add_argument(
+        "--metrics-file",
+        env_var="METRICS_FILE",
+        type=str,
+        default=None,
+        help="Path to write the full Prometheus metrics timeseries CSV (one row per scrape).",
+    )
+    parser.add_argument(
         "--acceptance-probs-override",
         type=str,
         default=None,
@@ -2119,6 +2507,185 @@ def init_parser(parser):
     )
 
 
+class MetricsScraper:
+    """Periodically scrape a Prometheus /metrics endpoint during the run.
+
+    Runs a gevent greenlet that GETs the endpoint every ``interval`` seconds,
+    parses the Prometheus text format, and stores per-scrape samples. On stop,
+    aggregates run-wide averages for the requested ``names`` (for the summary)
+    and writes a full timeseries CSV (one row per scrape, one column per metric).
+    """
+
+    _instance = None
+
+    def __init__(self, url, interval, names, out_file):
+        self.url = url
+        self.interval = interval
+        self.names = set(names) if names else None
+        self.out_file = out_file
+        self.samples = []  # list of (epoch_seconds, {metric_name: summed_value})
+        self._greenlet = None
+
+    @classmethod
+    def start_if_configured(cls, options):
+        url = getattr(options, "metrics_url", None)
+        if not url:
+            return None
+        names_csv = getattr(options, "metrics_names", None)
+        names = [n.strip() for n in names_csv.split(",") if n.strip()] if names_csv else None
+        inst = cls(
+            url=url,
+            interval=getattr(options, "metrics_interval", 5.0),
+            names=names,
+            out_file=getattr(options, "metrics_file", None),
+        )
+        cls._instance = inst
+        inst._start()
+        logger.info(
+            f"Metrics scraper started: {url} every {inst.interval}s, "
+            f"names={names or 'all'} -> {inst.out_file or '(no timeseries file)'}"
+        )
+        return inst
+
+    def _start(self):
+        self._greenlet = gevent.spawn(self._run)
+
+    def stop(self):
+        if self._greenlet is not None:
+            self._greenlet.kill(block=False)
+            self._greenlet = None
+        self.write_timeseries()
+
+    def _run(self):
+        import requests as _requests
+
+        while True:
+            try:
+                r = _requests.get(self.url, timeout=max(1.0, self.interval))
+                if r.status_code == 200:
+                    self.samples.append((time.time(), self._parse(r.text)))
+                else:
+                    logger.debug(f"metrics scrape non-200: {r.status_code}")
+            except Exception as e:
+                logger.debug(f"metrics scrape failed: {repr(e)}")
+            gevent.sleep(self.interval)
+
+    @staticmethod
+    def _parse(text):
+        """Parse Prometheus text format -> {metric_name: summed_value}.
+
+        Multiple series with the same name (different labels) are summed, which
+        is the right aggregate for counters-by-label and gauges like GPU util
+        across devices. For metrics where summing is wrong, pick a specific
+        label via --metrics-names is left as a future refinement.
+        """
+        result = {}
+        for line in text.splitlines():
+            if not line or line.startswith("#"):
+                continue
+            name_part, _, rest = line.partition(" ")
+            name = name_part.split("{", 1)[0]
+            value_str = rest.strip().split()[0] if rest.strip() else ""
+            try:
+                val = float(value_str)
+            except (ValueError, IndexError):
+                continue
+            result[name] = result.get(name, 0.0) + val
+        return result
+
+    def averages(self):
+        if not self.samples:
+            return {}
+        sums, counts = {}, {}
+        for _, vals in self.samples:
+            for n, v in vals.items():
+                sums[n] = sums.get(n, 0.0) + v
+                counts[n] = counts.get(n, 0) + 1
+        return {n: sums[n] / counts[n] for n in sums}
+
+    def write_timeseries(self):
+        if not self.samples or not self.out_file:
+            return
+        names = sorted({n for _, vals in self.samples for n in vals})
+        with open(self.out_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestamp"] + names)
+            for ts, vals in self.samples:
+                writer.writerow([f"{ts:.3f}"] + [vals.get(n, "") for n in names])
+        logger.info(f"Wrote {len(self.samples)} metric scrapes (x {len(names)} metrics) to {self.out_file}")
+
+
+@events.test_start.add_listener
+def _start_metrics_scraper(environment, **kw):
+    """Start the Prometheus /metrics scraper if --metrics-url is set."""
+    MetricsScraper.start_if_configured(environment.parsed_options)
+
+
+@events.test_stop.add_listener
+def _stop_metrics_scraper(environment, **kw):
+    """Stop the scraper's greenlet and write its timeseries CSV.
+
+    Keeps the instance (with its samples) so the quitting handler can still read
+    run-wide averages for the summary.
+    """
+    if MetricsScraper._instance is not None:
+        MetricsScraper._instance.stop()
+
+
+@events.test_start.add_listener
+def _session_prewarm(environment, **kw):
+    """Pre-warm the shared common prefix cache before users spawn.
+
+    With ``--session-mode --session-prewarm``, send a single chat completion
+    whose prompt is the shared common prefix (identical for all users) so the
+    serving stack caches it. Every user's turn 1 then hits the cache on the
+    shared prefix instead of doing a cold prefill.
+    """
+    opts = environment.parsed_options
+    if not (getattr(opts, "session_mode", False) and getattr(opts, "session_prewarm", False)):
+        return
+    try:
+        ds = DatasetHolder.get_instance(opts)
+    except Exception as e:
+        logger.warning(f"Session prewarm skipped: could not build dataset: {e}")
+        return
+    if not isinstance(ds, SessionDataset):
+        logger.warning("Session prewarm skipped: dataset is not a SessionDataset")
+        return
+    provider = opts.provider
+    model = opts.model
+    if not provider or not model or provider not in PROVIDER_CLASS_MAP:
+        logger.warning("Session prewarm skipped: provider/model not resolved")
+        return
+    prefix_text, prefix_tokens = ds.shared_prefix()
+    formatter = PROVIDER_CLASS_MAP[provider](model, opts)
+    # max_tokens=16: we only need the prefill to run so the prefix is cached; the
+    # generated tokens are irrelevant. Force non-streaming so we can read usage.
+    payload = formatter.format_payload(prefix_text, 16, None)
+    payload["stream"] = False
+    payload.pop("stream_options", None)
+    url = (opts.host or "").rstrip("/") + formatter.get_url()
+    headers = {"Content-Type": "application/json"}
+    if opts.api_key:
+        headers["Authorization"] = "Bearer " + opts.api_key
+    logger.info(f"Session prewarm: warming shared {prefix_tokens}-token prefix at {url}")
+    try:
+        import requests as _requests
+
+        r = _requests.post(url, json=payload, headers=headers, timeout=180)
+        try:
+            usage = (r.json() or {}).get("usage", {}) or {}
+        except Exception:
+            usage = {}
+        cached = ((usage.get("prompt_tokens_details") or {}).get("cached_tokens"))
+        logger.info(
+            f"Session prewarm done: HTTP {r.status_code}, prompt_tokens={usage.get('prompt_tokens')}, "
+            f"cached={cached}"
+        )
+    except Exception as e:
+        logger.warning(f"Session prewarm failed: {repr(e)}")
+
+
 @events.quitting.add_listener
 def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
@@ -2172,6 +2739,17 @@ def _(environment, **kw):
             entries[metric_name] = _avg(metric_name)
         if ("cached_tokens", "METRIC") in environment.stats.entries:
             entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
+        # Server-side metrics captured from Fireworks perf_metrics/headers.
+        for srv_metric in ("server_side_time_to_first_token", "server_side_total_latency"):
+            if (srv_metric, "METRIC") in environment.stats.entries:
+                entries[srv_metric] = environment.stats.entries[(srv_metric, "METRIC")].avg_response_time
+        # Token-count validation deltas + failure count.
+        for val_metric in ("prompt_token_delta", "completion_token_delta"):
+            if (val_metric, "METRIC") in environment.stats.entries:
+                entries[val_metric] = environment.stats.entries[(val_metric, "METRIC")].avg_response_time
+        val_fail_entry = environment.stats.entries.get(("token_count_validation_failure", "METRIC"))
+        if val_fail_entry is not None:
+            entries["token_count_validation_failures"] = val_fail_entry.num_requests
         if not environment.parsed_options.stream:
             # if there's no streaming these metrics are meaningless
             entries["time_to_first_token"] = ""
@@ -2180,6 +2758,16 @@ def _(environment, **kw):
 
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
+    # Integrate server-side Prometheus scrape averages (run-wide mean) into the
+    # summary, for the metrics named via --metrics-names.
+    if MetricsScraper._instance is not None:
+        scrapes = len(MetricsScraper._instance.samples)
+        entries["metrics_scrape_count"] = scrapes
+        requested = MetricsScraper._instance.names or []
+        avgs = MetricsScraper._instance.averages()
+        for name in requested:
+            if name in avgs:
+                entries[f"metric_{name}"] = avgs[name]
     percentile_to_report = [50, 90, 95, 99, 99.9]
     for percentile_metric in percentile_metrics:
         metric_entry = environment.stats.entries.get((percentile_metric, "METRIC"))
