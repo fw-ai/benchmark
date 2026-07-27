@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Concurrency sweep over --session-mode (progressive-cache / agentic) traffic.
 #
-# Runs locust at each requested concurrency level with the shared-prefix +
-# prewarm session design, writing one summary CSV + log per level, then a
-# combined summary. Use it to map the concurrency-vs-latency/cache curve for a
+# Runs locust at each requested concurrency level with per-session unique
+# init + growing history (exact-continuation cache), writing one summary CSV
+# + log per level. Use it to map the concurrency-vs-latency/cache curve for a
 # deployment that requires exact-continuation prompt caching (e.g. DeepSeek-V4).
 #
 # Required env:
@@ -33,10 +33,10 @@ OUTDIR="${OUTDIR:-./sweep_out}"
 
 # Session-mode workload parameters (override via env if desired).
 P="${P:-60000}"                 # avg prompt length target
-PCML="${PCML:-0}"               # 0 = let the server cache the full prefix (recommended for DSv4)
+PCML="${PCML:-0}"               # local turn sizing only in session mode (not sent to server)
 O="${O:-600}"                   # generation length (mean)
-INIT="${INIT:-60000}"           # shared common prefix size (turn 1)
-TURN="${TURN:-6000}"            # per-user unique increment (turns 2+)
+INIT="${INIT:-6000}"            # per-session init size (turn 1)
+TURN="${TURN:-6000}"            # per-session increment (turns 2+)
 MAXT="${MAXT:-120000}"          # session reset cap
 TOL="${TOL:-500}"               # token validation tolerance
 # Optional Prometheus scrape (leave empty to skip):
@@ -61,7 +61,7 @@ for c in $LEVELS; do
   locust -f "$LOCUST_FILE" --headless \
     -u "$c" -r "$r" -t "$DUR" \
     --provider fireworks -m "$MODEL" -H "$HOST" --api-key "$PERF_API_KEY" --tokenizer "$TOKENIZER" \
-    --session-mode --session-prewarm --chat --stream \
+    --session-mode --chat --stream \
     -p "$P" -pcml "$PCML" -o "$O" --max-tokens-distribution uniform \
     --session-init-tokens "$INIT" --session-turn-tokens "$TURN" --session-max-tokens "$MAXT" \
     --token-validation-tolerance "$TOL" \
