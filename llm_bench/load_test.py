@@ -133,6 +133,26 @@ def empty_chat_template_token_ids(
     )
 
 
+_PROMPT_TOKENS_RE = re.compile(rb'"prompt_tokens"\s*:\s*(\d+)')
+
+
+def extract_prompt_tokens(body: bytes) -> Optional[int]:
+    """Read usage.prompt_tokens out of a response body without fully decoding it.
+
+    A batched embeddings response is almost entirely the float arrays under `data`.
+    Decoding those into Python objects just to read `usage` costs orders of magnitude
+    more than scanning for the field, and that cost lands on the load generator.
+    Falls back to a real parse if the scan misses.
+    """
+    match = _PROMPT_TOKENS_RE.search(body)
+    if match:
+        return int(match.group(1))
+    try:
+        return (orjson.loads(body).get("usage") or {}).get("prompt_tokens")
+    except orjson.JSONDecodeError:
+        return None
+
+
 def add_custom_metric(name, value, length_value=0):
     events.request.fire(
         request_type="METRIC",
@@ -1566,7 +1586,47 @@ class LLMUser(HttpUser):
                 return
             t_first_token = None
             t_first_visible_token = None
-            for chunk in response.iter_lines(delimiter=b"\n\n"):
+
+            # Rerank and embeddings are single-response JSON APIs. Draining them through
+            # iter_lines(delimiter=b"\n\n") makes the interpreter scan the whole body for a
+            # separator a JSON document never contains, so a multi-megabyte batched
+            # embeddings response gets buffered and rescanned in Python. Under gevent that
+            # scan is not cooperative, so it serializes across greenlets and caps client
+            # throughput well below what the endpoint can serve. Read the body once here
+            # and leave the chunk loop to the streaming paths.
+            if self.provider_formatter.parsed_options.rerank or self.provider_formatter.parsed_options.embeddings:
+                body = response.content
+                now = time.perf_counter()
+                t_first_token = now
+                # Recorded so a client-side ceiling is visible in the results rather than
+                # being mistaken for server latency.
+                add_custom_metric("response_bytes", len(body))
+                show_response = self.environment.parsed_options.show_response
+
+                if self.provider_formatter.parsed_options.rerank:
+                    out = self.provider_formatter.parse_output_json(orjson.loads(body))
+                    if out.prompt_tokens:
+                        prompt_tokens = out.prompt_tokens
+                    if show_response:
+                        combined_text = out.text
+                else:
+                    if show_response:
+                        resp_data = orjson.loads(body)
+                        server_prompt_tokens = (resp_data.get("usage") or {}).get("prompt_tokens")
+                        out = self.provider_formatter.parse_output_json(resp_data)
+                        combined_text = str(out.text)
+                    else:
+                        server_prompt_tokens = extract_prompt_tokens(body)
+                    if server_prompt_tokens:
+                        prompt_tokens = server_prompt_tokens
+                    add_custom_metric("latency_per_embedding", (now - t_start) / batch_size * 1000)
+
+                # Body is already consumed; fall through to the shared accounting below.
+                chunks = ()
+            else:
+                chunks = response.iter_lines(delimiter=b"\n\n")
+
+            for chunk in chunks:
                 if len(chunk) == 0:
                     continue  # come providers send empty lines between data chunks
                 if done:
@@ -1574,25 +1634,6 @@ class LLMUser(HttpUser):
                         logger.warning(f"Received more chunks after [DONE]: {chunk}")
                 try:
                     now = time.perf_counter()
-                    if self.provider_formatter.parsed_options.rerank:
-                        t_first_token = now
-                        out = self.provider_formatter.parse_output_json(orjson.loads(chunk))
-                        if out.prompt_tokens:
-                            prompt_tokens = out.prompt_tokens
-                        if self.environment.parsed_options.show_response:
-                            combined_text = out.text
-                        break
-                    if self.provider_formatter.parsed_options.embeddings:
-                        t_first_token = now
-                        resp_data = orjson.loads(chunk)
-                        usage = resp_data.get("usage", {})
-                        if usage.get("prompt_tokens"):
-                            prompt_tokens = usage["prompt_tokens"]
-                        if self.environment.parsed_options.show_response:
-                            out = self.provider_formatter.parse_output_json(resp_data)
-                            combined_text = str(out.text)
-                        add_custom_metric("latency_per_embedding", (now - t_start) / batch_size * 1000)
-                        break
                     if self.stream:
                         assert chunk.startswith(b"data:"), f"Unexpected chunk not starting with 'data': {chunk}"
                         chunk = chunk[len(b"data:") :]
@@ -2144,11 +2185,17 @@ def _(environment, **kw):
         return entry.avg_response_time if entry else ""
 
     if getattr(environment.parsed_options, "embeddings", False):
-        for metric_name in ["total_latency", "latency_per_embedding", "prompt_tokens"]:
+        for metric_name in [
+            "total_latency",
+            "latency_per_embedding",
+            "prompt_tokens",
+            "response_bytes",
+            "server_side_total_latency",
+        ]:
             entries[metric_name] = _avg(metric_name)
-        percentile_metrics = ["total_latency", "latency_per_embedding"]
+        percentile_metrics = ["total_latency", "latency_per_embedding", "server_side_total_latency"]
     elif getattr(environment.parsed_options, "rerank", False):
-        for metric_name in ["total_latency", "prompt_tokens"]:
+        for metric_name in ["total_latency", "prompt_tokens", "response_bytes", "server_side_total_latency"]:
             entries[metric_name] = _avg(metric_name)
         # Include rerank sweep params when set
         num_docs = getattr(environment.parsed_options, "num_documents", None)
@@ -2157,7 +2204,7 @@ def _(environment, **kw):
             entries["num_documents"] = num_docs
         if tokens_per_doc is not None:
             entries["tokens_per_document"] = tokens_per_doc
-        percentile_metrics = ["total_latency"]
+        percentile_metrics = ["total_latency", "server_side_total_latency"]
     else:
         for metric_name in [
             "time_to_first_token",
