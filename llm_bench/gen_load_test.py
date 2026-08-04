@@ -621,16 +621,32 @@ def _warmup_seq_len(
             retries,
         )
         request_users: list[Optional[str]] = list(users) if users is not None else [None] * concurrency
-        if concurrency == 1:
-            responses = [_single(0, request_users[0])]
-        else:
-            with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                futures = [pool.submit(_single, i, u) for i, u in enumerate(request_users)]
-                responses = [f.result() for f in as_completed(futures)]
+        try:
+            if concurrency == 1:
+                responses = [_single(0, request_users[0])]
+            else:
+                with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                    futures = [pool.submit(_single, i, u) for i, u in enumerate(request_users)]
+                    responses = [f.result() for f in as_completed(futures)]
+        except requests.exceptions.RequestException as error:
+            if attempt < retries:
+                logger.warning(
+                    "Warmup seq_len=%d failed (attempt %d/%d): %s. Retrying in %.0fs ...",
+                    seq_len,
+                    attempt,
+                    retries,
+                    error,
+                    retry_delay,
+                )
+                time.sleep(retry_delay)
+                continue
+            raise
 
         bad = next((r for r in responses if r.status_code != 200), None)
         if bad is None:
             return
+        if 400 <= bad.status_code < 500 and bad.status_code not in (408, 429):
+            raise RuntimeError(f"Warmup seq_len={seq_len} failed HTTP {bad.status_code}: {bad.text[:500]}")
         if attempt < retries:
             logger.warning(
                 "Warmup seq_len=%d failed HTTP %d: %s. Retrying in %.0fs ...",
