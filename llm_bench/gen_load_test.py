@@ -18,14 +18,12 @@ import importlib.util
 import logging
 import os
 import random
-import signal
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import lru_cache
-from threading import Event
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -41,72 +39,15 @@ from context_utils import (
     resolve_max_seq_len,
     tokenizer_asset_path,
 )
+from generator_routing import (
+    LOCAL_INDEX_HEADER as _LOCAL_INDEX_HEADER,
+    SERVICE_INDEX_HEADER as _SERVICE_INDEX_HEADER,
+    RoutingConfig,
+    routing_headers_for_worker,
+    split_batch_across_workers,
+)
 
 FW_HEADER_PREFIX = "fireworks-"
-
-_SERVICE_INDEX_HEADER = "x-fireworks-generator-worker-service-index"
-_LOCAL_INDEX_HEADER = "x-fireworks-generator-worker-local-index"
-
-
-@dataclass(frozen=True)
-class RoutingConfig:
-    """Generator-worker routing knobs for the benchmark client.
-
-    `num_servers` and `num_gens` define the round-robin space across
-    (service-index, local-index) workers. Routing headers are only emitted
-    when at least one dimension is greater than 1; otherwise existing
-    benchmark runs are unchanged byte-for-byte.
-
-    Requires `enableGeneratorWorkerTargeting=true` on the deployment for the
-    headers to take effect; otherwise they are ignored by Envoy.
-    """
-
-    num_servers: int = 1
-    num_gens: int = 1
-
-    @property
-    def enabled(self) -> bool:
-        return self.num_servers > 1 or self.num_gens > 1
-
-    @property
-    def num_workers(self) -> int:
-        return self.num_servers * self.num_gens
-
-    def describe(self) -> str:
-        if not self.enabled:
-            return "off"
-        return f"server-first {self.num_servers}x{self.num_gens}"
-
-
-def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) -> dict[str, str]:
-    """Return the routing headers to attach to the request for the given worker.
-
-    Server-first cycling keeps the per-server distribution balanced even when
-    `batch_size < num_servers * num_gens`: e.g. with 2 servers x 4 locals and
-    batch=4, workers visited are (s0,l0),(s1,l0),(s0,l1),(s1,l1) so each server
-    gets two requests rather than one server eating the whole batch.
-    """
-    if cfg is None or not cfg.enabled:
-        return {}
-    total = cfg.num_servers * cfg.num_gens
-    flat = worker_idx % total
-    server = flat % cfg.num_servers
-    local = flat // cfg.num_servers
-    return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
-
-
-def split_batch_across_workers(batch_size: int, cfg: RoutingConfig) -> list[tuple[int, int]]:
-    """Return ``(worker_idx, n)`` assignments whose ``n`` values sum to the batch.
-
-    At most one request is sent to each configured worker. The remainder is
-    assigned server-first so the per-worker batch sizes differ by at most one.
-    """
-    if batch_size < 1:
-        raise ValueError("batch_size must be >= 1")
-    worker_count = min(batch_size, cfg.num_workers)
-    per_worker, remainder = divmod(batch_size, worker_count)
-    return [(worker_idx, per_worker + (worker_idx < remainder)) for worker_idx in range(worker_count)]
-
 
 _FAST_BATCH_SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -787,13 +728,7 @@ def run_benchmark(
     retry_delay: float = 30.0,
     seed: int = 0,
     routing: Optional[RoutingConfig] = None,
-    repeat: int = 1,
-    stop_requested: Optional[Callable[[], bool]] = None,
 ) -> list[GenBenchmarkResult]:
-    if repeat < 0:
-        raise ValueError("repeat must be >= 0")
-    should_stop = stop_requested or (lambda: False)
-
     tokenizer = _load_auto_tokenizer(tokenizer_path)
     model_type = resolve_model_type(tokenizer_path)
     if model_type == "deepseek_v4":
@@ -819,134 +754,120 @@ def run_benchmark(
     logger.info("Routing: %s", routing.describe())
 
     results: list[GenBenchmarkResult] = []
+    prev_seq_len: Optional[int] = None
 
     # Sort by seq_len descending (longer prompts first for full prompt-cache
     # hit rate) and batch_size descending so the largest batch for a given
     # seq_len comes first.
     pairs = sorted(pairs, key=lambda p: (-p[0], -p[1]))
 
-    prepared: dict[int, tuple[list[int], list[str]]] = {}
-    round_index = 0
-    while (repeat == 0 or round_index < repeat) and not should_stop():
-        round_index += 1
-        if repeat == 0:
-            logger.info("Starting measured round %d (repeating until Ctrl-C)", round_index)
-        elif repeat > 1:
-            logger.info("Starting measured round %d/%d", round_index, repeat)
-
-        for seq_len, batch_size in pairs:
-            if should_stop():
-                break
-
-            if seq_len not in prepared:
-                prompt_len = seq_len - max_tokens
-                if prompt_len < 1:
-                    raise ValueError(f"seq_len={seq_len} must exceed max_tokens={max_tokens}")
-                prompt_ids = build_chat_prompt_ids(
-                    tokenizer,
-                    tokenizer_path,
-                    model_type,
-                    suffix,
-                    chunk_texts,
-                    target_len=prompt_len,
+    prompt_ids: list[int] = []
+    seq_users: list[str] = []
+    for seq_len, batch_size in pairs:
+        if seq_len != prev_seq_len:
+            prompt_len = seq_len - max_tokens
+            if prompt_len < 1:
+                raise ValueError(f"seq_len={seq_len} must exceed max_tokens={max_tokens}")
+            prompt_ids = build_chat_prompt_ids(
+                tokenizer,
+                tokenizer_path,
+                model_type,
+                suffix,
+                chunk_texts,
+                target_len=prompt_len,
+            )
+            logger.info(
+                "Built exact boundary for seq_len=%d: prompt=%d + output=%d",
+                seq_len,
+                len(prompt_ids),
+                max_tokens,
+            )
+            if routed_requests:
+                # One warmup per worker is sufficient: the measured request
+                # transfers the prompt once and forks its n continuations on
+                # the generator, instead of transferring one copy per output.
+                worker_count = min(batch_size, routing.num_workers)
+                seq_users = _generate_users(seq_len + seed, worker_count)
+                _warmup_seq_len(
+                    url=url,
+                    api_key=api_key,
+                    model=model,
+                    prompt_ids=prompt_ids,
+                    seq_len=seq_len,
+                    concurrency=worker_count,
+                    temperature=temperature,
+                    retries=retries,
+                    retry_delay=retry_delay,
+                    users=seq_users,
+                    routing=routing,
                 )
-                logger.info(
-                    "Built exact boundary for seq_len=%d: prompt=%d + output=%d",
-                    seq_len,
-                    len(prompt_ids),
-                    max_tokens,
+            else:
+                # n-mode measurement is unrouted; warmup must match or cache primes the wrong worker.
+                _warmup_seq_len(
+                    url=url,
+                    api_key=api_key,
+                    model=model,
+                    prompt_ids=prompt_ids,
+                    seq_len=seq_len,
+                    concurrency=1,
+                    temperature=temperature,
+                    retries=retries,
+                    retry_delay=retry_delay,
                 )
-                seq_users: list[str] = []
+            prev_seq_len = seq_len
+
+        users: Optional[list[str]] = None
+        if routed_requests:
+            users = seq_users[: min(batch_size, routing.num_workers)]
+
+        for attempt in range(1, retries + 1):
+            try:
                 if routed_requests:
-                    # Pairs are sorted by descending batch size, so the first
-                    # pair for a sequence length warms every worker needed by
-                    # any later pair or repeat round.
-                    worker_count = min(batch_size, routing.num_workers)
-                    seq_users = _generate_users(seq_len + seed, worker_count)
-                    _warmup_seq_len(
+                    assert users is not None
+                    result = _run_pair_routed_n_mode(
                         url=url,
                         api_key=api_key,
                         model=model,
                         prompt_ids=prompt_ids,
+                        max_tokens=max_tokens,
                         seq_len=seq_len,
-                        concurrency=worker_count,
+                        batch_size=batch_size,
                         temperature=temperature,
-                        retries=retries,
-                        retry_delay=retry_delay,
-                        users=seq_users,
+                        users=users,
                         routing=routing,
                     )
                 else:
-                    # n-mode measurement is unrouted; warmup must match or cache primes the wrong worker.
-                    _warmup_seq_len(
+                    result = _run_pair_n_mode(
+                        session=session,
                         url=url,
                         api_key=api_key,
                         model=model,
                         prompt_ids=prompt_ids,
+                        max_tokens=max_tokens,
                         seq_len=seq_len,
-                        concurrency=1,
+                        batch_size=batch_size,
                         temperature=temperature,
-                        retries=retries,
-                        retry_delay=retry_delay,
                     )
-                prepared[seq_len] = (prompt_ids, seq_users)
-
-            if should_stop():
+                results.append(result)
                 break
-
-            prompt_ids, seq_users = prepared[seq_len]
-            users: Optional[list[str]] = None
-            if routed_requests:
-                users = seq_users[: min(batch_size, routing.num_workers)]
-
-            for attempt in range(1, retries + 1):
-                try:
-                    if routed_requests:
-                        assert users is not None
-                        result = _run_pair_routed_n_mode(
-                            url=url,
-                            api_key=api_key,
-                            model=model,
-                            prompt_ids=prompt_ids,
-                            max_tokens=max_tokens,
-                            seq_len=seq_len,
-                            batch_size=batch_size,
-                            temperature=temperature,
-                            users=users,
-                            routing=routing,
-                        )
-                    else:
-                        result = _run_pair_n_mode(
-                            session=session,
-                            url=url,
-                            api_key=api_key,
-                            model=model,
-                            prompt_ids=prompt_ids,
-                            max_tokens=max_tokens,
-                            seq_len=seq_len,
-                            batch_size=batch_size,
-                            temperature=temperature,
-                        )
-                    results.append(result)
-                    break
-                except PromptCacheVerificationError:
-                    # A cache miss invalidates the measurement. Retrying would
-                    # silently turn that failed measurement into another warmup.
+            except PromptCacheVerificationError:
+                # A cache miss invalidates the measurement. Retrying would
+                # silently turn that failed measurement into another warmup.
+                raise
+            except Exception as e:
+                if attempt < retries:
+                    logger.warning(
+                        "Pair seq_len=%d batch_size=%d failed (attempt %d/%d): %s. Retrying in %.0fs ...",
+                        seq_len,
+                        batch_size,
+                        attempt,
+                        retries,
+                        e,
+                        retry_delay,
+                    )
+                    time.sleep(retry_delay)
+                else:
                     raise
-                except Exception as e:
-                    if attempt < retries:
-                        logger.warning(
-                            "Pair seq_len=%d batch_size=%d failed (attempt %d/%d): %s. Retrying in %.0fs ...",
-                            seq_len,
-                            batch_size,
-                            attempt,
-                            retries,
-                            e,
-                            retry_delay,
-                        )
-                        time.sleep(retry_delay)
-                    else:
-                        raise
 
     return results
 
@@ -1086,16 +1007,6 @@ def main() -> None:
         help="Seconds to sleep between retries (default: 30).",
     )
     parser.add_argument(
-        "--repeat",
-        nargs="?",
-        type=int,
-        const=0,
-        default=1,
-        metavar="N",
-        help="Repeat the measured pair set N times after warming each sequence length once. "
-        "Pass without N (or pass 0) to repeat until Ctrl-C. Default: 1.",
-    )
-    parser.add_argument(
         "--num-servers",
         type=int,
         default=1,
@@ -1124,8 +1035,6 @@ def main() -> None:
         parser.error("--min-batch-size must be >= 1")
     if args.min_batch_size > args.max_batch_size:
         parser.error("--min-batch-size must be <= --max-batch-size")
-    if args.repeat < 0:
-        parser.error("--repeat must be >= 0")
     routing = RoutingConfig(
         num_servers=args.num_servers,
         num_gens=args.num_generators_per_server,
@@ -1171,38 +1080,20 @@ def main() -> None:
 
     logger.info("Using %d seq-batch pairs: %s", len(pairs), pairs)
 
-    stop_event = Event()
-    previous_sigint_handler: Any = None
-    if args.repeat == 0:
-        previous_sigint_handler = signal.getsignal(signal.SIGINT)
-
-        def request_stop(_signum: int, _frame: Any) -> None:
-            if not stop_event.is_set():
-                logger.info("Ctrl-C received; stopping after the current in-flight requests finish")
-                stop_event.set()
-
-        signal.signal(signal.SIGINT, request_stop)
-
-    try:
-        rows = run_benchmark(
-            tokenizer_path=args.tokenizer,
-            model=args.model,
-            base_url=args.base_url,
-            api_key=args.api_key,
-            dataset=args.dataset,
-            pairs=pairs,
-            max_tokens=args.max_tokens,
-            temperature=args.temperature,
-            retries=args.retries,
-            retry_delay=args.retry_delay,
-            seed=args.seed,
-            routing=routing,
-            repeat=args.repeat,
-            stop_requested=stop_event.is_set,
-        )
-    finally:
-        if previous_sigint_handler is not None:
-            signal.signal(signal.SIGINT, previous_sigint_handler)
+    rows = run_benchmark(
+        tokenizer_path=args.tokenizer,
+        model=args.model,
+        base_url=args.base_url,
+        api_key=args.api_key,
+        dataset=args.dataset,
+        pairs=pairs,
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+        retries=args.retries,
+        retry_delay=args.retry_delay,
+        seed=args.seed,
+        routing=routing,
+    )
     if args.format == "csv":
         print(format_csv(rows))
     else:
