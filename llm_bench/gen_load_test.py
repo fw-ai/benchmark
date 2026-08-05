@@ -4,10 +4,11 @@ Generation (decode) latency benchmark for Fireworks /v1/completions.
 
 For each (seq_len, batch_size) pair, builds a single user message wrapped in
 the model's chat template (applied client-side via the HF tokenizer), sends
-the resulting token-id prompt with n=batch_size and max_tokens output tokens,
-then reports per-forward-pass generation latency derived from
-fireworks-generation-duration and the number of target-model forward passes
-(speculation-aware).
+the resulting token-id prompt with ``n > 1``, verifies that the full shareable
+prompt prefix was served from cache, then reports per-forward-pass generation
+latency using the fireworks-generation-duration header and the number of
+target-model forward passes (speculation-aware). In routed mode the requested
+batch is split across generator workers, with one ``n > 1`` request per worker.
 """
 
 from __future__ import annotations
@@ -65,6 +66,10 @@ class RoutingConfig:
     def enabled(self) -> bool:
         return self.num_servers > 1 or self.num_gens > 1
 
+    @property
+    def num_workers(self) -> int:
+        return self.num_servers * self.num_gens
+
     def describe(self) -> str:
         if not self.enabled:
             return "off"
@@ -86,6 +91,19 @@ def routing_headers_for_worker(cfg: Optional[RoutingConfig], worker_idx: int) ->
     server = flat % cfg.num_servers
     local = flat // cfg.num_servers
     return {_SERVICE_INDEX_HEADER: str(server), _LOCAL_INDEX_HEADER: str(local)}
+
+
+def split_batch_across_workers(batch_size: int, cfg: RoutingConfig) -> list[tuple[int, int]]:
+    """Return ``(worker_idx, n)`` assignments whose ``n`` values sum to the batch.
+
+    At most one request is sent to each configured worker. The remainder is
+    assigned server-first so the per-worker batch sizes differ by at most one.
+    """
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    worker_count = min(batch_size, cfg.num_workers)
+    per_worker, remainder = divmod(batch_size, worker_count)
+    return [(worker_idx, per_worker + (worker_idx < remainder)) for worker_idx in range(worker_count)]
 
 
 _FAST_BATCH_SIZES = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -379,6 +397,66 @@ def validate_completion_usage(
         raise RuntimeError(f"Server generated {completion_tokens} tokens; requested {expected_completion_tokens}")
 
 
+class PromptCacheVerificationError(RuntimeError):
+    """The measured request did not prove a full prompt-cache hit."""
+
+
+def validate_full_prompt_cache_hit(
+    response_data: dict[str, Any],
+    headers: Mapping[str, str],
+    expected_prompt_tokens: int,
+    request_label: str,
+) -> int:
+    """Return cached prompt tokens after verifying a full shareable-prefix hit.
+
+    Fireworks keeps the final prompt token out of the shareable prefix because
+    that token must be evaluated to produce the first generated token. The
+    non-streaming completions response reports the cached count in both the
+    ``fireworks-cached-prompt-tokens`` header and, on current servers,
+    ``usage.prompt_tokens_details.cached_tokens``.
+    """
+    header_cached_tokens = get_int_header(headers, "cached-prompt-tokens")
+
+    body_cached_tokens: Optional[int] = None
+    usage = response_data.get("usage")
+    if isinstance(usage, dict):
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict) and details.get("cached_tokens") is not None:
+            try:
+                body_cached_tokens = int(details["cached_tokens"])
+            except (TypeError, ValueError) as error:
+                raise PromptCacheVerificationError(
+                    f"{request_label} returned invalid usage.prompt_tokens_details.cached_tokens="
+                    f"{details['cached_tokens']!r}"
+                ) from error
+
+    if header_cached_tokens is None and body_cached_tokens is None:
+        raise PromptCacheVerificationError(
+            f"{request_label} did not report cached prompt tokens in either "
+            "fireworks-cached-prompt-tokens or usage.prompt_tokens_details.cached_tokens"
+        )
+    if (
+        header_cached_tokens is not None
+        and body_cached_tokens is not None
+        and header_cached_tokens != body_cached_tokens
+    ):
+        raise PromptCacheVerificationError(
+            f"{request_label} reported inconsistent cached prompt tokens: "
+            f"header={header_cached_tokens}, body={body_cached_tokens}"
+        )
+
+    cached_tokens = header_cached_tokens if header_cached_tokens is not None else body_cached_tokens
+    assert cached_tokens is not None
+    expected_cached_tokens = max(expected_prompt_tokens - 1, 0)
+    if cached_tokens != expected_cached_tokens:
+        raise PromptCacheVerificationError(
+            f"{request_label} did not fully hit the prompt cache: "
+            f"cached {cached_tokens}/{expected_cached_tokens} shareable prompt tokens "
+            f"(prompt_tokens={expected_prompt_tokens})"
+        )
+    return cached_tokens
+
+
 def parse_num_forward_passes(headers: Mapping[str, str], batch_size: int, completion_tokens: int) -> int:
     """Derive the number of target-model forward passes during generation.
 
@@ -454,12 +532,20 @@ def _run_pair_n_mode(
         expected_prompt_tokens=len(prompt_ids),
         expected_completion_tokens=completion_tokens,
     )
+    cached_tokens = validate_full_prompt_cache_hit(
+        resp_json,
+        r.headers,
+        expected_prompt_tokens=len(prompt_ids),
+        request_label="n-mode request",
+    )
     num_fwd = parse_num_forward_passes(r.headers, batch_size, completion_tokens)
 
     fwp = get_int_header(r.headers, "prompt-tokens")
     logger.info(
-        "  -> server prompt-tokens=%s, generation-duration=%.6fs, forward_passes=%s, client=%.2fs",
+        "  -> server prompt-tokens=%s, cached-prompt-tokens=%d, generation-duration=%.6fs, "
+        "forward_passes=%s, client=%.2fs",
         fwp,
+        cached_tokens,
         gen_dur,
         num_fwd,
         wall,
@@ -481,7 +567,7 @@ def _generate_users(seed: int, count: int) -> list[str]:
     return [str(rng.randint(0, 2**63 - 1)) for _ in range(count)]
 
 
-def _run_pair_separate_mode(
+def _run_pair_routed_n_mode(
     url: str,
     api_key: Optional[str],
     model: Optional[str],
@@ -494,18 +580,21 @@ def _run_pair_separate_mode(
     routing: Optional[RoutingConfig] = None,
     worker_offset: int = 0,
 ) -> GenBenchmarkResult:
-    """Send batch_size concurrent requests each with n=1."""
+    """Split the batch across workers using one concurrent ``n > 1`` request each."""
+    routing = routing or RoutingConfig()
+    assignments = split_batch_across_workers(batch_size, routing)
     logger.info(
-        "Pair (seq_len=%d, batch_size=%d): %d separate requests, max_tokens=%d, routing=%s",
+        "Pair (seq_len=%d, batch_size=%d): %d routed n-requests %s, max_tokens=%d, routing=%s",
         seq_len,
         batch_size,
-        batch_size,
+        len(assignments),
+        [n for _, n in assignments],
         max_tokens,
-        (routing or RoutingConfig()).describe(),
+        routing.describe(),
     )
-    assert len(users) == batch_size, f"expected {batch_size} users, got {len(users)}"
+    assert len(users) == len(assignments), f"expected {len(assignments)} users, got {len(users)}"
 
-    def _single_request(worker_idx: int, user: str) -> requests.Response:
+    def _single_request(worker_idx: int, n: int, user: str) -> requests.Response:
         s = requests.Session()
         headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
         if headers and logger.isEnabledFor(logging.DEBUG):
@@ -522,29 +611,41 @@ def _run_pair_separate_mode(
             model,
             prompt_ids,
             max_tokens=max_tokens,
-            n=1,
+            n=n,
             temperature=temperature,
             user=user,
             extra_headers=headers or None,
         )
 
     wall_start = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=batch_size) as pool:
-        futures = [pool.submit(_single_request, i, u) for i, u in enumerate(users)]
-        responses = []
+    with ThreadPoolExecutor(max_workers=len(assignments)) as pool:
+        futures = {
+            pool.submit(_single_request, worker_idx, n, users[request_idx]): (worker_idx, n)
+            for request_idx, (worker_idx, n) in enumerate(assignments)
+        }
+        responses: list[tuple[int, int, requests.Response]] = []
         for fut in as_completed(futures):
-            responses.append(fut.result())
+            worker_idx, n = futures[fut]
+            responses.append((worker_idx, n, fut.result()))
     wall = time.perf_counter() - wall_start
 
     gen_durs: list[float] = []
     fwd_counts: list[int] = []
-    for i, r in enumerate(responses):
+    cached_counts: list[int] = []
+    for worker_idx, n, r in responses:
+        target_headers = routing_headers_for_worker(routing, worker_offset + worker_idx)
+        request_label = (
+            f"worker {worker_idx} "
+            f"(server={target_headers.get(_SERVICE_INDEX_HEADER)}, "
+            f"local={target_headers.get(_LOCAL_INDEX_HEADER)})"
+        )
         if r.status_code != 200:
-            raise RuntimeError(f"Request {i} failed HTTP {r.status_code}: {r.text[:500]}")
+            raise RuntimeError(f"{request_label} failed HTTP {r.status_code}: {r.text[:500]}")
         gd = get_header(r.headers, "generation-duration")
         if gd is None:
             raise RuntimeError(
-                "Missing fireworks-generation-duration header (need dedicated deployment?). "
+                f"{request_label} is missing fireworks-generation-duration header "
+                "(need dedicated deployment?). "
                 f"Got keys: {[k for k in r.headers.keys() if 'fireworks' in k.lower()]}"
             )
         gen_durs.append(gd)
@@ -552,15 +653,26 @@ def _run_pair_separate_mode(
         validate_completion_usage(
             resp_json,
             expected_prompt_tokens=len(prompt_ids),
-            expected_completion_tokens=max_tokens,
+            expected_completion_tokens=max_tokens * n,
         )
-        fwd_counts.append(parse_num_forward_passes(r.headers, batch_size=1, completion_tokens=max_tokens))
+        cached_counts.append(
+            validate_full_prompt_cache_hit(
+                resp_json,
+                r.headers,
+                expected_prompt_tokens=len(prompt_ids),
+                request_label=request_label,
+            )
+        )
+        fwd_counts.append(parse_num_forward_passes(r.headers, batch_size=n, completion_tokens=max_tokens * n))
 
     avg_gen_dur = sum(gen_durs) / len(gen_durs)
     avg_fwd = sum(fwd_counts) / len(fwd_counts)
 
     logger.info(
-        "  -> gen_dur avg=%.6fs  min=%.6fs  max=%.6fs, fwd_passes avg=%.0f, client=%.2fs",
+        "  -> full cache hit on %d routed requests (%d tokens each), "
+        "gen_dur avg=%.6fs  min=%.6fs  max=%.6fs, fwd_passes avg=%.0f, client=%.2fs",
+        len(cached_counts),
+        cached_counts[0],
         avg_gen_dur,
         min(gen_durs),
         max(gen_durs),
@@ -687,13 +799,13 @@ def run_benchmark(
     url = completions_url(base_url)
     session = requests.Session()
 
-    # Mode is derived from routing: enabled (num_servers > 1 OR num_gens > 1)
-    # implies separate concurrent requests pinned to specific cells; disabled
-    # falls back to a single request with n=batch_size against the LB.
+    # Routing enabled: split the requested batch across generator workers and
+    # send one n>1 request to each selected worker. Routing disabled: send one
+    # n=batch_size request through the load balancer.
     routing = routing or RoutingConfig()
-    separate_requests = routing.enabled
-    if separate_requests:
-        logger.info("Mode: separate concurrent requests (no n>1)")
+    routed_requests = routing.enabled
+    if routed_requests:
+        logger.info("Mode: routed n>1 requests (batch split across workers)")
     else:
         logger.info("Mode: single request with n=batch_size")
     logger.info("Routing: %s", routing.describe())
@@ -727,45 +839,19 @@ def run_benchmark(
                 len(prompt_ids),
                 max_tokens,
             )
-            if separate_requests:
-                if prev_seq_len is None:
-                    # HACK: backend OOMs without this pre-warmup on the largest
-                    # seq_len; sending the same prompt 64 times sequentially
-                    # with a fresh random `user` each time primes the backend
-                    # across generators before the user-pinned warmup at full
-                    # batch_size. TODO: fix the backend OOM and remove this.
-                    #
-                    # When routing is enabled we also round-robin the worker
-                    # index across all (server, local) workers so every DP group
-                    # gets primed by this hack instead of relying on the LB.
-                    logger.info(
-                        "Pre-warmup (seq_len=%d): 64 sequential requests with random users (HACK)",
-                        seq_len,
-                    )
-                    rng = random.Random(seed)
-                    for i in range(64):
-                        _warmup_seq_len(
-                            url=url,
-                            api_key=api_key,
-                            model=model,
-                            prompt_ids=prompt_ids,
-                            seq_len=seq_len,
-                            concurrency=1,
-                            temperature=temperature,
-                            retries=retries,
-                            retry_delay=retry_delay,
-                            users=[str(rng.randint(0, 2**63 - 1))],
-                            routing=routing,
-                            worker_offset=i,
-                        )
-                seq_users = _generate_users(seq_len + seed, batch_size)
+            if routed_requests:
+                # One warmup per worker is sufficient: the measured request
+                # transfers the prompt once and forks its n continuations on
+                # the generator, instead of transferring one copy per output.
+                worker_count = min(batch_size, routing.num_workers)
+                seq_users = _generate_users(seq_len + seed, worker_count)
                 _warmup_seq_len(
                     url=url,
                     api_key=api_key,
                     model=model,
                     prompt_ids=prompt_ids,
                     seq_len=seq_len,
-                    concurrency=len(seq_users),
+                    concurrency=worker_count,
                     temperature=temperature,
                     retries=retries,
                     retry_delay=retry_delay,
@@ -788,14 +874,14 @@ def run_benchmark(
             prev_seq_len = seq_len
 
         users: Optional[list[str]] = None
-        if separate_requests:
-            users = seq_users[:batch_size]
+        if routed_requests:
+            users = seq_users[: min(batch_size, routing.num_workers)]
 
         for attempt in range(1, retries + 1):
             try:
-                if separate_requests:
+                if routed_requests:
                     assert users is not None
-                    result = _run_pair_separate_mode(
+                    result = _run_pair_routed_n_mode(
                         url=url,
                         api_key=api_key,
                         model=model,
@@ -821,6 +907,10 @@ def run_benchmark(
                     )
                 results.append(result)
                 break
+            except PromptCacheVerificationError:
+                # A cache miss invalidates the measurement. Retrying would
+                # silently turn that failed measurement into another warmup.
+                raise
             except Exception as e:
                 if attempt < retries:
                     logger.warning(
