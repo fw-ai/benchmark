@@ -1487,6 +1487,10 @@ class LLMUser(HttpUser):
         else:
             images = None
 
+        if getattr(self.environment.parsed_options, "prompt_randomize", False):
+            nonce = f"[{random.getrandbits(64):016x}] "
+            prompt = nonce + prompt
+
         return prompt, prompt_tokens, images
 
     def _wait_for_ramping_capacity(self):
