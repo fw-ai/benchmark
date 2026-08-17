@@ -26,6 +26,11 @@ import re
 import gevent
 from locust.util.timespan import parse_timespan as _locust_parse_timespan
 
+# Ensure this file's directory is importable so `video_slicer` resolves when
+# locust loads us via -f from a different working directory.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from video_slicer import VideoSlicerHolder, random_prompt_prefix  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -746,7 +751,7 @@ class BaseProvider(abc.ABC):
     def get_url(self): ...
 
     @abc.abstractmethod
-    def format_payload(self, prompt, max_tokens, images): ...
+    def format_payload(self, prompt, max_tokens, images, videos=None): ...
 
     @abc.abstractmethod
     def parse_output_json(self, json): ...
@@ -776,7 +781,7 @@ class OpenAIProvider(BaseProvider):
         else:
             return "/v1/completions"
 
-    def format_payload(self, prompt, max_tokens, images):
+    def format_payload(self, prompt, max_tokens, images, videos=None):
         if self.parsed_options.rerank:
             if isinstance(prompt, list):
                 documents = prompt
@@ -825,6 +830,23 @@ class OpenAIProvider(BaseProvider):
             data["logprobs"] = self.parsed_options.logprobs
         if self.parsed_options.reasoning_effort is not None:
             data["reasoning_effort"] = self.parsed_options.reasoning_effort
+        if videos:
+            # Video content: randomized text prefix -> video_url block(s) -> instruction.
+            # The trailing text is required because the server rejects a prompt that
+            # ends on a vision placeholder (HTTP 400), so video can never be last.
+            if not self.parsed_options.chat:
+                raise AssertionError("--prompt-video-* is only supported with --chat mode.")
+            prefix = prompt["prefix"] if isinstance(prompt, dict) else prompt
+            instruction = (prompt.get("instruction") if isinstance(prompt, dict) else None) or \
+                "Describe what happens in this video in 2-3 sentences."
+            content = []
+            if prefix:
+                content.append({"type": "text", "text": prefix})
+            for v in videos:
+                content.append(v.to_wire() if hasattr(v, "to_wire") else {"type": "video_url", "video_url": v})
+            content.append({"type": "text", "text": instruction})
+            data["messages"] = [{"role": "user", "content": content}]
+            return data
         if isinstance(prompt, str):
             if self.parsed_options.chat:
                 if images is None:
@@ -993,8 +1015,8 @@ class FireworksProvider(OpenAIProvider):
         logger.info(f"Loaded {len(texts)} forced generation texts from {path}")
         return texts
 
-    def format_payload(self, prompt, max_tokens, images):
-        data = super().format_payload(prompt, max_tokens, images)
+    def format_payload(self, prompt, max_tokens, images, videos=None):
+        data = super().format_payload(prompt, max_tokens, images, videos)
         if self.parsed_options.rerank:
             return data
         if self.parsed_options.force_min_tokens:
@@ -1085,7 +1107,7 @@ class FireworksProvider(OpenAIProvider):
 
 
 class VllmProvider(OpenAIProvider):
-    def format_payload(self, prompt, max_tokens, images):
+    def format_payload(self, prompt, max_tokens, images, videos=None):
         data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
         if data.get("stream"):
@@ -1098,7 +1120,7 @@ class TogetherProvider(OpenAIProvider):
         assert not self.parsed_options.chat, "Chat is not supported"
         return "/"
 
-    def format_payload(self, prompt, max_tokens, images):
+    def format_payload(self, prompt, max_tokens, images, videos=None):
         data = super().format_payload(prompt, max_tokens, images)
         data["ignore_eos"] = True
         data["stream_tokens"] = data.pop("stream")
@@ -1121,7 +1143,7 @@ class TritonInferProvider(BaseProvider):
         assert self.parsed_options.n == 1, "n > 1 is not supported"
         return f"/v2/models/{self.model}/infer"
 
-    def format_payload(self, prompt, max_tokens, images):
+    def format_payload(self, prompt, max_tokens, images, videos=None):
         assert isinstance(prompt, str), "prompt must be a string"
         assert images is None, "images are not supported"
         assert self.parsed_options.logprobs is None, "logprobs are not supported"
@@ -1176,7 +1198,7 @@ class TritonGenerateProvider(BaseProvider):
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/v2/models/{self.model}/generate{stream_suffix}"
 
-    def format_payload(self, prompt, max_tokens, images):
+    def format_payload(self, prompt, max_tokens, images, videos=None):
         assert isinstance(prompt, str), "prompt must be a string"
         assert images is None, "images are not supported"
         assert self.parsed_options.logprobs is None, "logprobs are not supported"
@@ -1219,7 +1241,7 @@ class TgiProvider(BaseProvider):
         stream_suffix = "_stream" if self.parsed_options.stream else ""
         return f"/generate{stream_suffix}"
 
-    def format_payload(self, prompt, max_tokens, images):
+    def format_payload(self, prompt, max_tokens, images, videos=None):
         assert isinstance(prompt, str), "prompt must be a string"
         assert images is None, "images are not supported"
         data = {
@@ -1386,6 +1408,29 @@ class LLMUser(HttpUser):
                 raise AssertionError("--prompt-images-with-resolutions is only supported with --chat mode.")
             self.prompt_images = [self._create_base64_image(width, height) for width, height in image_resolutions]
 
+        # Video load-test setup: a fraction of users carry one video per request.
+        # video_fraction is the per-user probability, so at steady state that
+        # fraction of concurrent requests carry video (mixing video decode load
+        # with plain text traffic to expose CPU contention).
+        self.is_video_user = False
+        self.video_slicer = None
+        self.prefix_tokenizer = None
+        self.video_instruction = "Describe what happens in this video in 2-3 sentences."
+        video_url = getattr(self.environment.parsed_options, "prompt_video_url", None)
+        video_fixture = getattr(self.environment.parsed_options, "video_fixture_path", None)
+        video_fraction = float(getattr(self.environment.parsed_options, "video_fraction", 0.0) or 0.0)
+        video_enabled = video_fraction > 0.0 and bool(video_url or video_fixture)
+        if video_enabled:
+            if not self.environment.parsed_options.chat:
+                raise AssertionError("--prompt-video-* is only supported with --chat mode.")
+            self.is_video_user = random.random() < video_fraction
+            if self.is_video_user:
+                self.video_slicer = VideoSlicerHolder.get_instance(self.environment.parsed_options)
+                instr = getattr(self.environment.parsed_options, "video_instruction", None)
+                if instr:
+                    self.video_instruction = instr
+                logger.info(" Locust user configured for VIDEO input ".center(80, "*"))
+
         self.max_tokens_sampler = LengthSampler(
             distribution=self.environment.parsed_options.max_tokens_distribution,
             mean=self.environment.parsed_options.max_tokens,
@@ -1455,7 +1500,11 @@ class LLMUser(HttpUser):
         self.dataset = iter(dataset)
 
         tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        self.prefix_tokenizer = tokenizer
+        sample_prompt = self._get_input()[0]
+        if isinstance(sample_prompt, dict):
+            sample_prompt = sample_prompt.get("prefix", "") + " " + sample_prompt.get("instruction", "")
+        self.prompt_tokenizer_tokens = len(tokenizer.encode(sample_prompt))
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
@@ -1487,7 +1536,17 @@ class LLMUser(HttpUser):
         else:
             images = None
 
-        return prompt, prompt_tokens, images
+        videos = None
+        if self.is_video_user:
+            spec = self.video_slicer.sample()
+            prefix_tokens = self.environment.parsed_options.prompt_tokens
+            prefix = random_prompt_prefix(prefix_tokens, self.prefix_tokenizer)
+            prompt = {"prefix": prefix, "instruction": self.video_instruction}
+            videos = [spec]
+            # prompt_tokens is the non-video (text prefix) budget; video tokens are additive.
+            prompt_tokens = prefix_tokens
+
+        return prompt, prompt_tokens, images, videos
 
     def _wait_for_ramping_capacity(self):
         """Block until ramping pacer allows a new request (below target concurrency)."""
@@ -1550,12 +1609,12 @@ class LLMUser(HttpUser):
         if is_embeddings and batch_size > 1:
             prompts = []
             for _ in range(batch_size):
-                p, _, _ = self._get_input()
+                p, _, _, _ = self._get_input()
                 prompts.append(p)
-            prompt, prompt_tokens, images = prompts, 0, None
+            prompt, prompt_tokens, images, videos = prompts, 0, None, None
         else:
-            prompt, prompt_tokens, images = self._get_input()
-        data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+            prompt, prompt_tokens, images, videos = self._get_input()
+        data = self.provider_formatter.format_payload(prompt, max_tokens, images, videos)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
             print(json.dumps(data, indent=2))
@@ -1955,6 +2014,99 @@ def init_parser(parser):
         "space-evenly: images are spaced out evenly across the prompt. E.g., 3 images in 'abcdefgh' is 'ab<image>cd<image>ef<image>gh'"
         "end: images are added to the end of the prompt. E.g., 3 images in 'abcdefgh' is 'abcdefgh<image><image><image>'"
         "Only relevant with --prompt-images-with-resolutions.",
+    )
+    parser.add_argument(
+        "--prompt-video-url",
+        env_var="PROMPT_VIDEO_URL",
+        type=str,
+        default=None,
+        help="Remote https URL of a video to send via OpenAI video_url content blocks. "
+        "Required for --video-transport=remote; also used as the download source for "
+        "base64 when --video-fixture-path is not set.",
+    )
+    parser.add_argument(
+        "--video-transport",
+        env_var="VIDEO_TRANSPORT",
+        type=str,
+        choices=["remote", "base64"],
+        default="remote",
+        help="How to send video. 'remote': pass the https URL as-is (server fetches it). "
+        "'base64': slice/download the video locally and inline a data:video/mp4;base64 URI "
+        "(requires --allow-base64-video-input on the deployment).",
+    )
+    parser.add_argument(
+        "--video-fixture-path",
+        env_var="VIDEO_FIXTURE_PATH",
+        type=str,
+        default=None,
+        help="Local path to an mp4 used as the base64 slicing source (overrides downloading --prompt-video-url).",
+    )
+    parser.add_argument(
+        "--video-fraction",
+        env_var="VIDEO_FRACTION",
+        type=float,
+        default=0.0,
+        help="Fraction of locust users that carry one video per request (0.0-1.0). "
+        "At steady state this is the share of concurrent requests doing video decode, "
+        "mixed with plain-text traffic to expose CPU contention. 1.0 = every user sends video.",
+    )
+    parser.add_argument(
+        "--video-slice-count",
+        env_var="VIDEO_SLICE_COUNT",
+        type=int,
+        default=8,
+        help="Number of distinct video specs to precompute. base64: temporal slices via ffmpeg. "
+        "remote: same URL with varied sampling knobs. More specs => fewer server-side chunk cache hits.",
+    )
+    parser.add_argument(
+        "--video-slice-min-secs",
+        env_var="VIDEO_SLICE_MIN_SECS",
+        type=float,
+        default=2.0,
+        help="Minimum temporal slice length in seconds (base64 transport only).",
+    )
+    parser.add_argument(
+        "--video-slice-max-secs",
+        env_var="VIDEO_SLICE_MAX_SECS",
+        type=float,
+        default=5.0,
+        help="Maximum temporal slice length in seconds (base64 transport only).",
+    )
+    parser.add_argument(
+        "--video-max-frames",
+        env_var="VIDEO_MAX_FRAMES",
+        type=str,
+        default=None,
+        help="Per-video max_frames knob as 'N' (fixed) or 'N:M' (random range). "
+        "Varies the frame subset and the server-side chunk cache hash.",
+    )
+    parser.add_argument(
+        "--video-sample-fps",
+        env_var="VIDEO_SAMPLE_FPS",
+        type=str,
+        default=None,
+        help="Per-video sample_fps knob as 'F' (fixed) or 'F:G' (random range).",
+    )
+    parser.add_argument(
+        "--video-spatial-limit",
+        env_var="VIDEO_SPATIAL_LIMIT",
+        type=str,
+        default=None,
+        help="Per-video spatial_limit knob as 'N' (fixed) or 'N:M' (random range).",
+    )
+    parser.add_argument(
+        "--video-instruction",
+        env_var="VIDEO_INSTRUCTION",
+        type=str,
+        default=None,
+        help="Instruction text appended AFTER the video_url block. Defaults to a short describe prompt.",
+    )
+    parser.add_argument(
+        "--video-workdir",
+        env_var="VIDEO_WORKDIR",
+        type=str,
+        default=None,
+        help="Working directory for ffmpeg slicing / downloaded source. Defaults to /tmp/fw_video_loadtest.",
     )
     parser.add_argument(
         "-o",
