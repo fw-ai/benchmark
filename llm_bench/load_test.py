@@ -1596,27 +1596,41 @@ class LLMUser(HttpUser):
             # and leave the chunk loop to the streaming paths.
             if self.provider_formatter.parsed_options.rerank or self.provider_formatter.parsed_options.embeddings:
                 body = response.content
-                now = time.perf_counter()
-                t_first_token = now
                 # Recorded so a client-side ceiling is visible in the results rather than
                 # being mistaken for server latency.
                 add_custom_metric("response_bytes", len(body))
                 show_response = self.environment.parsed_options.show_response
 
-                if self.provider_formatter.parsed_options.rerank:
-                    out = self.provider_formatter.parse_output_json(orjson.loads(body))
-                    if out.prompt_tokens:
-                        prompt_tokens = out.prompt_tokens
-                    if show_response:
-                        combined_text = out.text
-                else:
-                    if show_response:
+                # An empty or unparseable body is a failed request, not a fast success. Record
+                # it via locust's failure API so fail_ratio/--max-fail-ratio catch it instead
+                # of the parse error landing in runner.exceptions.
+                if not body:
+                    response.failure(Exception("empty response received"))
+                    return
+                try:
+                    if self.provider_formatter.parsed_options.rerank:
+                        out = self.provider_formatter.parse_output_json(orjson.loads(body))
+                        if out.prompt_tokens:
+                            prompt_tokens = out.prompt_tokens
+                        if show_response:
+                            combined_text = out.text
+                    elif show_response:
                         resp_data = orjson.loads(body)
                         server_prompt_tokens = (resp_data.get("usage") or {}).get("prompt_tokens")
                         out = self.provider_formatter.parse_output_json(resp_data)
                         combined_text = str(out.text)
                     else:
                         server_prompt_tokens = extract_prompt_tokens(body)
+                except Exception as e:
+                    logger.error(f"Failed to parse response body with error {repr(e)}")
+                    response.failure(e)
+                    return
+
+                # Only count a first token once the body has parsed successfully, so an empty
+                # or malformed response is reported as a failure rather than a zero-latency success.
+                now = time.perf_counter()
+                t_first_token = now
+                if self.provider_formatter.parsed_options.embeddings:
                     if server_prompt_tokens:
                         prompt_tokens = server_prompt_tokens
                     add_custom_metric("latency_per_embedding", (now - t_start) / batch_size * 1000)
