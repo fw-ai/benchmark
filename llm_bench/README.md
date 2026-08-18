@@ -66,6 +66,13 @@ Generation options:
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
 
+For sustained cached generation load on a deployment with explicit generator-worker targeting:
+
+- `--reuse-prompt` materializes one prompt and reuses it exactly across every request.
+- `--warmup-prompt-cache` sends one `max_tokens=0` request to each targeted worker before that worker starts measured traffic.
+- `--num-servers` and `--num-gens` assign Locust users round-robin to the corresponding generator targeting headers. The deployment must have `enableGeneratorWorkerTargeting=true`.
+- Use more than one Locust user per generator when a queued request should refill capacity as the currently active `n` sequences drain. For example, `-u 16 --num-servers 8 --num-gens 1` creates two continuous request streams per generator service.
+
 Embeddings and rerank options:
 - `--embeddings`: use the `/v1/embeddings` API instead of completions
 - `--rerank`: use the `/v1/rerank` API. The generated prompt text is split into documents (by paragraph), and `--rerank-query` is used as the query.
@@ -128,6 +135,27 @@ Benchmark Fireworks public deployment deployment with 1 request only:
 
 ```bash
 locust -u 1 -H https://api.fireworks.ai/inference -p 128 -o 200 --api-key $FIREWORKS_API_KEY --model=accounts/fireworks/models/llama-v3p1-8b-instruct
+```
+
+Maintain two queued `n=128` streams on each of eight explicitly targeted generator services, after one fixed-prompt cache warmup per service:
+
+```bash
+locust --headless -u 16 -r 16 \
+  -H https://api.fireworks.ai/inference \
+  -k "$FIREWORKS_API_KEY" \
+  -m accounts/perf/deployments/DEPLOYMENT_ID \
+  --provider fireworks \
+  --tokenizer /path/to/tokenizer \
+  --dataset code \
+  --prompt-tokens 127900 \
+  --prompt-cache-max-len 127900 \
+  --max-tokens 1000 \
+  --temperature 1 \
+  -n 128 \
+  --num-servers 8 \
+  --num-gens 1 \
+  --reuse-prompt \
+  --warmup-prompt-cache
 ```
 
 Benchmark Fireworks public deployment with 1 request and 2 images (1024w x 1024h and 3084w x 1080h):

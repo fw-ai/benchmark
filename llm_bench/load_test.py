@@ -24,7 +24,12 @@ from PIL import Image
 import transformers
 import re
 import gevent
+from gevent.event import AsyncResult
+from gevent.lock import Semaphore
 from locust.util.timespan import parse_timespan as _locust_parse_timespan
+import requests
+
+from generator_routing import RoutingConfig, routing_headers_for_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -287,6 +292,16 @@ class JsonlDataset:
             yield item
 
 
+class ReusedPromptDataset:
+    """Repeat one materialized dataset item exactly for the lifetime of a run."""
+
+    def __init__(self, source):
+        self.item = next(iter(source))
+
+    def __iter__(self):
+        return itertools.repeat(self.item)
+
+
 class DatasetHolder:
     _instance = None
     _forced_generation_instance = None
@@ -294,7 +309,7 @@ class DatasetHolder:
     @classmethod
     def _create_dataset(cls, options: argparse.Namespace):
         if options.dataset.startswith("@"):
-            return JsonlDataset(
+            dataset = JsonlDataset(
                 options.dataset[1:],
                 shuffle_seed=getattr(options, "dataset_shuffle_seed", None),
                 dataset_limit=getattr(options, "dataset_limit", None),
@@ -317,7 +332,7 @@ class DatasetHolder:
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
             tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
-            return TranslationDataset(
+            dataset = TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
                 tokenizer=InitTracker.load_tokenizer(options.tokenizer),
@@ -328,6 +343,11 @@ class DatasetHolder:
             )
         else:
             raise ValueError(f"Unknown dataset: {options.dataset}")
+
+        if getattr(options, "reuse_prompt", False):
+            dataset = ReusedPromptDataset(dataset)
+            logger.info("Materialized one fixed prompt for strict reuse across all requests")
+        return dataset
 
     @classmethod
     def get_instance(cls, options: argparse.Namespace):
@@ -699,6 +719,7 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 
     For max-requests: we store the limit and check it after each request completes.
     """
+    GeneratorLoadCoordinator.reset()
     try:
         run_time_value = getattr(environment.parsed_options, "run_time", None)
     except Exception:
@@ -897,32 +918,31 @@ class OpenAIProvider(BaseProvider):
                 cached_tokens=prompt_tokens_details.get("cached_tokens"),
             )
 
-        assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
-        choice = data["choices"][0]
-        if self.parsed_options.chat:
-            if self.parsed_options.stream:
-                block = choice["delta"]
+        texts = []
+        reasoning_only = []
+        logprob_tokens = 0
+        has_logprob_tokens = False
+        for choice in data["choices"]:
+            if self.parsed_options.chat:
+                block = choice["delta"] if self.parsed_options.stream else choice["message"]
+                has_content = bool(block.get("content"))
+                has_reasoning = bool(block.get("reasoning_content") or block.get("reasoning"))
+                reasoning_only.append(has_reasoning and not has_content)
+                texts.append(
+                    (block.get("reasoning", "") or "")
+                    + (block.get("reasoning_content", "") or "")
+                    + (block.get("content", "") or "")
+                )
             else:
-                block = choice["message"]
-            has_content = bool(block.get("content"))
-            has_reasoning = bool(block.get("reasoning_content") or block.get("reasoning"))
-            has_reasoning_only = has_reasoning and not has_content
-            text = (
-                (block.get("reasoning", "") or "")
-                + (block.get("reasoning_content", "") or "")
-                + (block.get("content", "") or "")
-            )
-        else:
-            # Completions API: no reasoning_content field exists in the schema;
-            # thinking tokens (if any) appear raw in text and cannot be separated.
-            has_reasoning_only = False
-            text = choice["text"]
+                # Completions API: no reasoning_content field exists in the schema;
+                # thinking tokens (if any) appear raw in text and cannot be separated.
+                reasoning_only.append(False)
+                texts.append(choice["text"])
 
-        logprobs = choice.get("logprobs", None)
-        if logprobs and "tokens" in logprobs:
-            logprob_tokens = len(logprobs["tokens"])
-        else:
-            logprob_tokens = None
+            logprobs = choice.get("logprobs", None)
+            if logprobs and "tokens" in logprobs:
+                logprob_tokens += len(logprobs["tokens"])
+                has_logprob_tokens = True
 
         cached_tokens = None
         if usage:
@@ -930,9 +950,9 @@ class OpenAIProvider(BaseProvider):
             cached_tokens = prompt_tokens_details.get("cached_tokens", None)
 
         return ChunkMetadata(
-            text=text,
-            has_reasoning_only=has_reasoning_only,
-            logprob_tokens=logprob_tokens,
+            text="".join(texts),
+            has_reasoning_only=all(reasoning_only),
+            logprob_tokens=logprob_tokens if has_logprob_tokens else None,
             completion_tokens=usage["completion_tokens"] if usage else None,
             prompt_tokens=usage.get("prompt_tokens", None) if usage else None,
             cached_tokens=cached_tokens,
@@ -1285,6 +1305,46 @@ def _load_curl_like_data(text):
         return text
 
 
+class GeneratorLoadCoordinator:
+    """Assign Locust users to workers and deduplicate per-worker cache warmups."""
+
+    _lock = Semaphore()
+    _next_user_index = 0
+    _warmups: dict[int, AsyncResult] = {}
+
+    @classmethod
+    def allocate_user(cls, routing: RoutingConfig) -> tuple[int, int]:
+        """Return ``(user_index, worker_index)`` using balanced round-robin assignment."""
+        with cls._lock:
+            user_index = cls._next_user_index
+            cls._next_user_index += 1
+        return user_index, user_index % routing.num_workers
+
+    @classmethod
+    def warm_worker_once(cls, worker_index: int, warmup):
+        """Run one warmup per target; duplicate users wait for the same result."""
+        with cls._lock:
+            result = cls._warmups.get(worker_index)
+            owner = result is None
+            if result is None:
+                result = AsyncResult()
+                cls._warmups[worker_index] = result
+
+        if owner:
+            try:
+                result.set(warmup())
+            except BaseException as error:
+                result.set_exception(error)
+        return result.get()
+
+    @classmethod
+    def reset(cls):
+        """Reset process-global state (primarily for tests)."""
+        with cls._lock:
+            cls._next_user_index = 0
+            cls._warmups = {}
+
+
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
 
@@ -1353,6 +1413,34 @@ class LLMUser(HttpUser):
             for header in self.environment.parsed_options.header:
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
+
+        if self.environment.parsed_options.num_servers < 1:
+            raise ValueError("--num-servers must be >= 1")
+        if self.environment.parsed_options.num_generators_per_server < 1:
+            raise ValueError("--num-generators-per-server/--num-gens must be >= 1")
+        self.generator_routing = RoutingConfig(
+            num_servers=self.environment.parsed_options.num_servers,
+            num_gens=self.environment.parsed_options.num_generators_per_server,
+        )
+        self.generator_user_index = None
+        self.generator_worker_index = None
+        self.generator_session_user = None
+        if self.generator_routing.enabled:
+            self.generator_user_index, self.generator_worker_index = GeneratorLoadCoordinator.allocate_user(
+                self.generator_routing
+            )
+            target_headers = routing_headers_for_worker(self.generator_routing, self.generator_worker_index)
+            self.client.headers.update(target_headers)
+            # All users assigned to one generator share a stable session id, so
+            # one route warmup primes session-aware prompt caching for queued work.
+            self.generator_session_user = f"llm-bench-generator-worker-{self.generator_worker_index}"
+            logger.info(
+                "Locust user %d targets generator worker %d/%d (%s)",
+                self.generator_user_index,
+                self.generator_worker_index,
+                self.generator_routing.num_workers,
+                target_headers,
+            )
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
@@ -1445,7 +1533,7 @@ class LLMUser(HttpUser):
             self._wait_for_ramping_capacity()
         elif self.environment.parsed_options.burst:
             self.wait_time = partial(constant_pacing(self.environment.parsed_options.burst), self)
-        else:
+        elif not self.environment.parsed_options.warmup_prompt_cache:
             # introduce initial delay to avoid all users hitting the service at the same time
             time.sleep(random.random())
 
@@ -1468,6 +1556,47 @@ class LLMUser(HttpUser):
             )
             synthetic_prompt = "\n\n".join(PROMPT_PREFIX_TOKEN * tokens_per_doc for _ in range(num_docs))
             self.dataset = iter(itertools.cycle([(synthetic_prompt, num_docs * tokens_per_doc)]))
+
+        if self.environment.parsed_options.warmup_prompt_cache:
+            if not self.environment.parsed_options.reuse_prompt:
+                raise ValueError("--warmup-prompt-cache requires --reuse-prompt")
+            if not self.generator_routing.enabled:
+                raise ValueError("--warmup-prompt-cache requires generator-worker targeting")
+            assert self.generator_worker_index is not None
+            GeneratorLoadCoordinator.warm_worker_once(
+                self.generator_worker_index,
+                self._warm_prompt_cache,
+            )
+
+    def _apply_generator_session(self, data):
+        if self.generator_session_user is not None:
+            data["user"] = self.generator_session_user
+
+    def _warm_prompt_cache(self):
+        """Prime one targeted worker without adding the warmup to Locust statistics."""
+        assert self.generator_worker_index is not None
+        prompt, prompt_tokens, images = self._get_input()
+        data = self.provider_formatter.format_payload(prompt, 0, images)
+        data["max_tokens"] = 0
+        data["n"] = 1
+        data["stream"] = False
+        data.pop("stream_options", None)
+        self._apply_generator_session(data)
+
+        url = self.host.rstrip("/") + self.provider_formatter.get_url()
+        logger.info(
+            "Warming fixed prompt on generator worker %d (%s prompt tokens)",
+            self.generator_worker_index,
+            prompt_tokens,
+        )
+        response = requests.post(
+            url,
+            headers=dict(self.client.headers),
+            data=json.dumps(data),
+            timeout=60,
+        )
+        response.raise_for_status()
+        logger.info("Fixed-prompt warmup complete on generator worker %d", self.generator_worker_index)
 
     def _create_base64_image(self, width, height):
         """Create a random RGB image with the given dimensions and return as base64 data URI."""
@@ -1556,6 +1685,7 @@ class LLMUser(HttpUser):
         else:
             prompt, prompt_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+        self._apply_generator_session(data)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
             print(json.dumps(data, indent=2))
@@ -1753,8 +1883,9 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                if num_tokens != max_tokens:
-                    logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                expected_tokens = max_tokens * self.environment.parsed_options.n
+                if num_tokens != expected_tokens:
+                    logger.warning(f"wrong number of tokens: {num_tokens}, expected {expected_tokens}")
                 add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
                 add_custom_metric("completion_tokens", num_tokens)
                 add_custom_metric("num_tokens", num_tokens)
@@ -2080,6 +2211,36 @@ def init_parser(parser):
         type=int,
         default=0,
         help="Maximum length of the prompt cache to use. Defaults to 0 (no caching).",
+    )
+    parser.add_argument(
+        "--reuse-prompt",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Materialize one dataset prompt and reuse it exactly for every request. "
+        "Useful for cached generation load tests.",
+    )
+    parser.add_argument(
+        "--warmup-prompt-cache",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Before sustained traffic, send one max_tokens=0 warmup per targeted generator worker. "
+        "Requires --reuse-prompt and generator-worker targeting.",
+    )
+    parser.add_argument(
+        "--num-servers",
+        type=int,
+        default=1,
+        help="Number of generator services to target round-robin. Requires "
+        "enableGeneratorWorkerTargeting=true on the deployment. Default: 1.",
+    )
+    parser.add_argument(
+        "--num-generators-per-server",
+        "--num-gens",
+        dest="num_generators_per_server",
+        type=int,
+        default=1,
+        help="Number of local generator workers per service. Locust users are assigned "
+        "server-first across num-servers x num-gens. Default: 1.",
     )
     parser.add_argument(
         "--acceptance-probs-override",

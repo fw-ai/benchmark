@@ -210,3 +210,108 @@ def test_usage_validation_rejects_server_added_prompt_tokens() -> None:
             expected_prompt_tokens=3,
             expected_completion_tokens=7,
         )
+
+
+def test_full_prompt_cache_validation_accepts_shareable_prefix() -> None:
+    response = {
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 7,
+            "prompt_tokens_details": {"cached_tokens": 9},
+        }
+    }
+    headers = {"fireworks-cached-prompt-tokens": "9"}
+
+    cached_tokens = gen_load_test.validate_full_prompt_cache_hit(
+        response,
+        headers,
+        expected_prompt_tokens=10,
+        request_label="test request",
+    )
+
+    assert cached_tokens == 9
+
+
+def test_full_prompt_cache_validation_accepts_body_fallback() -> None:
+    response = {"usage": {"prompt_tokens_details": {"cached_tokens": 9}}}
+
+    assert (
+        gen_load_test.validate_full_prompt_cache_hit(
+            response,
+            {},
+            expected_prompt_tokens=10,
+            request_label="test request",
+        )
+        == 9
+    )
+
+
+@pytest.mark.parametrize(
+    ("response", "headers", "error"),
+    [
+        ({"usage": {}}, {}, "did not report cached prompt tokens"),
+        (
+            {"usage": {"prompt_tokens_details": {"cached_tokens": 8}}},
+            {"fireworks-cached-prompt-tokens": "8"},
+            "cached 8/9 shareable prompt tokens",
+        ),
+        (
+            {"usage": {"prompt_tokens_details": {"cached_tokens": 8}}},
+            {"fireworks-cached-prompt-tokens": "9"},
+            "inconsistent cached prompt tokens",
+        ),
+    ],
+)
+def test_full_prompt_cache_validation_rejects_unverified_measurement(
+    response: dict[str, Any],
+    headers: dict[str, str],
+    error: str,
+) -> None:
+    with pytest.raises(gen_load_test.PromptCacheVerificationError, match=error):
+        gen_load_test.validate_full_prompt_cache_hit(
+            response,
+            headers,
+            expected_prompt_tokens=10,
+            request_label="worker 2 (server=0, local=2)",
+        )
+
+
+def test_prompt_cache_verification_failure_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gen_load_test, "_load_auto_tokenizer", lambda _path: object())
+    monkeypatch.setattr(gen_load_test, "resolve_model_type", lambda _path: "test")
+    monkeypatch.setattr(gen_load_test, "load_chunks", lambda _dataset: ["chunk"])
+    monkeypatch.setattr(
+        gen_load_test,
+        "build_chunk_texts_to_length",
+        lambda _tokenizer, chunks, _target_len: chunks,
+    )
+    monkeypatch.setattr(
+        gen_load_test,
+        "build_chat_prompt_ids",
+        lambda *_args, target_len, **_kwargs: list(range(target_len)),
+    )
+    monkeypatch.setattr(gen_load_test, "_warmup_seq_len", lambda **_kwargs: None)
+
+    attempts = 0
+
+    def fail_cache_verification(**_kwargs: Any) -> gen_load_test.GenBenchmarkResult:
+        nonlocal attempts
+        attempts += 1
+        raise gen_load_test.PromptCacheVerificationError("cache miss")
+
+    monkeypatch.setattr(gen_load_test, "_run_pair_n_mode", fail_cache_verification)
+
+    with pytest.raises(gen_load_test.PromptCacheVerificationError, match="cache miss"):
+        gen_load_test.run_benchmark(
+            tokenizer_path="unused",
+            model=None,
+            base_url="https://example.test",
+            api_key=None,
+            dataset="code",
+            pairs=[(10, 1)],
+            max_tokens=2,
+            retries=3,
+            retry_delay=0,
+        )
+
+    assert attempts == 1
