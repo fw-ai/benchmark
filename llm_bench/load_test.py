@@ -164,6 +164,38 @@ def add_custom_metric(name, value, length_value=0):
     )
 
 
+class FirstNTokenTimer:
+    """Stamps the moment a streamed response first reaches n tokens.
+
+    usage.completion_tokens generally only arrives on the final SSE chunk, so the
+    count is re-derived from the accumulated text on every chunk until the threshold
+    is crossed. The whole prefix is re-encoded rather than summing per-chunk encodes
+    because a token split across a chunk boundary would otherwise be counted twice.
+    The prefix is at most n tokens long and encoding stops once the stamp is taken,
+    so the cost stays bounded.
+
+    The text counted includes reasoning/thinking content, matching the default TTFT
+    semantics; --first-visible-token does not apply here.
+    """
+
+    def __init__(self, n, count_tokens):
+        self.n = n
+        self._count_tokens = count_tokens
+        self.timestamp = None
+        self.tokens_seen = 0
+
+    @property
+    def metric_name(self):
+        return f"time_to_first_{self.n}_tokens"
+
+    def observe(self, text, now):
+        if self.n <= 0 or self.timestamp is not None or not text:
+            return
+        self.tokens_seen = self._count_tokens(text)
+        if self.tokens_seen >= self.n:
+            self.timestamp = now
+
+
 def track_performance_metrics(
     response_time: float, token_count: int, char_count: int, prompt_tokens: int = None, ttft: float = None
 ):
@@ -1394,6 +1426,14 @@ class LLMUser(HttpUser):
         )
         self.temperature = self.environment.parsed_options.temperature
 
+        self.ttf_n_tokens = getattr(self.environment.parsed_options, "ttf_n_tokens", 0) if self.stream else 0
+        if self.ttf_n_tokens > 0 and self.environment.parsed_options.max_tokens < self.ttf_n_tokens:
+            logger.warning(
+                f"--ttf-n-tokens {self.ttf_n_tokens} exceeds --max-tokens "
+                f"{self.environment.parsed_options.max_tokens}; the "
+                f"time_to_first_{self.ttf_n_tokens}_tokens metric will never be recorded"
+            )
+
         logging_params = {
             # TODO: add some server info with git version
             "provider": self.provider,
@@ -1454,8 +1494,8 @@ class LLMUser(HttpUser):
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
-        tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        self.tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
+        self.prompt_tokenizer_tokens = len(self.tokenizer.encode(self._get_input()[0]))
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
@@ -1586,6 +1626,10 @@ class LLMUser(HttpUser):
                 return
             t_first_token = None
             t_first_visible_token = None
+            ttf_n = FirstNTokenTimer(
+                self.ttf_n_tokens,
+                lambda text: len(self.tokenizer.encode(text, add_special_tokens=False)),
+            )
 
             # Rerank and embeddings are single-response JSON APIs. Draining them through
             # iter_lines(delimiter=b"\n\n") makes the interpreter scan the whole body for a
@@ -1666,6 +1710,7 @@ class LLMUser(HttpUser):
                     if out.cached_tokens is not None:
                         cached_tokens = out.cached_tokens
                     combined_text += out.text
+                    ttf_n.observe(combined_text, now)
 
                     # some providers (SGLang) send an empty chunk first skewing the TTFT;
                     # completion_tokens handles invisible-token deployments where combined_text
@@ -1751,6 +1796,11 @@ class LLMUser(HttpUser):
                 add_custom_metric("latency_per_char", dur_generation / num_chars * 1000, num_chars)
             if self.stream:
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
+                if ttf_n.timestamp is not None:
+                    add_custom_metric(ttf_n.metric_name, (ttf_n.timestamp - t_start) * 1000)
+                elif ttf_n.n > 0:
+                    # Recording a truncated value here would drag the percentiles down.
+                    logger.debug(f"Response reached only {ttf_n.tokens_seen} tokens, skipping {ttf_n.metric_name}")
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
                 if num_tokens != max_tokens:
@@ -2166,6 +2216,17 @@ def init_parser(parser):
         "reasoning and non-reasoning providers. Requires --chat and --stream.",
     )
     parser.add_argument(
+        "--ttf-n-tokens",
+        type=int,
+        default=15,
+        help="Also record time-to-first-N-tokens as the 'time_to_first_<N>_tokens' metric. "
+        "The count is derived by tokenizing the streamed text with --tokenizer, so pass a "
+        "tokenizer matching the served model or the count comes from the default tokenizer "
+        f"({DEFAULT_TOKENIZER}). Counts reasoning tokens like the default TTFT does, so "
+        "--first-visible-token does not apply. Requires --stream; responses that end before "
+        "N tokens are not recorded. Set to 0 to disable.",
+    )
+    parser.add_argument(
         "--max-fail-ratio",
         type=float,
         default=0.01,
@@ -2220,8 +2281,13 @@ def _(environment, **kw):
             entries["tokens_per_document"] = tokens_per_doc
         percentile_metrics = ["total_latency", "server_side_total_latency"]
     else:
+        ttf_n_tokens = getattr(environment.parsed_options, "ttf_n_tokens", 0)
+        ttf_n_metric = (
+            f"time_to_first_{ttf_n_tokens}_tokens" if ttf_n_tokens > 0 and environment.parsed_options.stream else None
+        )
         for metric_name in [
             "time_to_first_token",
+            *([ttf_n_metric] if ttf_n_metric else []),
             "latency_per_token",
             "overall_latency_per_token",
             "total_latency",
@@ -2237,7 +2303,7 @@ def _(environment, **kw):
             # if there's no streaming these metrics are meaningless
             entries["time_to_first_token"] = ""
             entries["latency_per_token"] = ""
-        percentile_metrics = ["time_to_first_token", "total_latency"]
+        percentile_metrics = ["time_to_first_token", *([ttf_n_metric] if ttf_n_metric else []), "total_latency"]
 
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
