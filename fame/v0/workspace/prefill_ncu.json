@@ -1,0 +1,175 @@
+{
+  "K1_qkv": {
+    "launches": [
+      {
+        "kernel": "nvjet_sm100_tst_128x256_64x6_2x1_2cta_v_bz_TNT",
+        "launch_id": "0",
+        "bytes": 151251712.0,
+        "duration_ns": 242208.0,
+        "pct_peak_compute": 86.37,
+        "pct_peak_bw": 51.26,
+        "raw": {
+          "dram__bytes.sum": 151251712.0,
+          "dram__bytes_read.sum": 105676032.0,
+          "dram__bytes_write.sum": 45575680.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 51.26,
+          "gpu__time_duration.sum": 242208.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 86.37
+        }
+      }
+    ],
+    "flops": 154618822656,
+    "bytes": 151251712.0,
+    "duration_us": 242.208,
+    "pct_peak_compute": 86.37,
+    "pct_peak_bw": 51.26
+  },
+  "K3_qnorm": {
+    "launches": [
+      {
+        "kernel": "_rms_norm",
+        "launch_id": "1",
+        "bytes": 52405504.0,
+        "duration_ns": 32768.0,
+        "pct_peak_compute": 47.05,
+        "pct_peak_bw": 43.62,
+        "raw": {
+          "dram__bytes.sum": 52405504.0,
+          "dram__bytes_read.sum": 50349312.0,
+          "dram__bytes_write.sum": 2056192.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 43.62,
+          "gpu__time_duration.sum": 32768.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 47.05
+        }
+      }
+    ],
+    "flops": 25165824,
+    "bytes": 52405504.0,
+    "duration_us": 32.768,
+    "pct_peak_compute": 47.05,
+    "pct_peak_bw": 43.62
+  },
+  "K4_knorm": {
+    "launches": [
+      {
+        "kernel": "_rms_norm",
+        "launch_id": "2",
+        "bytes": 8395008.0,
+        "duration_ns": 12800.0,
+        "pct_peak_compute": 18.12,
+        "pct_peak_bw": 19.2,
+        "raw": {
+          "dram__bytes.sum": 8395008.0,
+          "dram__bytes_read.sum": 8395008.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 19.2,
+          "gpu__time_duration.sum": 12800.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 18.12
+        }
+      }
+    ],
+    "flops": 8388608,
+    "bytes": 8395008.0,
+    "duration_us": 12.8,
+    "pct_peak_compute": 18.12,
+    "pct_peak_bw": 19.2
+  },
+  "K5_rope": {
+    "launches": [],
+    "flops": 0,
+    "bytes": 0,
+    "duration_us": 0,
+    "pct_peak_compute": 0,
+    "pct_peak_bw": 0
+  },
+  "K6_paged_attn": {
+    "launches": [
+      {
+        "kernel": "mha_reshape_and_cache_kernel",
+        "launch_id": "3",
+        "bytes": 20224.0,
+        "duration_ns": 32352.0,
+        "pct_peak_compute": 14.62,
+        "pct_peak_bw": 2.41,
+        "raw": {
+          "dram__bytes.sum": 20224.0,
+          "dram__bytes_read.sum": 20224.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 2.41,
+          "gpu__time_duration.sum": 32352.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 14.62
+        }
+      },
+      {
+        "kernel": "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP64VarSeqQ128Kv128PersistentContext",
+        "launch_id": "4",
+        "bytes": 68096.0,
+        "duration_ns": 54624.0,
+        "pct_peak_compute": 27.53,
+        "pct_peak_bw": 15.64,
+        "raw": {
+          "dram__bytes.sum": 68096.0,
+          "dram__bytes_read.sum": 68096.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 15.64,
+          "gpu__time_duration.sum": 54624.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 27.53
+        }
+      }
+    ],
+    "flops": 274877906944,
+    "bytes": 88320.0,
+    "duration_us": 86.976,
+    "pct_peak_compute": 27.53,
+    "pct_peak_bw": 15.64
+  },
+  "K7_oproj": {
+    "launches": [
+      {
+        "kernel": "nvjet_sm100_tst_128x256_64x6_2x2_2cta_h_bz_TNT",
+        "launch_id": "5",
+        "bytes": 166945792.0,
+        "duration_ns": 157504.0,
+        "pct_peak_compute": 76.78,
+        "pct_peak_bw": 38.25,
+        "raw": {
+          "dram__bytes.sum": 166945792.0,
+          "dram__bytes_read.sum": 151241472.0,
+          "dram__bytes_write.sum": 15704320.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 38.25,
+          "gpu__time_duration.sum": 157504.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 76.78
+        }
+      }
+    ],
+    "flops": 103079215104,
+    "bytes": 166945792.0,
+    "duration_us": 157.504,
+    "pct_peak_compute": 76.78,
+    "pct_peak_bw": 38.25
+  }
+}
