@@ -11,6 +11,7 @@ import random
 import sys
 import threading
 import traceback
+import uuid
 from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
 import copy
@@ -31,6 +32,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _new_per_user_session_affinity_value() -> str:
+    """Return a random session id for one Locust user, reused for all its requests."""
+    return uuid.uuid4().hex
+
 
 try:
     import locust_plugins
@@ -1353,6 +1360,10 @@ class LLMUser(HttpUser):
             for header in self.environment.parsed_options.header:
                 key, val = header.split(":", 1)
                 self.client.headers[key] = val
+        if self.environment.parsed_options.per_user_session_affinity:
+            self.session_affinity_id = _new_per_user_session_affinity_value()
+            self.client.headers["x-session-affinity"] = self.session_affinity_id
+            logger.info("Assigned per-user session affinity: %s", self.session_affinity_id)
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
@@ -2112,6 +2123,14 @@ def init_parser(parser):
         action="append",
         default=[],
         help="Arbitrary headers to add to the inference request. Can be used multiple times. For example, --header header1:value1 --header header2:value2",
+    )
+    parser.add_argument(
+        "--per-user-session-affinity",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Assign each Locust user a distinct x-session-affinity header (a random uuid "
+        "generated once per user) so concurrent users spread across session-affinity routes. "
+        "Overrides any x-session-affinity passed via --header. Default: disabled.",
     )
     parser.add_argument(
         "-n",
