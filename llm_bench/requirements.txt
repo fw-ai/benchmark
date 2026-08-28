@@ -1,6 +1,6 @@
 locust==2.18.1
 orjson==3.9.10
-pillow==10.0.0
+pillow==12.3.0
 
 gevent
 locust-plugins
