@@ -53,6 +53,17 @@ def _install_transformers_tokenizer_compat_shim():
 DEFAULT_TOKENIZER = "NousResearch/Meta-Llama-3.1-8B-Instruct"
 
 
+def parse_lora_adapters(value: str) -> tuple[str, ...]:
+    adapters = tuple(adapter.strip() for adapter in value.split(",") if adapter.strip())
+    if not adapters:
+        raise argparse.ArgumentTypeError("--lora-adapters must contain at least one model")
+    return adapters
+
+
+def select_round_robin(values: tuple[str, ...], index: int) -> Optional[str]:
+    return values[index % len(values)] if values else None
+
+
 def _load_auto_tokenizer(tokenizer_path: str):
     _install_transformers_tokenizer_compat_shim()
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
@@ -1287,6 +1298,16 @@ def _load_curl_like_data(text):
 
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
+    _lora_adapter_counter = itertools.count()
+    _lora_adapter_lock = threading.Lock()
+
+    @classmethod
+    def _next_lora_adapter(cls, adapters: tuple[str, ...]) -> Optional[str]:
+        if not adapters:
+            return None
+        with cls._lora_adapter_lock:
+            index = next(cls._lora_adapter_counter)
+        return select_round_robin(adapters, index)
 
     def on_start(self):
         try:
@@ -1356,6 +1377,7 @@ class LLMUser(HttpUser):
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
+        self.lora_adapters = self.environment.parsed_options.lora_adapters
 
         self.stream = self.environment.parsed_options.stream
         # Rerank and embeddings endpoints are non-streaming single-response APIs
@@ -1556,15 +1578,21 @@ class LLMUser(HttpUser):
         else:
             prompt, prompt_tokens, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+        request_model = self._next_lora_adapter(self.lora_adapters)
+        if request_model is not None:
+            data["model"] = request_model
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
             print(json.dumps(data, indent=2))
             print("---")
         t_start = time.perf_counter()
+        request_url = self.provider_formatter.get_url()
+        request_name = f"{request_url} [{request_model}]" if request_model is not None else None
 
         with self.client.post(
-            self.provider_formatter.get_url(),
+            request_url,
             data=json.dumps(data),
+            name=request_name,
             stream=True,
             catch_response=True,
             timeout=60,
@@ -1833,6 +1861,12 @@ def init_parser(parser):
         env_var="MODEL",
         type=str,
         help="The model to use for generating text. If not specified we will pick the first model from the service as returned by /v1/models",
+    )
+    parser.add_argument(
+        "--lora-adapters",
+        type=parse_lora_adapters,
+        default=(),
+        help="Comma-separated exact model strings to select round-robin per request",
     )
     parser.add_argument(
         "--tokenizer",
