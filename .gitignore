@@ -5,3 +5,4 @@ llm_bench/results/
 .env
 env/
 .venv*/
+.DS_Store
