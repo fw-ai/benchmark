@@ -1595,7 +1595,7 @@ class LLMUser(HttpUser):
             name=request_name,
             stream=True,
             catch_response=True,
-            timeout=60,
+            timeout=self.environment.parsed_options.request_timeout,
         ) as response:
             combined_text = ""
             done = False
@@ -2146,6 +2146,12 @@ def init_parser(parser):
         action="append",
         default=[],
         help="Arbitrary headers to add to the inference request. Can be used multiple times. For example, --header header1:value1 --header header2:value2",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=600,
+        help="Per-request HTTP timeout in seconds. Defaults to 600 for long uncached prefills.",
     )
     parser.add_argument(
         "-n",
