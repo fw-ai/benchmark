@@ -1455,7 +1455,10 @@ class LLMUser(HttpUser):
         self.dataset = iter(dataset)
 
         tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        sample_prompt = self._get_input()[0]
+        if isinstance(sample_prompt, dict):
+            sample_prompt = sample_prompt.get("prompt") or json.dumps(sample_prompt)
+        self.prompt_tokenizer_tokens = len(tokenizer.encode(sample_prompt))
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
