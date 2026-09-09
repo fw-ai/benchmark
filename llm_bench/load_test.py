@@ -1455,7 +1455,12 @@ class LLMUser(HttpUser):
         self.dataset = iter(dataset)
 
         tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
-        self.prompt_tokenizer_tokens = len(tokenizer.encode(self._get_input()[0]))
+        prompt_input = self._get_input()[0]
+        if isinstance(prompt_input, str):
+            self.prompt_tokenizer_tokens = len(tokenizer.encode(prompt_input))
+        else:
+            # JSONL replay payloads are full request dicts; prompt token counts come from API usage.
+            self.prompt_tokenizer_tokens = 0
 
         # Override dataset with synthetic rerank documents if num_documents or tokens_per_document is set
         if self.environment.parsed_options.rerank and (
