@@ -84,6 +84,12 @@ When comparing multiple configurations, it's useful to aggregate results togethe
 
 The typical workflow would be to run benchmark several times appending to the same CSV file. The resulting file can be imported into a spreadsheet or pandas for further analysis.
 
+The final summary and CSV include `Total Requests`, `Successful Requests`, `Failed Requests`, and `Failure Ratio` (a fraction from 0 to 1). These count recorded inference POST requests, excluding synthetic metric events and model-discovery GET requests. `--max-fail-ratio` defaults to 0.01: a run fails when more than 1% of these requests fail. A run with no inference requests also fails, with a blank failure ratio. Failed runs still produce a summary and CSV row. In distributed runs, only the master evaluates the benchmark failure ratio and writes the final summary and CSV row.
+
+`Num Requests` and `Qps` retain their existing meaning: completed responses with latency measurements. Intentional cancellations from `--cancel-rate` count as successful HTTP requests but do not contribute completed-response latency samples or advance `--max-requests`, which retains its successful-completion quota.
+
+New CSV files include the applicable latency percentile columns even when the first run has no samples; unavailable values are blank. When appending to an existing CSV, its header and column order are preserved. New fields absent from that header are omitted with a warning; use a new summary file to capture all outcome fields.
+
 ### Custom prompts
 
 Sometimes it's necessary to replay exact prompts, for example in the case of embedding images.

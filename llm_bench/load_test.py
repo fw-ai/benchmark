@@ -13,6 +13,7 @@ import threading
 import traceback
 from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
+from locust.runners import WorkerRunner
 import copy
 import json
 import time
@@ -2176,19 +2177,23 @@ def init_parser(parser):
 
 @events.quitting.add_listener
 def _(environment, **kw):
-    total_latency = environment.stats.entries[("total_latency", "METRIC")]
-    total = environment.stats.total
-    fail_ratio = (total.num_failures / total.num_requests) if total.num_requests > 0 else 1.0
-    if fail_ratio > environment.parsed_options.max_fail_ratio:
-        logger.error(f"Test failed: {total.num_failures}/{total.num_requests} requests failed ({fail_ratio:.2%})")
-        environment.process_exit_code = 1
+    if isinstance(environment.runner, WorkerRunner):
         return
-    # Explicitly set exit code 0 so that locust's default policy does not force
-    # a non-zero exit when runner.exceptions is non-empty (e.g. unhandled
-    # exceptions from non-request paths like dataset loading).
-    environment.process_exit_code = 0
+    total_latency = environment.stats.entries[("total_latency", "METRIC")]
+    request_stats = [entry for (_, method), entry in environment.stats.entries.items() if method == "POST"]
+    num_requests = sum(entry.num_requests for entry in request_stats)
+    num_failures = sum(entry.num_failures for entry in request_stats)
+    fail_ratio = num_failures / num_requests if num_requests else None
+    if fail_ratio is None:
+        logger.error("Test failed: no inference requests recorded")
+        environment.process_exit_code = 1
+    elif fail_ratio > environment.parsed_options.max_fail_ratio:
+        logger.error(f"Test failed: {num_failures}/{num_requests} requests failed ({fail_ratio:.2%})")
+        environment.process_exit_code = 1
+    else:
+        environment.process_exit_code = 0
 
-    entries = copy.copy(InitTracker.logging_params)
+    entries = copy.copy(InitTracker.logging_params or {})
     if environment.parsed_options.qps is not None:
         entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
     else:
@@ -2196,7 +2201,7 @@ def _(environment, **kw):
 
     def _avg(metric_name):
         entry = environment.stats.entries.get((metric_name, "METRIC"))
-        return entry.avg_response_time if entry else ""
+        return entry.avg_response_time if entry and entry.num_requests else ""
 
     if getattr(environment.parsed_options, "embeddings", False):
         for metric_name in [
@@ -2241,14 +2246,20 @@ def _(environment, **kw):
 
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
+    entries["total_requests"] = num_requests
+    entries["successful_requests"] = num_requests - num_failures
+    entries["failed_requests"] = num_failures
+    entries["failure_ratio"] = fail_ratio if fail_ratio is not None else ""
     percentile_to_report = [50, 90, 95, 99, 99.9]
     for percentile_metric in percentile_metrics:
         metric_entry = environment.stats.entries.get((percentile_metric, "METRIC"))
-        if metric_entry is None:
-            continue
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
-            entries[name] = metric_entry.get_response_time_percentile(percentile / 100)
+            entries[name] = (
+                metric_entry.get_response_time_percentile(percentile / 100)
+                if metric_entry and metric_entry.num_requests
+                else ""
+            )
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
@@ -2263,8 +2274,18 @@ def _(environment, **kw):
         print("=" * 80)
 
     if environment.parsed_options.summary_file:
-        with open(environment.parsed_options.summary_file, "a") as f:
-            writer = csv.DictWriter(f, fieldnames=entries.keys())
-            if f.tell() == 0:
+        with open(environment.parsed_options.summary_file, "a+", newline="") as f:
+            f.seek(0)
+            fieldnames = next(csv.reader(f), None)
+            if fieldnames is not None:
+                missing_columns = entries.keys() - fieldnames
+                if missing_columns:
+                    logger.warning(
+                        "Summary CSV header omits columns %s; use a new file to include them",
+                        ", ".join(sorted(missing_columns)),
+                    )
+            writer = csv.DictWriter(f, fieldnames=fieldnames or entries.keys(), extrasaction="ignore")
+            f.seek(0, os.SEEK_END)
+            if fieldnames is None:
                 writer.writeheader()
             writer.writerow(entries)
