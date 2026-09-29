@@ -2475,7 +2475,11 @@ def init_parser(parser):
 
 def systemone_summary_entries(stats, num_questions: int) -> dict[str, Any]:
     """Systemone summary columns; latency percentiles are appended by the shared summary code."""
-    request_entry = stats.entries.get(("/v1/systemone", "POST"))
+    # Locust names the entry after the full request path, which includes any host base path (e.g. /inference).
+    request_entry = next(
+        (e for (name, method), e in stats.entries.items() if method == "POST" and name.endswith("/v1/systemone")),
+        None,
+    )
     latency_entry = stats.entries.get(("total_latency", "METRIC"))
     qps = latency_entry.total_rps if latency_entry else 0
 

@@ -215,3 +215,16 @@ def test_summary_fields_present() -> None:
     assert entries["input_tokens"] == 800
     assert entries["packed_fraction"] == pytest.approx(2 / 3)
     assert entries["questions_per_s"] == pytest.approx(stats.entries[("total_latency", "METRIC")].total_rps * 4)
+
+
+def test_summary_counts_requests_under_host_base_path() -> None:
+    stats = RequestStats()
+    stats.log_request("POST", "/inference/v1/systemone", 120, 10)
+    stats.log_request("POST", "/inference/v1/systemone", 140, 10)
+    stats.log_error("POST", "/inference/v1/systemone", "HTTP 503")
+    stats.log_request("METRIC", "total_latency", 120, 0)
+
+    entries = systemone_summary_entries(stats, num_questions=4)
+
+    assert entries["requests"] == 2
+    assert entries["failures"] == 1
