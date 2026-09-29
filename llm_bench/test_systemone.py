@@ -228,3 +228,16 @@ def test_summary_counts_requests_under_host_base_path() -> None:
 
     assert entries["requests"] == 2
     assert entries["failures"] == 1
+
+
+def test_record_systemone_server_timings(monkeypatch) -> None:
+    import load_test
+
+    recorded = []
+    monkeypatch.setattr(load_test, "add_custom_metric", lambda name, value, length_value=0: recorded.append((name, value)))
+    load_test.record_systemone_server_timings(
+        {"fireworks-prefill-duration": "0.022", "fireworks-prefill-queue-duration": "bad", "fireworks-other": "1"}
+    )
+    load_test.record_systemone_server_timings({"fireworks-prefill-queue-duration": ""})
+
+    assert recorded == [("server_side_prefill_latency", pytest.approx(22.0))]

@@ -1792,6 +1792,7 @@ class LLMUser(HttpUser):
             add_custom_metric("packed_fraction", 1 if packed else 0)
             add_custom_metric("response_bytes", len(body))
             self.provider_formatter.post_response_hook(response.headers, 0)
+            record_systemone_server_timings(response.headers)
 
             response.success()
 
@@ -2473,6 +2474,23 @@ def init_parser(parser):
     )
 
 
+SYSTEMONE_SERVER_TIMING_HEADERS = {
+    "fireworks-prefill-duration": "server_side_prefill_latency",
+    "fireworks-prefill-queue-duration": "server_side_prefill_queue_latency",
+}
+
+
+def record_systemone_server_timings(headers) -> None:
+    # The gateway forwards the serving pod's prefill timings (seconds); record them in ms like the other latency rows.
+    for header, metric_name in SYSTEMONE_SERVER_TIMING_HEADERS.items():
+        try:
+            value = headers.get(header)
+            if value not in (None, ""):
+                add_custom_metric(metric_name, float(value) * 1000)
+        except (TypeError, ValueError):
+            logger.debug(f"Skipping unparsable {header}: {headers.get(header)!r}")
+
+
 def systemone_summary_entries(stats, num_questions: int) -> dict[str, Any]:
     """Systemone summary columns; latency percentiles are appended by the shared summary code."""
     # Locust names the entry after the full request path, which includes any host base path (e.g. /inference).
@@ -2541,7 +2559,12 @@ def _(environment, **kw):
         percentile_metrics = ["total_latency", "latency_per_embedding", "server_side_total_latency"]
     elif getattr(environment.parsed_options, "systemone", False):
         entries.update(systemone_summary_entries(environment.stats, environment.parsed_options.systemone_num_questions))
-        percentile_metrics = ["total_latency", "server_side_total_latency"]
+        percentile_metrics = [
+            "total_latency",
+            "server_side_total_latency",
+            "server_side_prefill_latency",
+            "server_side_prefill_queue_latency",
+        ]
     elif getattr(environment.parsed_options, "rerank", False):
         for metric_name in ["total_latency", "prompt_tokens", "response_bytes", "server_side_total_latency"]:
             entries[metric_name] = _avg(metric_name)
