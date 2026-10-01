@@ -73,6 +73,16 @@ Embeddings and rerank options:
 - `--rerank-top-n`: number of top results to return from the rerank endpoint.
 - `--rerank-return-documents` / `--no-rerank-return-documents`: whether to include document text in the rerank response (default: true).
 
+SystemOne options:
+- `--systemone`: use the Fireworks `/v1/systemone` API (always non-streaming). `--model` is sent verbatim, e.g. `accounts/<account>/deployments/<id>`. Requests are synthetic: a JSON state built from the limericks dataset plus `q0..q{N-1}` choice questions with `option_a..` criteria.
+- `--systemone-num-questions`: questions per request (default 1).
+- `--systemone-num-options`: criteria per choice question (default 4).
+- `--systemone-state-tokens`: approximate state size in tokens (default 768). Sized with `--tokenizer` if given, otherwise ~4 chars/token.
+- `--systemone-question-tokens`: approximate instructions size per question in tokens (default 48).
+- `--systemone-unique-state` / `--no-systemone-unique-state`: by default each state starts with a random nonce so every request misses the prefix cache; with `--no-systemone-unique-state` each worker reuses one fixed state (warm-cache path).
+
+A request fails if the status isn't 200 or `answers` doesn't contain exactly the asked question ids. A response with `usage.output_tokens == 0` came from the packed single-pass path; the summary reports `Packed Fraction`, `Questions Per S` (QPS x questions), mean `Input Tokens` and total latency percentiles instead of generation metrics.
+
 ### Writing results
 
 Locust prints out the detailed summary including quantiles of various metrics. Additionally, the script prints out the summary block at the very end of the output that includes the model being tested.
@@ -146,6 +156,12 @@ Benchmark Fireworks rerank with a custom query and top-5 results:
 
 ```bash
 locust -u 1 -r 2 -H https://api.fireworks.ai/inference --api-key $FIREWORKS_API_KEY -m "accounts/fireworks/models/qwen3-reranker-8b" --rerank --rerank-query "How do I reset my password?" --rerank-top-n 5 --prompt-tokens 4096 -t 1min --tokenizer /path/to/tokenizer
+```
+
+Benchmark Fireworks SystemOne with 8 concurrent workers, 4 questions of 6 options each over a ~2k-token state:
+
+```bash
+locust -u 8 -r 8 -t 2min -H https://api.fireworks.ai/inference --api-key $FIREWORKS_API_KEY -m "accounts/pyroworks/deployments/pkrpl2xp" --systemone --systemone-num-questions 4 --systemone-num-options 6 --systemone-state-tokens 2048 --tokenizer /path/to/tokenizer --summary-file systemone_results.csv
 ```
 
 Benchmark OpenAI deployment reading prompts from a file at 1 QPS:

@@ -16,6 +16,7 @@ from locust import HttpUser, task, events, constant_pacing
 import copy
 import json
 import time
+import uuid
 import orjson
 import base64
 import io
@@ -285,6 +286,124 @@ class JsonlDataset:
         # Yield all items
         for item in data:
             yield item
+
+
+SYSTEMONE_NONCE_CHARS = 32  # uuid4 hex length, so unique and fixed states size identically
+
+
+def systemone_option_key(index: int) -> str:
+    """Spreadsheet-style criteria key: option_a .. option_z, option_aa, ..."""
+    suffix = ""
+    index += 1
+    while index > 0:
+        index, rem = divmod(index - 1, 26)
+        suffix = chr(ord("a") + rem) + suffix
+    return f"option_{suffix}"
+
+
+def validate_systemone_response(data: Any, question_ids: list[str]) -> Optional[str]:
+    """Return an error message if a /v1/systemone response doesn't answer exactly the asked questions."""
+    if not isinstance(data, dict):
+        return f"response is not a JSON object: {type(data).__name__}"
+    answers = data.get("answers")
+    if not isinstance(answers, dict):
+        return "response has no 'answers' object"
+    if set(answers.keys()) != set(question_ids):
+        missing = sorted(set(question_ids) - set(answers.keys()))
+        extra = sorted(set(answers.keys()) - set(question_ids))
+        return f"answers keys mismatch: missing {missing}, unexpected {extra}"
+    return None
+
+
+class SystemOneDataset:
+    """Synthetic /v1/systemone requests: a ~state_tokens JSON state plus N choice questions, seeded per worker."""
+
+    def __init__(
+        self,
+        path: str,
+        tokenizer,
+        num_questions: int,
+        num_options: int,
+        state_tokens: int,
+        question_tokens: int,
+        unique_state: bool,
+        seed: int,
+    ):
+        if num_questions < 1:
+            raise ValueError("--systemone-num-questions must be >= 1")
+        if num_options < 1:
+            raise ValueError("--systemone-num-options must be >= 1")
+        self._tokenizer = tokenizer
+        self._unique_state = unique_state
+        self._rng = random.Random(seed)
+
+        with open(path, "r") as f:
+            self._texts = [t.strip() for t in f.read().split("\n\n") if t.strip()]
+        self._rng.shuffle(self._texts)
+        self._text_tokens = [self.count_tokens(json.dumps(t)) for t in self._texts]
+
+        self._fixed_nonce = "%032x" % self._rng.getrandbits(128)
+        self._sections = self._build_sections(state_tokens)
+        self.question_ids = [f"q{i}" for i in range(num_questions)]
+        self._questions = {
+            qid: {
+                "type": "choice",
+                "instructions": self._build_instructions(i, question_tokens),
+                "criteria": {
+                    systemone_option_key(j): f"The state best matches profile {j + 1} of {num_options}."
+                    for j in range(num_options)
+                },
+            }
+            for i, qid in enumerate(self.question_ids)
+        }
+        self.state_tokens = self.count_tokens(self._serialize_state(self._fixed_nonce))
+        self.question_tokens = [self.count_tokens(q["instructions"]) for q in self._questions.values()]
+
+    def count_tokens(self, text: str) -> int:
+        if self._tokenizer is not None:
+            return len(self._tokenizer.encode(text, add_special_tokens=False))
+        # ~4 chars/token heuristic when no tokenizer is given
+        return (len(text) + 3) // 4
+
+    def _build_sections(self, state_tokens: int) -> dict[str, str]:
+        # Nonce key + braces overhead is counted up front so the total lands near the target
+        used = self.count_tokens(json.dumps({"nonce": "0" * SYSTEMONE_NONCE_CHARS}))
+        sections = {}
+        idx = 0
+        while True:
+            if used >= state_tokens:
+                # Per-piece estimates drift from the joined count, so confirm against the real serialization
+                used = self.count_tokens(json.dumps({"nonce": "0" * SYSTEMONE_NONCE_CHARS, **sections}))
+                if used >= state_tokens:
+                    return sections
+            text_idx = idx % len(self._texts)
+            key = f"section_{idx}"
+            sections[key] = self._texts[text_idx]
+            used += self._text_tokens[text_idx] + self.count_tokens(f', "{key}": ')
+            idx += 1
+
+    def _build_instructions(self, index: int, question_tokens: int) -> str:
+        text = f"Which option best describes the state for check {index}?"
+        filler = " ".join(self._rng.sample(self._texts, min(len(self._texts), 8))).replace("\n", " ")
+        while self.count_tokens(text) < question_tokens:
+            text += " " + filler
+        if self._tokenizer is not None:
+            ids = self._tokenizer.encode(text, add_special_tokens=False)[:question_tokens]
+            return self._tokenizer.decode(ids)
+        return text[: question_tokens * 4]
+
+    def _serialize_state(self, nonce: str) -> str:
+        return json.dumps(self.make_state(nonce))
+
+    def make_state(self, nonce: str) -> dict[str, str]:
+        return {"nonce": nonce, **self._sections}
+
+    def __next__(self):
+        nonce = uuid.uuid4().hex if self._unique_state else self._fixed_nonce
+        return {"state": self.make_state(nonce), "questions": self._questions}, self.state_tokens
+
+    def __iter__(self):
+        return self
 
 
 class DatasetHolder:
@@ -767,6 +886,8 @@ class BaseProvider(abc.ABC):
 
 class OpenAIProvider(BaseProvider):
     def get_url(self):
+        if getattr(self.parsed_options, "systemone", False):
+            return "/v1/systemone"
         if self.parsed_options.rerank:
             return "/v1/rerank"
         elif self.parsed_options.embeddings:
@@ -777,6 +898,10 @@ class OpenAIProvider(BaseProvider):
             return "/v1/completions"
 
     def format_payload(self, prompt, max_tokens, images):
+        if getattr(self.parsed_options, "systemone", False):
+            # Model is sent raw: the gateway keys its packed-path profile on the exact string
+            return {"model": self.model, "state": prompt["state"], "questions": prompt["questions"]}
+
         if self.parsed_options.rerank:
             if isinstance(prompt, list):
                 documents = prompt
@@ -862,6 +987,18 @@ class OpenAIProvider(BaseProvider):
         return data
 
     def parse_output_json(self, data):
+        if getattr(self.parsed_options, "systemone", False):
+            usage = data.get("usage") or {}
+            answers = data.get("answers") or {}
+            choices = [f"{qid}:{(answers[qid] or {}).get('choice')}" for qid in sorted(answers)]
+            return ChunkMetadata(
+                text=", ".join(choices),
+                logprob_tokens=None,
+                completion_tokens=usage.get("output_tokens"),
+                prompt_tokens=usage.get("input_tokens"),
+                cached_tokens=usage.get("cached_input_tokens"),
+            )
+
         if self.parsed_options.rerank:
             usage = data.get("usage", {})
             scores = [
@@ -995,7 +1132,7 @@ class FireworksProvider(OpenAIProvider):
 
     def format_payload(self, prompt, max_tokens, images):
         data = super().format_payload(prompt, max_tokens, images)
-        if self.parsed_options.rerank:
+        if self.parsed_options.rerank or getattr(self.parsed_options, "systemone", False):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
@@ -1285,6 +1422,9 @@ def _load_curl_like_data(text):
         return text
 
 
+_SYSTEMONE_WORKER_SEEDS = itertools.count()
+
+
 class LLMUser(HttpUser):
     # no wait time, so every user creates a continuous load, sending requests as quickly as possible
 
@@ -1309,6 +1449,12 @@ class LLMUser(HttpUser):
                 self.provider = "openai"
             elif "anyscale" in self.host:
                 self.provider = "anyscale"
+            elif self.environment.parsed_options.systemone:
+                # /v1/systemone only exists on the Fireworks gateway
+                self.provider = "fireworks"
+
+        if self.environment.parsed_options.systemone and self.model is None:
+            raise ValueError("--systemone requires --model (sent verbatim, e.g. accounts/<acct>/deployments/<id>)")
 
         if (
             self.model is None
@@ -1358,9 +1504,17 @@ class LLMUser(HttpUser):
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
 
         self.stream = self.environment.parsed_options.stream
-        # Rerank and embeddings endpoints are non-streaming single-response APIs
-        if self.environment.parsed_options.rerank or self.environment.parsed_options.embeddings:
+        # Rerank, embeddings and systemone endpoints are non-streaming single-response APIs
+        if (
+            self.environment.parsed_options.rerank
+            or self.environment.parsed_options.embeddings
+            or self.environment.parsed_options.systemone
+        ):
             self.stream = False
+        if self.environment.parsed_options.systemone and (
+            self.environment.parsed_options.rerank or self.environment.parsed_options.embeddings
+        ):
+            raise ValueError("--systemone is mutually exclusive with --rerank and --embeddings")
         self.ramping_pacer = None  # Will be set if --ramping-time is used
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
@@ -1379,6 +1533,8 @@ class LLMUser(HttpUser):
                 )
 
         if image_resolutions:
+            if self.environment.parsed_options.systemone:
+                raise AssertionError("--prompt-images-with-resolutions is not supported with --systemone.")
             if not self.environment.parsed_options.chat:
                 # Using regular /completions endpoint, each model has it's own image placeholder
                 # e.g., <|image|> for Phi, <|image_pad|> for Qwen, <image> for Llava
@@ -1410,6 +1566,19 @@ class LLMUser(HttpUser):
 
         if self.environment.parsed_options.top_k is not None:
             logging_params["top_k"] = self.environment.parsed_options.top_k
+
+        if self.environment.parsed_options.systemone:
+            # Generation params don't apply to systemone; log the sweep params instead
+            logging_params = {
+                "provider": self.provider,
+                "model": self.model,
+                "mode": "systemone",
+                "num_questions": self.environment.parsed_options.systemone_num_questions,
+                "num_options": self.environment.parsed_options.systemone_num_options,
+                "state_tokens": self.environment.parsed_options.systemone_state_tokens,
+                "question_tokens": self.environment.parsed_options.systemone_question_tokens,
+                "unique_state": self.environment.parsed_options.systemone_unique_state,
+            }
 
         InitTracker.notify_init(self.environment, logging_params)
 
@@ -1451,6 +1620,10 @@ class LLMUser(HttpUser):
 
         self.first_done = False
 
+        if self.environment.parsed_options.systemone:
+            self._init_systemone_dataset()
+            return
+
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
@@ -1468,6 +1641,28 @@ class LLMUser(HttpUser):
             )
             synthetic_prompt = "\n\n".join(PROMPT_PREFIX_TOKEN * tokens_per_doc for _ in range(num_docs))
             self.dataset = iter(itertools.cycle([(synthetic_prompt, num_docs * tokens_per_doc)]))
+
+    def _init_systemone_dataset(self):
+        options = self.environment.parsed_options
+        # Only size with a real tokenizer when one is given; otherwise use the chars/token heuristic
+        tokenizer = InitTracker.load_tokenizer(options.tokenizer) if options.tokenizer else None
+        self.systemone_dataset = SystemOneDataset(
+            path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt"),
+            tokenizer=tokenizer,
+            num_questions=options.systemone_num_questions,
+            num_options=options.systemone_num_options,
+            state_tokens=options.systemone_state_tokens,
+            question_tokens=options.systemone_question_tokens,
+            unique_state=options.systemone_unique_state,
+            seed=next(_SYSTEMONE_WORKER_SEEDS),
+        )
+        self.dataset = self.systemone_dataset
+        self.prompt_tokenizer_tokens = self.systemone_dataset.state_tokens
+        ds = self.systemone_dataset
+        logger.info(
+            f"systemone: state ~{ds.state_tokens} tokens, "
+            f"{len(ds.question_ids)} questions of ~{max(ds.question_tokens)} tokens"
+        )
 
     def _create_base64_image(self, width, height):
         """Create a random RGB image with the given dimensions and return as base64 data URI."""
@@ -1543,7 +1738,74 @@ class LLMUser(HttpUser):
             if self.ramping_pacer:
                 self.ramping_pacer.request_end()
 
+    def _do_systemone_request(self):
+        prompt, _ = next(self.dataset)
+        question_ids = self.systemone_dataset.question_ids
+        data = self.provider_formatter.format_payload(prompt, 0, None)
+        if self.environment.parsed_options.show_request:
+            print("--- Request payload ---")
+            print(json.dumps(data, indent=2))
+            print("---")
+        t_start = time.perf_counter()
+
+        with self.client.post(
+            self.provider_formatter.get_url(),
+            data=json.dumps(data),
+            catch_response=True,
+            timeout=60,
+        ) as response:
+            body = response.content
+            dur_total = time.perf_counter() - t_start
+            if response.status_code != 200:
+                response.failure(f"Error in response: HTTP {response.status_code}: {response.text}")
+                return
+            try:
+                resp_data = orjson.loads(body)
+            except Exception as e:
+                logger.error(f"Failed to parse response body with error {repr(e)}")
+                response.failure(e)
+                return
+            error = validate_systemone_response(resp_data, question_ids)
+            if error is not None:
+                response.failure(error)
+                return
+            out = self.provider_formatter.parse_output_json(resp_data)
+            input_tokens = out.prompt_tokens or 0
+            output_tokens = out.completion_tokens or 0
+            # The packed single-pass path reads logits without decoding, so it reports zero output tokens
+            packed = output_tokens == 0
+
+            logger.info(
+                f"Response received: total {dur_total*1000:.2f} ms, {len(question_ids)} questions, "
+                f"{input_tokens} input, {out.cached_tokens} cached, {output_tokens} output, packed={packed}"
+            )
+            if self.environment.parsed_options.show_response:
+                print("---")
+                print(out.text)
+                print("---")
+            add_custom_metric("total_latency", dur_total * 1000)
+            add_custom_metric("num_questions", len(question_ids))
+            add_custom_metric("input_tokens", input_tokens)
+            add_custom_metric("output_tokens", output_tokens)
+            if out.cached_tokens is not None:
+                add_custom_metric("cached_input_tokens", out.cached_tokens)
+            add_custom_metric("packed_fraction", 1 if packed else 0)
+            add_custom_metric("response_bytes", len(body))
+            self.provider_formatter.post_response_hook(response.headers, 0)
+            record_systemone_server_timings(response.headers)
+
+            response.success()
+
+            if not self.first_done:
+                self.first_done = True
+                InitTracker.notify_first_request()
+
+            InitTracker.notify_request_complete()
+
     def _do_generate_text(self):
+        if self.environment.parsed_options.systemone:
+            self._do_systemone_request()
+            return
         max_tokens = self.max_tokens_sampler.sample()
         is_embeddings = self.provider_formatter.parsed_options.embeddings
         batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
@@ -1928,6 +2190,44 @@ def init_parser(parser):
         help="For embeddings: Jinja2 template for structured input. Example: 'Embed this passage: {text}'",
     )
     parser.add_argument(
+        "--systemone",
+        action="store_true",
+        default=False,
+        help="Use the Fireworks /v1/systemone API (non-streaming) with synthetic choice questions over a JSON state. "
+        "--model is sent verbatim.",
+    )
+    parser.add_argument(
+        "--systemone-num-questions",
+        type=int,
+        default=1,
+        help="For systemone: number of questions per request.",
+    )
+    parser.add_argument(
+        "--systemone-num-options",
+        type=int,
+        default=4,
+        help="For systemone: number of criteria (options) per choice question.",
+    )
+    parser.add_argument(
+        "--systemone-state-tokens",
+        type=int,
+        default=768,
+        help="For systemone: approximate state size in tokens (uses --tokenizer if given, else ~4 chars/token).",
+    )
+    parser.add_argument(
+        "--systemone-question-tokens",
+        type=int,
+        default=48,
+        help="For systemone: approximate instructions size per question in tokens.",
+    )
+    parser.add_argument(
+        "--systemone-unique-state",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="For systemone: start each state with a random nonce so every request misses the prefix cache. "
+        "With --no-systemone-unique-state each worker reuses one fixed state (warm-cache path).",
+    )
+    parser.add_argument(
         "-p",
         "--prompt-tokens",
         env_var="PROMPT_TOKENS",
@@ -2174,6 +2474,55 @@ def init_parser(parser):
     )
 
 
+SYSTEMONE_SERVER_TIMING_HEADERS = {
+    "fireworks-prefill-duration": "server_side_prefill_latency",
+    "fireworks-prefill-queue-duration": "server_side_prefill_queue_latency",
+}
+
+
+def record_systemone_server_timings(headers) -> None:
+    # The gateway forwards the serving pod's prefill timings (seconds); record them in ms like the other latency rows.
+    for header, metric_name in SYSTEMONE_SERVER_TIMING_HEADERS.items():
+        try:
+            value = headers.get(header)
+            if value not in (None, ""):
+                add_custom_metric(metric_name, float(value) * 1000)
+        except (TypeError, ValueError):
+            logger.debug(f"Skipping unparsable {header}: {headers.get(header)!r}")
+
+
+def systemone_summary_entries(stats, num_questions: int) -> dict[str, Any]:
+    """Systemone summary columns; latency percentiles are appended by the shared summary code."""
+    # Locust names the entry after the full request path, which includes any host base path (e.g. /inference).
+    request_entry = next(
+        (e for (name, method), e in stats.entries.items() if method == "POST" and name.endswith("/v1/systemone")),
+        None,
+    )
+    latency_entry = stats.entries.get(("total_latency", "METRIC"))
+    qps = latency_entry.total_rps if latency_entry else 0
+
+    def _avg(metric_name):
+        entry = stats.entries.get((metric_name, "METRIC"))
+        return entry.avg_response_time if entry else ""
+
+    entries = {
+        "requests": request_entry.num_requests if request_entry else 0,
+        "failures": request_entry.num_failures if request_entry else 0,
+        "questions_per_s": qps * num_questions,
+    }
+    for metric_name in [
+        "total_latency",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "packed_fraction",
+        "response_bytes",
+        "server_side_total_latency",
+    ]:
+        entries[metric_name] = _avg(metric_name)
+    return entries
+
+
 @events.quitting.add_listener
 def _(environment, **kw):
     total_latency = environment.stats.entries[("total_latency", "METRIC")]
@@ -2208,6 +2557,14 @@ def _(environment, **kw):
         ]:
             entries[metric_name] = _avg(metric_name)
         percentile_metrics = ["total_latency", "latency_per_embedding", "server_side_total_latency"]
+    elif getattr(environment.parsed_options, "systemone", False):
+        entries.update(systemone_summary_entries(environment.stats, environment.parsed_options.systemone_num_questions))
+        percentile_metrics = [
+            "total_latency",
+            "server_side_total_latency",
+            "server_side_prefill_latency",
+            "server_side_prefill_queue_latency",
+        ]
     elif getattr(environment.parsed_options, "rerank", False):
         for metric_name in ["total_latency", "prompt_tokens", "response_bytes", "server_side_total_latency"]:
             entries[metric_name] = _avg(metric_name)
