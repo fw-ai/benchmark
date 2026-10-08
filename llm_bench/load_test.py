@@ -2491,6 +2491,48 @@ def record_systemone_server_timings(headers) -> None:
             logger.debug(f"Skipping unparsable {header}: {headers.get(header)!r}")
 
 
+SERVER_SIDE_TEXT_METRICS = ["server_side_time_to_first_token", "server_side_total_latency"]
+
+
+def text_summary_entries(stats, stream: bool) -> tuple[dict[str, Any], list[str]]:
+    """Summary entries and percentile metrics for text completion runs.
+
+    Server-side metrics are only reported when the provider recorded them
+    (Fireworks perf_metrics or response headers), so other providers keep the
+    same CSV columns. Reporting them next to the client-side values separates
+    network/gateway time from time spent on the deployment.
+    """
+
+    def _avg(metric_name):
+        entry = stats.entries.get((metric_name, "METRIC"))
+        return entry.avg_response_time if entry else ""
+
+    entries: dict[str, Any] = {}
+    for metric_name in [
+        "time_to_first_token",
+        "latency_per_token",
+        "overall_latency_per_token",
+        "total_latency",
+        "generation_tokens",
+        "completion_tokens",
+        "num_tokens",
+        "prompt_tokens",
+    ]:
+        entries[metric_name] = _avg(metric_name)
+    if ("cached_tokens", "METRIC") in stats.entries:
+        entries["cached_tokens"] = stats.entries[("cached_tokens", "METRIC")].avg_response_time
+    if not stream:
+        # if there's no streaming these metrics are meaningless
+        entries["time_to_first_token"] = ""
+        entries["latency_per_token"] = ""
+    percentile_metrics = ["time_to_first_token", "total_latency"]
+    for metric_name in SERVER_SIDE_TEXT_METRICS:
+        if (metric_name, "METRIC") in stats.entries:
+            entries[metric_name] = _avg(metric_name)
+            percentile_metrics.append(metric_name)
+    return entries, percentile_metrics
+
+
 def systemone_summary_entries(stats, num_questions: int) -> dict[str, Any]:
     """Systemone summary columns; latency percentiles are appended by the shared summary code."""
     # Locust names the entry after the full request path, which includes any host base path (e.g. /inference).
@@ -2577,24 +2619,8 @@ def _(environment, **kw):
             entries["tokens_per_document"] = tokens_per_doc
         percentile_metrics = ["total_latency", "server_side_total_latency"]
     else:
-        for metric_name in [
-            "time_to_first_token",
-            "latency_per_token",
-            "overall_latency_per_token",
-            "total_latency",
-            "generation_tokens",
-            "completion_tokens",
-            "num_tokens",
-            "prompt_tokens",
-        ]:
-            entries[metric_name] = _avg(metric_name)
-        if ("cached_tokens", "METRIC") in environment.stats.entries:
-            entries["cached_tokens"] = environment.stats.entries[("cached_tokens", "METRIC")].avg_response_time
-        if not environment.parsed_options.stream:
-            # if there's no streaming these metrics are meaningless
-            entries["time_to_first_token"] = ""
-            entries["latency_per_token"] = ""
-        percentile_metrics = ["time_to_first_token", "total_latency"]
+        text_entries, percentile_metrics = text_summary_entries(environment.stats, environment.parsed_options.stream)
+        entries.update(text_entries)
 
     entries["num_requests"] = total_latency.num_requests
     entries["qps"] = total_latency.total_rps
