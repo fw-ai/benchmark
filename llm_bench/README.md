@@ -89,7 +89,7 @@ Locust prints out the detailed summary including quantiles of various metrics. A
 
 When comparing multiple configurations, it's useful to aggregate results together:
 
-- `--summary-file`: Append the line with the summary to the specified CSV file. Useful for generating a spreadsheet with perf sweep results. If the file doesn't exist, it writes out the header first.
+- `--summary-file`: Append the line with the summary to the specified CSV file. Useful for generating a spreadsheet with perf sweep results. If the file doesn't exist, it writes out the header first. For Fireworks text runs, the summary also includes server-side time to first token and total latency (average and P50 to P99.9). Client-side values minus server-side values is roughly the network and gateway time between the load generator and the deployment.
 - `-t`: duration (e.g. `5min`) for which to run the test (standard Locust option). It's particularly useful when scripting multiple runs. By default, the test runs without a limit until Ctrl+C is pressed.
 
 The typical workflow would be to run benchmark several times appending to the same CSV file. The resulting file can be imported into a spreadsheet or pandas for further analysis.
