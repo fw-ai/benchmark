@@ -244,6 +244,22 @@ def test_record_systemone_server_timings(monkeypatch) -> None:
     assert recorded == [("server_side_prefill_latency", pytest.approx(22.0))]
 
 
+def test_record_systemone_server_timings_per_bucket(monkeypatch) -> None:
+    import load_test
+
+    recorded = []
+    monkeypatch.setattr(load_test, "add_custom_metric", lambda name, value, length_value=0: recorded.append((name, value)))
+    load_test.record_systemone_server_timings(
+        {"fireworks-prefill-duration": "0.010", "fireworks-server-processing-time": "0.031"}, "1k-2k"
+    )
+
+    assert recorded == [
+        ("server_side_prefill_latency", pytest.approx(10.0)),
+        ("server_side_prefill_latency@1k-2k", pytest.approx(10.0)),
+        ("server_side_total_latency@1k-2k", pytest.approx(31.0)),
+    ]
+
+
 def _mix_spec() -> dict:
     return {
         "num_options": 4,

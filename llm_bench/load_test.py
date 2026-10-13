@@ -2635,6 +2635,15 @@ def record_systemone_server_timings(headers, bucket_name: Optional[str] = None) 
                     add_custom_metric(f"{metric_name}@{bucket_name}", float(value) * 1000)
         except (TypeError, ValueError):
             logger.debug(f"Skipping unparsable {header}: {headers.get(header)!r}")
+    if bucket_name is None:
+        return
+    # The unbucketed server total is recorded by FireworksProvider.post_response_hook; add the per-bucket view here
+    try:
+        value = headers.get("fireworks-server-processing-time")
+        if value not in (None, ""):
+            add_custom_metric(f"server_side_total_latency@{bucket_name}", float(value) * 1000)
+    except (TypeError, ValueError):
+        logger.debug(f"Skipping unparsable server-processing-time: {headers.get('fireworks-server-processing-time')!r}")
 
 
 SERVER_SIDE_TEXT_METRICS = ["server_side_time_to_first_token", "server_side_total_latency"]
