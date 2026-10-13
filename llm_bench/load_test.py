@@ -406,6 +406,112 @@ class SystemOneDataset:
         return self
 
 
+class SystemOneMixDataset:
+    """Weighted /v1/systemone request buckets; cache fraction f puts ~f*state of worker-shared prefix before the nonce."""
+
+    def __init__(self, path: str, tokenizer, spec: dict, seed: int):
+        self._tokenizer = tokenizer
+        self._rng = random.Random(seed)
+        with open(path, "r") as f:
+            self._texts = [t.strip() for t in f.read().split("\n\n") if t.strip()]
+        self._text_tokens = [self.count_tokens(json.dumps(t)) for t in self._texts]
+        num_options = int(spec.get("num_options", 4))
+        question_tokens = int(spec.get("question_tokens", 48))
+        prefix_pool = int(spec.get("prefix_pool", 16))
+        buckets = spec.get("buckets") or []
+        if not buckets:
+            raise ValueError("--systemone-mix spec has no buckets")
+        if prefix_pool < 1:
+            raise ValueError("--systemone-mix prefix_pool must be >= 1")
+
+        self.buckets = []
+        for b_idx, bucket in enumerate(buckets):
+            name = str(bucket.get("name", f"b{b_idx}"))
+            state_tokens = int(bucket["state_tokens"])
+            num_questions = int(bucket.get("num_questions", 1))
+            if float(bucket.get("weight", 0)) <= 0 or state_tokens < 1 or num_questions < 1:
+                raise ValueError(f"--systemone-mix bucket {name}: weight, state_tokens and num_questions must be > 0")
+            # Deterministic per bucket so every worker asks the same questions (they sit after the state, never cached)
+            q_rng = random.Random(f"q:{name}")
+            questions = {
+                f"q{i}": {
+                    "type": "choice",
+                    "instructions": self._build_instructions(q_rng, i, question_tokens),
+                    "criteria": {
+                        systemone_option_key(j): f"The state best matches profile {j + 1} of {num_options}."
+                        for j in range(num_options)
+                    },
+                }
+                for i in range(num_questions)
+            }
+            cache_levels = []
+            for level in bucket.get("cache") or [{"p": 1.0, "fraction": 0.0}]:
+                fraction = min(max(float(level.get("fraction", 0.0)), 0.0), 1.0)
+                shared_tokens = int(round(fraction * state_tokens))
+                pool = [
+                    self._build_sections(random.Random(f"s:{name}:{fraction}:{i}"), shared_tokens, "a_shared")
+                    for i in range(prefix_pool if shared_tokens > 0 else 1)
+                ]
+                private = self._build_sections(
+                    random.Random(f"p:{name}:{fraction}"), max(state_tokens - shared_tokens, 0), "z_private"
+                )
+                cache_levels.append((float(level.get("p", 1.0)), fraction, pool, private))
+            self.buckets.append(
+                {
+                    "name": name,
+                    "weight": float(bucket["weight"]),
+                    "questions": questions,
+                    "question_ids": list(questions),
+                    "cache_levels": cache_levels,
+                }
+            )
+        self._bucket_weights = [b["weight"] for b in self.buckets]
+        self.last_bucket = None
+        self.state_tokens = round(
+            sum(b["weight"] * int(s["state_tokens"]) for b, s in zip(self.buckets, buckets)) / sum(self._bucket_weights)
+        )
+
+    def count_tokens(self, text: str) -> int:
+        if self._tokenizer is not None:
+            return len(self._tokenizer.encode(text, add_special_tokens=False))
+        return (len(text) + 3) // 4
+
+    def _build_sections(self, rng: random.Random, target_tokens: int, key_prefix: str) -> dict[str, str]:
+        sections: dict[str, str] = {}
+        used = 0
+        order = list(range(len(self._texts)))
+        rng.shuffle(order)
+        idx = 0
+        while used < target_tokens:
+            text_idx = order[idx % len(order)]
+            key = f"{key_prefix}_{idx}"
+            sections[key] = self._texts[text_idx]
+            used += self._text_tokens[text_idx] + self.count_tokens(f', "{key}": ')
+            idx += 1
+        return sections
+
+    def _build_instructions(self, rng: random.Random, index: int, question_tokens: int) -> str:
+        text = f"Which option best describes the state for check {index}?"
+        filler = " ".join(rng.sample(self._texts, min(len(self._texts), 8))).replace("\n", " ")
+        while self.count_tokens(text) < question_tokens:
+            text += " " + filler
+        if self._tokenizer is not None:
+            ids = self._tokenizer.encode(text, add_special_tokens=False)[:question_tokens]
+            return self._tokenizer.decode(ids)
+        return text[: question_tokens * 4]
+
+    def __next__(self):
+        bucket = self._rng.choices(self.buckets, weights=self._bucket_weights)[0]
+        levels = bucket["cache_levels"]
+        _, _, pool, private = self._rng.choices(levels, weights=[lvl[0] for lvl in levels])[0]
+        state = {**self._rng.choice(pool), "nonce": uuid.uuid4().hex, **private}
+        self.last_bucket = bucket
+        return {"state": state, "questions": bucket["questions"]}, self.state_tokens
+
+    def __iter__(self):
+        return self
+
+
 class DatasetHolder:
     _instance = None
     _forced_generation_instance = None
@@ -1423,6 +1529,7 @@ def _load_curl_like_data(text):
 
 
 _SYSTEMONE_WORKER_SEEDS = itertools.count()
+_SYSTEMONE_MIX_DATASETS: dict[str, "SystemOneMixDataset"] = {}
 
 
 class LLMUser(HttpUser):
@@ -1579,6 +1686,11 @@ class LLMUser(HttpUser):
                 "question_tokens": self.environment.parsed_options.systemone_question_tokens,
                 "unique_state": self.environment.parsed_options.systemone_unique_state,
             }
+            if self.environment.parsed_options.systemone_mix:
+                # Shape flags are ignored in mix mode; the summary reports the measured mean question count instead
+                for key in ("num_questions", "num_options", "state_tokens", "question_tokens", "unique_state"):
+                    logging_params.pop(key)
+                logging_params["mix"] = os.path.basename(self.environment.parsed_options.systemone_mix)
 
         InitTracker.notify_init(self.environment, logging_params)
 
@@ -1646,6 +1758,25 @@ class LLMUser(HttpUser):
         options = self.environment.parsed_options
         # Only size with a real tokenizer when one is given; otherwise use the chars/token heuristic
         tokenizer = InitTracker.load_tokenizer(options.tokenizer) if options.tokenizer else None
+        if options.systemone_mix:
+            # One shared instance per process: building prefix pools per user would dominate startup at high user counts
+            if options.systemone_mix not in _SYSTEMONE_MIX_DATASETS:
+                with open(options.systemone_mix, "r") as f:
+                    spec = json.load(f)
+                _SYSTEMONE_MIX_DATASETS[options.systemone_mix] = SystemOneMixDataset(
+                    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt"),
+                    tokenizer=tokenizer,
+                    spec=spec,
+                    seed=0,
+                )
+            self.systemone_dataset = _SYSTEMONE_MIX_DATASETS[options.systemone_mix]
+            self.dataset = self.systemone_dataset
+            self.prompt_tokenizer_tokens = self.systemone_dataset.state_tokens
+            logger.info(
+                f"systemone mix: {len(self.systemone_dataset.buckets)} buckets, "
+                f"weighted mean state ~{self.systemone_dataset.state_tokens} tokens"
+            )
+            return
         self.systemone_dataset = SystemOneDataset(
             path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt"),
             tokenizer=tokenizer,
@@ -1740,7 +1871,8 @@ class LLMUser(HttpUser):
 
     def _do_systemone_request(self):
         prompt, _ = next(self.dataset)
-        question_ids = self.systemone_dataset.question_ids
+        question_ids = list(prompt["questions"])
+        bucket = getattr(self.systemone_dataset, "last_bucket", None)
         data = self.provider_formatter.format_payload(prompt, 0, None)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
@@ -1791,8 +1923,12 @@ class LLMUser(HttpUser):
                 add_custom_metric("cached_input_tokens", out.cached_tokens)
             add_custom_metric("packed_fraction", 1 if packed else 0)
             add_custom_metric("response_bytes", len(body))
+            if bucket is not None:
+                add_custom_metric(f"total_latency@{bucket['name']}", dur_total * 1000)
+                if out.cached_tokens is not None and input_tokens:
+                    add_custom_metric(f"cached_pct@{bucket['name']}", 100 * out.cached_tokens / input_tokens)
             self.provider_formatter.post_response_hook(response.headers, 0)
-            record_systemone_server_timings(response.headers)
+            record_systemone_server_timings(response.headers, bucket["name"] if bucket is not None else None)
 
             response.success()
 
@@ -2228,6 +2364,14 @@ def init_parser(parser):
         "With --no-systemone-unique-state each worker reuses one fixed state (warm-cache path).",
     )
     parser.add_argument(
+        "--systemone-mix",
+        type=str,
+        default=None,
+        help="For systemone: JSON spec of weighted request buckets (state size, questions, prefix-cache fractions). "
+        "Overrides the --systemone-num-questions/state-tokens/question-tokens/num-options/unique-state shape flags "
+        "and adds per-bucket latency percentiles to the summary.",
+    )
+    parser.add_argument(
         "-p",
         "--prompt-tokens",
         env_var="PROMPT_TOKENS",
@@ -2480,13 +2624,15 @@ SYSTEMONE_SERVER_TIMING_HEADERS = {
 }
 
 
-def record_systemone_server_timings(headers) -> None:
+def record_systemone_server_timings(headers, bucket_name: Optional[str] = None) -> None:
     # The gateway forwards the serving pod's prefill timings (seconds); record them in ms like the other latency rows.
     for header, metric_name in SYSTEMONE_SERVER_TIMING_HEADERS.items():
         try:
             value = headers.get(header)
             if value not in (None, ""):
                 add_custom_metric(metric_name, float(value) * 1000)
+                if bucket_name is not None:
+                    add_custom_metric(f"{metric_name}@{bucket_name}", float(value) * 1000)
         except (TypeError, ValueError):
             logger.debug(f"Skipping unparsable {header}: {headers.get(header)!r}")
 
@@ -2600,13 +2746,27 @@ def _(environment, **kw):
             entries[metric_name] = _avg(metric_name)
         percentile_metrics = ["total_latency", "latency_per_embedding", "server_side_total_latency"]
     elif getattr(environment.parsed_options, "systemone", False):
-        entries.update(systemone_summary_entries(environment.stats, environment.parsed_options.systemone_num_questions))
+        num_questions = environment.parsed_options.systemone_num_questions
+        if environment.parsed_options.systemone_mix:
+            num_questions = _avg("num_questions") or 0
+        entries.update(systemone_summary_entries(environment.stats, num_questions))
         percentile_metrics = [
             "total_latency",
             "server_side_total_latency",
             "server_side_prefill_latency",
             "server_side_prefill_queue_latency",
         ]
+        # Per-bucket rows from --systemone-mix, in a stable order
+        percentile_metrics += sorted(
+            name
+            for (name, method) in environment.stats.entries
+            if method == "METRIC" and "@" in name and not name.startswith("cached_pct@")
+        )
+        for name, method in sorted(environment.stats.entries):
+            if method == "METRIC" and name.startswith("cached_pct@"):
+                entries[name] = _avg(name)
+            elif method == "METRIC" and name.startswith("total_latency@"):
+                entries["requests@" + name.split("@", 1)[1]] = environment.stats.entries[(name, method)].num_requests
     elif getattr(environment.parsed_options, "rerank", False):
         for metric_name in ["total_latency", "prompt_tokens", "response_bytes", "server_side_total_latency"]:
             entries[metric_name] = _avg(metric_name)

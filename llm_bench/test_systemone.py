@@ -10,6 +10,7 @@ from locust.stats import RequestStats
 from load_test import (
     FireworksProvider,
     SystemOneDataset,
+    SystemOneMixDataset,
     systemone_option_key,
     systemone_summary_entries,
     validate_systemone_response,
@@ -241,3 +242,74 @@ def test_record_systemone_server_timings(monkeypatch) -> None:
     load_test.record_systemone_server_timings({"fireworks-prefill-queue-duration": ""})
 
     assert recorded == [("server_side_prefill_latency", pytest.approx(22.0))]
+
+
+def _mix_spec() -> dict:
+    return {
+        "num_options": 4,
+        "question_tokens": 16,
+        "prefix_pool": 2,
+        "buckets": [
+            {"name": "small", "weight": 3, "state_tokens": 200, "num_questions": 2, "cache": [{"p": 1, "fraction": 0}]},
+            {
+                "name": "big",
+                "weight": 1,
+                "state_tokens": 1000,
+                "num_questions": 5,
+                "cache": [{"p": 1, "fraction": 0.5}],
+            },
+        ],
+    }
+
+
+def test_mix_buckets_weighted_and_shaped() -> None:
+    ds = SystemOneMixDataset(path=LIMERICKS, tokenizer=None, spec=_mix_spec(), seed=0)
+    counts = {"small": 0, "big": 0}
+    for _ in range(2000):
+        prompt, _ = next(ds)
+        name = ds.last_bucket["name"]
+        counts[name] += 1
+        assert len(prompt["questions"]) == (2 if name == "small" else 5)
+    assert 0.70 < counts["small"] / 2000 < 0.80
+
+
+def test_mix_shared_prefix_precedes_nonce_and_is_shared_across_workers() -> None:
+    a = SystemOneMixDataset(path=LIMERICKS, tokenizer=None, spec=_mix_spec(), seed=0)
+    b = SystemOneMixDataset(path=LIMERICKS, tokenizer=None, spec=_mix_spec(), seed=1)
+
+    def shared_prefixes(ds):
+        prefixes = set()
+        for _ in range(400):
+            prompt, _ = next(ds)
+            state = prompt["state"]
+            keys = list(state)
+            nonce_at = keys.index("nonce")
+            if ds.last_bucket["name"] == "small":
+                assert nonce_at == 0
+            else:
+                assert nonce_at > 0 and all(k.startswith("a_shared") for k in keys[:nonce_at])
+                assert all(k.startswith("z_private") for k in keys[nonce_at + 1 :])
+                prefixes.add(json.dumps({k: state[k] for k in keys[:nonce_at]}))
+        return prefixes
+
+    pa, pb = shared_prefixes(a), shared_prefixes(b)
+    assert len(pa) == 2 and pa == pb
+
+
+def test_mix_shared_fraction_sizing() -> None:
+    ds = SystemOneMixDataset(path=LIMERICKS, tokenizer=None, spec=_mix_spec(), seed=0)
+    while True:
+        prompt, _ = next(ds)
+        if ds.last_bucket["name"] == "big":
+            break
+    state = prompt["state"]
+    keys = list(state)
+    nonce_at = keys.index("nonce")
+    shared = ds.count_tokens(json.dumps({k: state[k] for k in keys[:nonce_at]}))
+    total = ds.count_tokens(json.dumps(state))
+    assert 0.4 < shared / total < 0.6
+
+
+def test_mix_rejects_empty_spec() -> None:
+    with pytest.raises(ValueError):
+        SystemOneMixDataset(path=LIMERICKS, tokenizer=None, spec={"buckets": []}, seed=0)
