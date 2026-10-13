@@ -1,0 +1,175 @@
+{
+  "K1_qkv": {
+    "launches": [
+      {
+        "kernel": "nvjet_sm100_tst_64x8_64x16_4x1_v_bz_TNT",
+        "launch_id": "0",
+        "bytes": 50352896.0,
+        "duration_ns": 19168.0,
+        "pct_peak_compute": 24.45,
+        "pct_peak_bw": 39.3,
+        "raw": {
+          "dram__bytes.sum": 50352896.0,
+          "dram__bytes_read.sum": 50352896.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 39.3,
+          "gpu__time_duration.sum": 19168.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 24.45
+        }
+      }
+    ],
+    "flops": 37748736,
+    "bytes": 50352896.0,
+    "duration_us": 19.168,
+    "pct_peak_compute": 24.45,
+    "pct_peak_bw": 39.3
+  },
+  "K3_qnorm": {
+    "launches": [
+      {
+        "kernel": "_rms_norm",
+        "launch_id": "1",
+        "bytes": 29696.0,
+        "duration_ns": 7936.0,
+        "pct_peak_compute": 0.04,
+        "pct_peak_bw": 2.12,
+        "raw": {
+          "dram__bytes.sum": 29696.0,
+          "dram__bytes_read.sum": 29696.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 2.12,
+          "gpu__time_duration.sum": 7936.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 0.04
+        }
+      }
+    ],
+    "flops": 6144,
+    "bytes": 29696.0,
+    "duration_us": 7.936,
+    "pct_peak_compute": 0.04,
+    "pct_peak_bw": 2.12
+  },
+  "K4_knorm": {
+    "launches": [
+      {
+        "kernel": "_rms_norm",
+        "launch_id": "2",
+        "bytes": 8448.0,
+        "duration_ns": 6816.0,
+        "pct_peak_compute": 0.01,
+        "pct_peak_bw": 2.53,
+        "raw": {
+          "dram__bytes.sum": 8448.0,
+          "dram__bytes_read.sum": 8448.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 2.53,
+          "gpu__time_duration.sum": 6816.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 0.01
+        }
+      }
+    ],
+    "flops": 2048,
+    "bytes": 8448.0,
+    "duration_us": 6.816,
+    "pct_peak_compute": 0.01,
+    "pct_peak_bw": 2.53
+  },
+  "K5_rope": {
+    "launches": [],
+    "flops": 0,
+    "bytes": 0,
+    "duration_us": 0,
+    "pct_peak_compute": 0,
+    "pct_peak_bw": 0
+  },
+  "K6_paged_attn": {
+    "launches": [
+      {
+        "kernel": "mha_reshape_and_cache_kernel",
+        "launch_id": "3",
+        "bytes": 3584.0,
+        "duration_ns": 5920.0,
+        "pct_peak_compute": 0.02,
+        "pct_peak_bw": 2.84,
+        "raw": {
+          "dram__bytes.sum": 3584.0,
+          "dram__bytes_read.sum": 3584.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 2.84,
+          "gpu__time_duration.sum": 5920.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 0.02
+        }
+      },
+      {
+        "kernel": "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP64MultiCtasKvCgaVarSeqQ8Kv128StaticSwapsAbForGen",
+        "launch_id": "4",
+        "bytes": 61184.0,
+        "duration_ns": 8896.0,
+        "pct_peak_compute": 4.74,
+        "pct_peak_bw": 1.98,
+        "raw": {
+          "dram__bytes.sum": 61184.0,
+          "dram__bytes_read.sum": 61184.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 1.98,
+          "gpu__time_duration.sum": 8896.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 4.74
+        }
+      }
+    ],
+    "flops": 67108864,
+    "bytes": 64768.0,
+    "duration_us": 14.816,
+    "pct_peak_compute": 4.74,
+    "pct_peak_bw": 2.84
+  },
+  "K7_oproj": {
+    "launches": [
+      {
+        "kernel": "nvjet_sm100_tst_64x8_64x16_2x1_v_bz_splitK_TNT",
+        "launch_id": "5",
+        "bytes": 37776640.0,
+        "duration_ns": 16576.0,
+        "pct_peak_compute": 19.69,
+        "pct_peak_bw": 34.0,
+        "raw": {
+          "dram__bytes.sum": 37776640.0,
+          "dram__bytes_read.sum": 37776640.0,
+          "dram__bytes_write.sum": 0.0,
+          "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 34.0,
+          "gpu__time_duration.sum": 16576.0,
+          "sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_op_hmma_src_fp16_dst_fp32_sparsity_off.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp16.sum": 0.0,
+          "sm__ops_path_tensor_src_fp4_fp6_fp8_dst_fp32.sum": 0.0,
+          "sm__throughput.avg.pct_of_peak_sustained_elapsed": 19.69
+        }
+      }
+    ],
+    "flops": 25165824,
+    "bytes": 37776640.0,
+    "duration_us": 16.576,
+    "pct_peak_compute": 19.69,
+    "pct_peak_bw": 34.0
+  }
+}
