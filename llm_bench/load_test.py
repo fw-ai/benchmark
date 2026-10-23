@@ -6,6 +6,7 @@ from functools import lru_cache, partial
 import importlib.util
 import json
 import logging
+import math
 import os
 import random
 import sys
@@ -426,8 +427,18 @@ class SystemOneDataset:
         return self
 
 
-SHAPE_CLASS_FIELDS = {"name", "weight", "prompt_tokens", "cached_prompt_tokens", "generated_tokens", "prefix_pool_size"}
+SHAPE_CLASS_FIELDS = {
+    "name",
+    "weight",
+    "prompt_tokens",
+    "cached_prompt_tokens",
+    "generated_tokens",
+    "prefix_pool_size",
+    "cache_class",
+    "prompt_band",
+}
 _SHAPE_CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_SHAPE_NAME_INVALID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 # Every unique tail starts with this, so prefixes are checked against it once to keep token counts additive
 SHAPE_MIX_TAIL_START = "\n\nRequest"
 # Room left after the shared prefix for the per-request nonce that keeps every prompt unique
@@ -448,6 +459,7 @@ class ShapeClass:
 class ShapeMix:
     classes: list[ShapeClass]
     seed: int
+    arrivals_cv2: Optional[float] = None
 
     def describe(self) -> str:
         return "; ".join(
@@ -461,19 +473,35 @@ class ShapeMix:
         return sum(c.weight * getattr(c, field) for c in self.classes) / total
 
 
-def _shape_int(raw: dict, key: str, where: str, minimum: int, default: Optional[int] = None) -> int:
+def _shape_number(raw: dict, key: str, where: str, default: Optional[float] = None) -> float:
     value = raw.get(key, default)
     if value is None:
         raise ValueError(f"--shape-mix {where}: missing '{key}'")
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
-        raise ValueError(f"--shape-mix {where}: '{key}' must be an integer, got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"--shape-mix {where}: '{key}' must be a number, got {value!r}")
+    return value
+
+
+def _shape_int(raw: dict, key: str, where: str, minimum: int, default: Optional[int] = None) -> int:
+    # Profiles carry per-class means, so token counts may be fractional; round half up
+    value = math.floor(_shape_number(raw, key, where, default) + 0.5)
     if value < minimum:
-        raise ValueError(f"--shape-mix {where}: '{key}' must be >= {minimum}, got {value}")
-    return int(value)
+        raise ValueError(f"--shape-mix {where}: '{key}' must be >= {minimum} after rounding, got {raw.get(key)!r}")
+    return value
 
 
+def _derived_shape_class_name(raw: dict, index: int) -> str:
+    parts = [str(raw[key]) for key in ("cache_class", "prompt_band") if raw.get(key) is not None]
+    name = "_".join(_SHAPE_NAME_INVALID_RE.sub("_", p).strip("_") for p in parts).strip("_")
+    return name or ("marginal" if "cache_class" in raw or "prompt_band" in raw else f"class{index}")
+
+
+@lru_cache(maxsize=None)
 def parse_shape_mix(text: str) -> ShapeMix:
-    """Parse --shape-mix: inline JSON or @file with a profile `classes` list and `seed`."""
+    """Parse --shape-mix: inline JSON or @file with a profile `classes` list, `seed` and optional `arrivals.cv2`.
+
+    Other top-level profile fields are ignored, so a traffic profile can be passed as is.
+    """
     if text.startswith("@"):
         with open(text[1:], "r") as f:
             text = f.read()
@@ -486,6 +514,17 @@ def parse_shape_mix(text: str) -> ShapeMix:
     seed = spec.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError(f"--shape-mix 'seed' must be an integer, got {seed!r}")
+    arrivals_cv2 = None
+    arrivals = spec.get("arrivals")
+    if isinstance(arrivals, dict) and arrivals.get("cv2") is not None:
+        arrivals_cv2 = _shape_number(arrivals, "cv2", "arrivals")
+        if arrivals_cv2 <= 0:
+            raise ValueError(f"--shape-mix arrivals: 'cv2' must be > 0, got {arrivals_cv2}")
+
+    explicit_names = [raw.get("name") for raw in spec["classes"] if isinstance(raw, dict) and "name" in raw]
+    if len(set(map(str, explicit_names))) != len(explicit_names):
+        raise ValueError(f"--shape-mix class names must be unique, got {explicit_names}")
+    used_names = set(map(str, explicit_names))
 
     classes = []
     for i, raw in enumerate(spec["classes"]):
@@ -495,17 +534,31 @@ def parse_shape_mix(text: str) -> ShapeMix:
         unknown = sorted(set(raw) - SHAPE_CLASS_FIELDS)
         if unknown:
             logger.warning(f"--shape-mix {where}: ignoring unknown fields {unknown}")
-        name = raw.get("name", f"class{i}")
-        if not isinstance(name, str) or not _SHAPE_CLASS_NAME_RE.match(name):
-            raise ValueError(f"--shape-mix {where}: 'name' must match [A-Za-z0-9_-]+, got {name!r}")
+        if "name" in raw:
+            name = raw["name"]
+            if not isinstance(name, str) or not _SHAPE_CLASS_NAME_RE.match(name):
+                raise ValueError(f"--shape-mix {where}: 'name' must match [A-Za-z0-9_-]+, got {name!r}")
+        else:
+            base = name = _derived_shape_class_name(raw, i)
+            suffix = 2
+            while name in used_names:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used_names.add(name)
         weight = raw.get("weight")
         if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight < 0:
             raise ValueError(f"--shape-mix {where}: 'weight' must be a non-negative number, got {weight!r}")
-        prompt_tokens = _shape_int(raw, "prompt_tokens", where, 1)
-        cached_prompt_tokens = _shape_int(raw, "cached_prompt_tokens", where, 0, default=0)
-        if cached_prompt_tokens > prompt_tokens:
+        if _shape_number(raw, "cached_prompt_tokens", where, 0) > _shape_number(raw, "prompt_tokens", where):
             raise ValueError(
-                f"--shape-mix {where}: cached_prompt_tokens ({cached_prompt_tokens}) > prompt_tokens ({prompt_tokens})"
+                f"--shape-mix {where}: cached_prompt_tokens ({raw['cached_prompt_tokens']}) > "
+                f"prompt_tokens ({raw['prompt_tokens']})"
+            )
+        prompt_tokens = _shape_int(raw, "prompt_tokens", where, 1)
+        cached_prompt_tokens = min(_shape_int(raw, "cached_prompt_tokens", where, 0, default=0), prompt_tokens)
+        if cached_prompt_tokens > 0 and "prefix_pool_size" not in raw:
+            logger.warning(
+                f"--shape-mix class {name}: no prefix_pool_size, so all its requests share 1 prefix "
+                f"({cached_prompt_tokens} cached tokens); set it to size the prefix working set"
             )
         classes.append(
             ShapeClass(
@@ -517,12 +570,20 @@ def parse_shape_mix(text: str) -> ShapeMix:
                 prefix_pool_size=_shape_int(raw, "prefix_pool_size", where, 1, default=1),
             )
         )
-    names = [c.name for c in classes]
-    if len(set(names)) != len(names):
-        raise ValueError(f"--shape-mix class names must be unique, got {names}")
     if sum(c.weight for c in classes) <= 0:
         raise ValueError("--shape-mix class weights must sum to a positive number")
-    return ShapeMix(classes=classes, seed=seed)
+    return ShapeMix(classes=classes, seed=seed, arrivals_cv2=arrivals_cv2)
+
+
+def resolve_qps_cv2(options: argparse.Namespace) -> float:
+    """--qps-cv2 if given, else the profile's arrivals.cv2 from --shape-mix, else 1 (Poisson)."""
+    if getattr(options, "qps_cv2", None) is not None:
+        return options.qps_cv2
+    if getattr(options, "shape_mix", None):
+        cv2 = parse_shape_mix(options.shape_mix).arrivals_cv2
+        if cv2 is not None:
+            return cv2
+    return 1.0
 
 
 @dataclass(frozen=True)
@@ -1910,7 +1971,7 @@ class LLMUser(HttpUser):
             pacer = FixedQPSPacer.instance(
                 self.environment.parsed_options.qps,
                 self.environment.parsed_options.qps_distribution,
-                self.environment.parsed_options.qps_cv2,
+                resolve_qps_cv2(self.environment.parsed_options),
             )
             # it will be called by Locust after each task
             self.wait_time = pacer.wait_time_till_next
@@ -2698,9 +2759,10 @@ def init_parser(parser):
     parser.add_argument(
         "--qps-cv2",
         type=float,
-        default=1.0,
+        default=None,
         help="For --qps-distribution gamma: squared coefficient of variation of inter-arrival times. "
-        "1 is Poisson (same as exponential), > 1 clumps arrivals into bursts, < 1 spaces them more evenly.",
+        "1 is Poisson (same as exponential), > 1 clumps arrivals into bursts, < 1 spaces them more evenly. "
+        "Defaults to arrivals.cv2 from --shape-mix if present, else 1.",
     )
     parser.add_argument(
         "--shape-mix",
@@ -3004,7 +3066,7 @@ def _(environment, **kw):
     if environment.parsed_options.qps is not None:
         entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
         if environment.parsed_options.qps_distribution == "gamma":
-            entries["concurrency"] += f" cv2={environment.parsed_options.qps_cv2:g}"
+            entries["concurrency"] += f" cv2={resolve_qps_cv2(environment.parsed_options):g}"
     else:
         entries["concurrency"] = InitTracker.users
 

@@ -17,6 +17,7 @@ from load_test import (
     VllmProvider,
     build_shape_mix_request,
     parse_shape_mix,
+    resolve_qps_cv2,
     sample_interarrival,
     shape_mix_summary_entries,
 )
@@ -131,7 +132,11 @@ def test_parse_inline_file_and_defaults(tmp_path) -> None:
         {"classes": [{"weight": 1, "prompt_tokens": 10, "cached_prompt_tokens": 11, "generated_tokens": 1}]},
         {"classes": [{"weight": -1, "prompt_tokens": 10, "generated_tokens": 1}]},
         {"classes": [{"weight": 0, "prompt_tokens": 10, "generated_tokens": 1}]},
-        {"classes": [{"weight": 1, "prompt_tokens": 10.5, "generated_tokens": 1}]},
+        {"classes": [{"weight": 1, "prompt_tokens": "10", "generated_tokens": 1}]},
+        {"classes": [{"weight": 1, "prompt_tokens": 10, "generated_tokens": 0.4}]},
+        {"classes": [{"weight": 1, "prompt_tokens": 10.2, "cached_prompt_tokens": 10.4, "generated_tokens": 1}]},
+        {"arrivals": {"cv2": 0}, "classes": [{"weight": 1, "prompt_tokens": 10, "generated_tokens": 1}]},
+        {"arrivals": {"cv2": "4"}, "classes": [{"weight": 1, "prompt_tokens": 10, "generated_tokens": 1}]},
         {"classes": [{"weight": 1, "prompt_tokens": 10, "generated_tokens": 1, "prefix_pool_size": 0}]},
         {"classes": [{"name": "a b", "weight": 1, "prompt_tokens": 10, "generated_tokens": 1}]},
         {
@@ -146,6 +151,89 @@ def test_parse_inline_file_and_defaults(tmp_path) -> None:
 def test_parse_rejects_invalid(spec) -> None:
     with pytest.raises(ValueError):
         parse_shape_mix(spec if isinstance(spec, str) else json.dumps(spec))
+
+
+PROFILE = {
+    "profile_version": 1,
+    "model": "accounts/fireworks/models/x",
+    "window": {"start": "2026-10-01T00:00:00Z", "hours": 24},
+    "arrivals": {"qps": 3.2, "cv2": 4.5},
+    "seed": 3,
+    "classes": [
+        {
+            "cache_class": "warm",
+            "prompt_band": "4k-16k",
+            "weight": 0.5,
+            "prompt_tokens": 6123.6,
+            "cached_prompt_tokens": 5000.5,
+            "generated_tokens": 211.49,
+        },
+        {
+            "cache_class": "warm",
+            "prompt_band": "4k-16k",
+            "weight": 0.2,
+            "prompt_tokens": 9000,
+            "cached_prompt_tokens": 100,
+            "generated_tokens": 64,
+            "prefix_pool_size": 4,
+        },
+        {"cache_class": "cold", "prompt_band": "<1k", "weight": 0.2, "prompt_tokens": 700.2, "generated_tokens": 30.7},
+        {"cache_class": None, "prompt_band": None, "weight": 0.1, "prompt_tokens": 1500, "generated_tokens": 99},
+    ],
+}
+
+
+def test_profile_json_passes_as_is(caplog) -> None:
+    parse_shape_mix.cache_clear()
+    with caplog.at_level("WARNING", logger="load_test"):
+        mix = parse_shape_mix(json.dumps(PROFILE))
+
+    assert [c.name for c in mix.classes] == ["warm_4k-16k", "warm_4k-16k_2", "cold_1k", "marginal"]
+    first = mix.classes[0]
+    assert (first.prompt_tokens, first.cached_prompt_tokens, first.generated_tokens) == (6124, 5001, 211)
+    assert (mix.classes[2].prompt_tokens, mix.classes[2].generated_tokens) == (700, 31)
+    assert [c.prefix_pool_size for c in mix.classes] == [1, 4, 1, 1]
+    assert mix.seed == 3
+    assert mix.arrivals_cv2 == 4.5
+    # only the warm class without prefix_pool_size warns; top-level extras are ignored silently
+    warnings = [r.getMessage() for r in caplog.records]
+    assert len(warnings) == 1
+    assert "warm_4k-16k" in warnings[0] and "prefix_pool_size" in warnings[0]
+
+
+def test_derived_names_avoid_explicit_ones() -> None:
+    mix = parse_shape_mix(
+        json.dumps(
+            {
+                "classes": [
+                    {"cache_class": None, "prompt_band": None, "weight": 1, "prompt_tokens": 64, "generated_tokens": 1},
+                    {"name": "marginal", "weight": 1, "prompt_tokens": 64, "generated_tokens": 1},
+                    {"cache_class": "hot", "weight": 1, "prompt_tokens": 64, "generated_tokens": 1},
+                    {"weight": 1, "prompt_tokens": 64, "generated_tokens": 1},
+                ]
+            }
+        )
+    )
+
+    assert [c.name for c in mix.classes] == ["marginal_2", "marginal", "hot", "class3"]
+
+
+def test_cached_rounding_never_exceeds_prompt() -> None:
+    mix = parse_shape_mix(
+        json.dumps({"classes": [{"weight": 1, "prompt_tokens": 100.4, "cached_prompt_tokens": 100.4, "generated_tokens": 1}]})
+    )
+
+    assert (mix.classes[0].prompt_tokens, mix.classes[0].cached_prompt_tokens) == (100, 100)
+
+
+def test_qps_cv2_defaults_to_profile_arrivals() -> None:
+    profile = json.dumps(PROFILE)
+    no_arrivals = json.dumps({k: v for k, v in PROFILE.items() if k != "arrivals"})
+
+    assert resolve_qps_cv2(argparse.Namespace(qps_cv2=None, shape_mix=profile)) == 4.5
+    assert resolve_qps_cv2(argparse.Namespace(qps_cv2=2.0, shape_mix=profile)) == 2.0
+    assert resolve_qps_cv2(argparse.Namespace(qps_cv2=None, shape_mix=no_arrivals)) == 1.0
+    assert resolve_qps_cv2(argparse.Namespace(qps_cv2=None, shape_mix=None)) == 1.0
 
 
 def test_class_sampling_follows_weights() -> None:
