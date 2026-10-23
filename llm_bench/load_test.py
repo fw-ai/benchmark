@@ -76,6 +76,7 @@ def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
         return json.load(f)
 
 
+@lru_cache(maxsize=None)
 def resolve_model_type(tokenizer_path: str) -> str:
     try:
         config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
@@ -622,7 +623,9 @@ class ShapeMixDataset:
             header = self._tokenizer.decode(header_ids[:num_tokens])
         for _ in range(32):
             text = self._fit(header, rng.randrange(len(self._corpus)), num_tokens)
-            if text is not None and len(self._encode(text + SHAPE_MIX_TAIL_START)) == num_tokens + self._tail_start_tokens:
+            if text is None:
+                continue
+            if len(self._encode(text + SHAPE_MIX_TAIL_START)) == num_tokens + self._tail_start_tokens:
                 return text
         raise ValueError(f"--shape-mix: could not build a {num_tokens}-token prefix with the given tokenizer")
 
@@ -640,7 +643,9 @@ class ShapeMixDataset:
         tail_start = SHAPE_MIX_TAIL_START if prefix else SHAPE_MIX_TAIL_START.lstrip()
         nonce_text = f"{tail_start} {nonce:016x}-{self._worker_index}-{counter}:\n\n"
         if len(self._encode(nonce_text)) > tail_tokens:
-            raise RuntimeError(f"--shape-mix class {cls.name}: no room for the unique nonce in a {tail_tokens}-token tail")
+            raise RuntimeError(
+                f"--shape-mix class {cls.name}: no room for the unique nonce in a {tail_tokens}-token tail"
+            )
         offsets = random.Random(nonce)
         for _ in range(32):
             tail = self._fit(nonce_text, offsets.randrange(len(self._corpus)), tail_tokens)
@@ -1819,6 +1824,11 @@ class LLMUser(HttpUser):
         self.shape_mix_dataset = None
         if self.environment.parsed_options.shape_mix:
             self._validate_shape_mix_options()
+            # Built before the pacer starts its clock so the setup cost doesn't delay the first arrivals
+            self.shape_mix_dataset = DatasetHolder.get_shape_mix_instance(
+                self.environment.parsed_options, getattr(self.environment.runner, "worker_index", 0) or 0
+            )
+            self.prompt_tokenizer_tokens = None
         self.ramping_pacer = None  # Will be set if --ramping-time is used
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
@@ -1937,12 +1947,7 @@ class LLMUser(HttpUser):
             self._init_systemone_dataset()
             return
 
-        if self.environment.parsed_options.shape_mix:
-            runner = self.environment.runner
-            self.shape_mix_dataset = DatasetHolder.get_shape_mix_instance(
-                self.environment.parsed_options, getattr(runner, "worker_index", 0) or 0
-            )
-            self.prompt_tokenizer_tokens = None
+        if self.shape_mix_dataset is not None:
             return
 
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
