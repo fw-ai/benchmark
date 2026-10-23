@@ -115,23 +115,42 @@ def _normalize_token_ids(obj: Any) -> list[int]:
     return [int(t) for t in obj]
 
 
+def chat_template_token_ids(
+    tokenizer: transformers.PreTrainedTokenizer,
+    tokenizer_path: str,
+    content: str = "",
+) -> list[int]:
+    """Token ids for a single user message rendered with the chat template + generation prompt."""
+    model_type = resolve_model_type(tokenizer_path)
+    if model_type == "deepseek_v4":
+        encode_messages = load_dsv4_encode_messages(tokenizer_path)
+        prompt = encode_messages([{"role": "user", "content": content}], thinking_mode="chat")
+        return _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
+    return _normalize_token_ids(
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+    )
+
+
 def empty_chat_template_token_ids(
     tokenizer: transformers.PreTrainedTokenizer,
     tokenizer_path: str,
 ) -> list[int]:
     """Token ids for chat template overhead (empty user message + generation prompt)."""
-    model_type = resolve_model_type(tokenizer_path)
-    if model_type == "deepseek_v4":
-        encode_messages = load_dsv4_encode_messages(tokenizer_path)
-        prompt = encode_messages([{"role": "user", "content": ""}], thinking_mode="chat")
-        return _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
-    return _normalize_token_ids(
-        tokenizer.apply_chat_template(
-            [{"role": "user", "content": ""}],
-            tokenize=True,
-            add_generation_prompt=True,
-        )
-    )
+    return chat_template_token_ids(tokenizer, tokenizer_path)
+
+
+def chat_template_head_tokens(tokenizer, tokenizer_path: str) -> int:
+    """Number of template tokens rendered before the user content (shared by every chat request)."""
+    empty = chat_template_token_ids(tokenizer, tokenizer_path)
+    filled = chat_template_token_ids(tokenizer, tokenizer_path, "Shared context follows.")
+    head = 0
+    while head < min(len(empty), len(filled)) and empty[head] == filled[head]:
+        head += 1
+    return head
 
 
 _PROMPT_TOKENS_RE = re.compile(rb'"prompt_tokens"\s*:\s*(\d+)')
@@ -406,9 +425,277 @@ class SystemOneDataset:
         return self
 
 
+SHAPE_CLASS_FIELDS = {"name", "weight", "prompt_tokens", "cached_prompt_tokens", "generated_tokens", "prefix_pool_size"}
+_SHAPE_CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Every unique tail starts with this, so prefixes are checked against it once to keep token counts additive
+SHAPE_MIX_TAIL_START = "\n\nRequest"
+# Room left after the shared prefix for the per-request nonce that keeps every prompt unique
+SHAPE_MIX_TAIL_RESERVE_TOKENS = 32
+
+
+@dataclass(frozen=True)
+class ShapeClass:
+    name: str
+    weight: float
+    prompt_tokens: int
+    cached_prompt_tokens: int
+    generated_tokens: int
+    prefix_pool_size: int
+
+
+@dataclass(frozen=True)
+class ShapeMix:
+    classes: list[ShapeClass]
+    seed: int
+
+    def describe(self) -> str:
+        return "; ".join(
+            f"{c.name} w={c.weight:g} p={c.prompt_tokens} c={c.cached_prompt_tokens} "
+            f"g={c.generated_tokens} n={c.prefix_pool_size}"
+            for c in self.classes
+        )
+
+    def weighted_mean(self, field: str) -> float:
+        total = sum(c.weight for c in self.classes)
+        return sum(c.weight * getattr(c, field) for c in self.classes) / total
+
+
+def _shape_int(raw: dict, key: str, where: str, minimum: int, default: Optional[int] = None) -> int:
+    value = raw.get(key, default)
+    if value is None:
+        raise ValueError(f"--shape-mix {where}: missing '{key}'")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+        raise ValueError(f"--shape-mix {where}: '{key}' must be an integer, got {value!r}")
+    if value < minimum:
+        raise ValueError(f"--shape-mix {where}: '{key}' must be >= {minimum}, got {value}")
+    return int(value)
+
+
+def parse_shape_mix(text: str) -> ShapeMix:
+    """Parse --shape-mix: inline JSON or @file with a profile `classes` list and `seed`."""
+    if text.startswith("@"):
+        with open(text[1:], "r") as f:
+            text = f.read()
+    try:
+        spec = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"--shape-mix must be valid JSON: {e}")
+    if not isinstance(spec, dict) or not isinstance(spec.get("classes"), list) or not spec["classes"]:
+        raise ValueError("--shape-mix must be a JSON object with a non-empty 'classes' list")
+    seed = spec.get("seed", 0)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError(f"--shape-mix 'seed' must be an integer, got {seed!r}")
+
+    classes = []
+    for i, raw in enumerate(spec["classes"]):
+        where = f"class {i}"
+        if not isinstance(raw, dict):
+            raise ValueError(f"--shape-mix {where}: must be a JSON object")
+        unknown = sorted(set(raw) - SHAPE_CLASS_FIELDS)
+        if unknown:
+            logger.warning(f"--shape-mix {where}: ignoring unknown fields {unknown}")
+        name = raw.get("name", f"class{i}")
+        if not isinstance(name, str) or not _SHAPE_CLASS_NAME_RE.match(name):
+            raise ValueError(f"--shape-mix {where}: 'name' must match [A-Za-z0-9_-]+, got {name!r}")
+        weight = raw.get("weight")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight < 0:
+            raise ValueError(f"--shape-mix {where}: 'weight' must be a non-negative number, got {weight!r}")
+        prompt_tokens = _shape_int(raw, "prompt_tokens", where, 1)
+        cached_prompt_tokens = _shape_int(raw, "cached_prompt_tokens", where, 0, default=0)
+        if cached_prompt_tokens > prompt_tokens:
+            raise ValueError(
+                f"--shape-mix {where}: cached_prompt_tokens ({cached_prompt_tokens}) > prompt_tokens ({prompt_tokens})"
+            )
+        classes.append(
+            ShapeClass(
+                name=name,
+                weight=float(weight),
+                prompt_tokens=prompt_tokens,
+                cached_prompt_tokens=cached_prompt_tokens,
+                generated_tokens=_shape_int(raw, "generated_tokens", where, 1),
+                prefix_pool_size=_shape_int(raw, "prefix_pool_size", where, 1, default=1),
+            )
+        )
+    names = [c.name for c in classes]
+    if len(set(names)) != len(names):
+        raise ValueError(f"--shape-mix class names must be unique, got {names}")
+    if sum(c.weight for c in classes) <= 0:
+        raise ValueError("--shape-mix class weights must sum to a positive number")
+    return ShapeMix(classes=classes, seed=seed)
+
+
+@dataclass(frozen=True)
+class ShapeRequest:
+    prompt: str
+    prompt_tokens: int
+    class_index: int
+    class_name: str
+    generated_tokens: int
+    prefix_index: Optional[int]
+    affinity_key: Optional[str]
+
+
+class ShapeMixDataset:
+    """Class-mix prompts: a seeded shared prefix per class (one of N) plus a unique tail.
+
+    Prefixes depend only on the seed, so every worker and every run sends the same working set. The
+    tail starts with a nonce built from the request counter, so a full prompt never repeats and a
+    class without cached tokens never hits the prefix cache. Token counts include the chat template;
+    `chat_head_tokens` (template tokens before the user content) count toward the cached tokens.
+    """
+
+    def __init__(
+        self,
+        mix: ShapeMix,
+        tokenizer,
+        corpus_path: str,
+        chat_overhead_tokens: int = 0,
+        chat_head_tokens: int = 0,
+        worker_index: int = 0,
+    ):
+        self.mix = mix
+        self._tokenizer = tokenizer
+        self._overhead = chat_overhead_tokens
+        self._worker_index = worker_index
+        self._lock = threading.Lock()
+        self._counter = 0
+        self._rng = random.Random(f"shape-mix:{mix.seed}:requests:{worker_index}")
+        self._weights = [c.weight for c in mix.classes]
+
+        with open(corpus_path, "r") as f:
+            texts = [t.strip() for t in f.read().split("\n\n") if t.strip()]
+        random.Random(f"shape-mix:{mix.seed}:corpus").shuffle(texts)
+        self._corpus = self._encode("\n\n".join(texts))
+        self._tail_start_tokens = len(self._encode(SHAPE_MIX_TAIL_START))
+
+        self.prefix_tokens: list[int] = []
+        self.prefixes: list[list[str]] = []
+        for ci, cls in enumerate(mix.classes):
+            content_tokens = cls.prompt_tokens - chat_overhead_tokens
+            if content_tokens < SHAPE_MIX_TAIL_RESERVE_TOKENS:
+                raise ValueError(
+                    f"--shape-mix class {cls.name}: prompt_tokens ({cls.prompt_tokens}) must be at least "
+                    f"{SHAPE_MIX_TAIL_RESERVE_TOKENS + chat_overhead_tokens} (chat template + unique tail)"
+                )
+            prefix_tokens = max(0, cls.cached_prompt_tokens - chat_head_tokens)
+            if prefix_tokens > content_tokens - SHAPE_MIX_TAIL_RESERVE_TOKENS:
+                prefix_tokens = content_tokens - SHAPE_MIX_TAIL_RESERVE_TOKENS
+                logger.warning(
+                    f"--shape-mix class {cls.name}: shared prefix capped at {prefix_tokens} content tokens "
+                    f"to leave room for a unique tail"
+                )
+            self.prefix_tokens.append(prefix_tokens)
+            self.prefixes.append(
+                [self._make_prefix(ci, j, prefix_tokens) for j in range(cls.prefix_pool_size)]
+                if prefix_tokens > 0
+                else []
+            )
+
+    def _encode(self, text: str) -> list[int]:
+        return _normalize_token_ids(self._tokenizer.encode(text, add_special_tokens=False))
+
+    def _window(self, offset: int, length: int) -> list[int]:
+        if length <= 0:
+            return []
+        reps = (offset + length) // len(self._corpus) + 1
+        return (self._corpus * reps)[offset : offset + length]
+
+    def _fit(self, lead: str, offset: int, num_tokens: int) -> Optional[str]:
+        """Text of exactly num_tokens tokens (after re-encoding): lead, then corpus filler from offset."""
+        width = num_tokens - len(self._encode(lead))
+        for _ in range(8):
+            text = lead + self._tokenizer.decode(self._window(offset, width))
+            if width > 0 and text != text.rstrip():
+                # Chat templates commonly trim message content, which would drop tokens we counted
+                return None
+            got = len(self._encode(text))
+            if got == num_tokens:
+                return text
+            width = max(0, width + num_tokens - got)
+        return None
+
+    def _make_prefix(self, class_index: int, prefix_index: int, num_tokens: int) -> str:
+        rng = random.Random(f"shape-mix:{self.mix.seed}:prefix:{class_index}:{prefix_index}")
+        header = f"Shared context {class_index}.{prefix_index}:\n\n"
+        header_ids = self._encode(header)
+        if len(header_ids) >= num_tokens:
+            header = self._tokenizer.decode(header_ids[:num_tokens])
+        for _ in range(32):
+            text = self._fit(header, rng.randrange(len(self._corpus)), num_tokens)
+            if text is not None and len(self._encode(text + SHAPE_MIX_TAIL_START)) == num_tokens + self._tail_start_tokens:
+                return text
+        raise ValueError(f"--shape-mix: could not build a {num_tokens}-token prefix with the given tokenizer")
+
+    def __next__(self) -> ShapeRequest:
+        with self._lock:
+            counter = self._counter
+            self._counter += 1
+            ci = self._rng.choices(range(len(self._weights)), weights=self._weights)[0]
+            pool = self.prefixes[ci]
+            prefix_index = self._rng.randrange(len(pool)) if pool else None
+            nonce = self._rng.getrandbits(64)
+        cls = self.mix.classes[ci]
+        prefix = pool[prefix_index] if pool else ""
+        tail_tokens = cls.prompt_tokens - self._overhead - self.prefix_tokens[ci]
+        tail_start = SHAPE_MIX_TAIL_START if prefix else SHAPE_MIX_TAIL_START.lstrip()
+        nonce_text = f"{tail_start} {nonce:016x}-{self._worker_index}-{counter}:\n\n"
+        if len(self._encode(nonce_text)) > tail_tokens:
+            raise RuntimeError(f"--shape-mix class {cls.name}: no room for the unique nonce in a {tail_tokens}-token tail")
+        offsets = random.Random(nonce)
+        for _ in range(32):
+            tail = self._fit(nonce_text, offsets.randrange(len(self._corpus)), tail_tokens)
+            if tail is not None:
+                break
+        else:
+            raise RuntimeError(f"--shape-mix class {cls.name}: could not build a {tail_tokens}-token tail")
+        return ShapeRequest(
+            prompt=prefix + tail,
+            prompt_tokens=self._overhead + self.prefix_tokens[ci] + tail_tokens,
+            class_index=ci,
+            class_name=cls.name,
+            generated_tokens=cls.generated_tokens,
+            prefix_index=prefix_index,
+            affinity_key=f"shape-{self.mix.seed}-{cls.name}-{prefix_index}" if pool else None,
+        )
+
+    def __iter__(self):
+        return self
+
+
+def build_shape_mix_request(provider, request: ShapeRequest) -> tuple[dict, Optional[dict]]:
+    """Payload forcing the class's output length, plus the affinity header that routes by shared prefix."""
+    data = provider.format_payload(request.prompt, request.generated_tokens, None)
+    data["min_tokens"] = request.generated_tokens
+    data["ignore_eos"] = True
+    headers = {"x-session-affinity": request.affinity_key} if request.affinity_key is not None else None
+    return data, headers
+
+
 class DatasetHolder:
     _instance = None
     _forced_generation_instance = None
+    _shape_mix_instance = None
+    _shape_mix_lock = threading.Lock()
+
+    @classmethod
+    def get_shape_mix_instance(cls, options: argparse.Namespace, worker_index: int) -> ShapeMixDataset:
+        with cls._shape_mix_lock:
+            if cls._shape_mix_instance is None:
+                tokenizer = InitTracker.load_tokenizer(options.tokenizer)
+                tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
+                overhead = head = 0
+                if options.chat:
+                    overhead = len(empty_chat_template_token_ids(tokenizer, tokenizer_path))
+                    head = chat_template_head_tokens(tokenizer, tokenizer_path)
+                cls._shape_mix_instance = ShapeMixDataset(
+                    mix=parse_shape_mix(options.shape_mix),
+                    tokenizer=tokenizer,
+                    corpus_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt"),
+                    chat_overhead_tokens=overhead,
+                    chat_head_tokens=head,
+                    worker_index=worker_index,
+                )
+            return cls._shape_mix_instance
 
     @classmethod
     def _create_dataset(cls, options: argparse.Namespace):
@@ -481,26 +768,39 @@ class DatasetHolder:
         return cls._forced_generation_instance
 
 
+def sample_interarrival(distribution: str, mean_wait: float, cv2: float = 1.0, rng=random) -> float:
+    """One inter-arrival time with the given mean; for 'gamma', cv2 is its squared coefficient of variation."""
+    if distribution == "exponential":
+        return rng.expovariate(1 / mean_wait)
+    if distribution == "gamma":
+        # shape k = 1/cv2, scale = mean * cv2: mean stays mean_wait, variance / mean^2 = cv2 (k=1 is exponential)
+        return rng.gammavariate(1 / cv2, mean_wait * cv2)
+    if distribution == "uniform":
+        return rng.uniform(0, 2 * mean_wait)
+    if distribution == "constant":
+        return mean_wait
+    raise ValueError(f"Unknown distribution {distribution}")
+
+
 class FixedQPSPacer:
     _instance = None
     _lock = threading.Lock()
 
-    def __init__(self, qps, distribution):
+    def __init__(self, qps, distribution, cv2=1.0):
+        if distribution == "gamma" and not cv2 > 0:
+            raise ValueError(f"--qps-cv2 must be > 0, got {cv2}")
         self.qps = qps
         self.distribution = distribution
+        self.cv2 = cv2
 
         def gen():
             t = time.time()
             mean_wait = 1 / self.qps
             while True:
-                if self.distribution == "exponential":
-                    wait = random.expovariate(1 / mean_wait)
-                elif self.distribution == "uniform":
-                    wait = random.uniform(0, 2 * mean_wait)
-                elif self.distribution == "constant":
-                    wait = mean_wait
-                else:
-                    logger.error(f"Unknown distribution {self.distribution}")
+                try:
+                    wait = sample_interarrival(self.distribution, mean_wait, self.cv2)
+                except ValueError as e:
+                    logger.error(str(e))
                     os._exit(1)
                 t += wait
                 yield t
@@ -508,13 +808,14 @@ class FixedQPSPacer:
         self.iterator = gen()
 
     @classmethod
-    def instance(cls, qps, distribution):
+    def instance(cls, qps, distribution, cv2=1.0):
         with cls._lock:
             if cls._instance is None:
-                cls._instance = cls(qps, distribution)
+                cls._instance = cls(qps, distribution, cv2)
             else:
                 assert cls._instance.qps == qps
                 assert cls._instance.distribution == distribution
+                assert cls._instance.cv2 == cv2
             return cls._instance
 
     def wait_time_till_next(self):
@@ -1515,6 +1816,9 @@ class LLMUser(HttpUser):
             self.environment.parsed_options.rerank or self.environment.parsed_options.embeddings
         ):
             raise ValueError("--systemone is mutually exclusive with --rerank and --embeddings")
+        self.shape_mix_dataset = None
+        if self.environment.parsed_options.shape_mix:
+            self._validate_shape_mix_options()
         self.ramping_pacer = None  # Will be set if --ramping-time is used
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
@@ -1580,6 +1884,14 @@ class LLMUser(HttpUser):
                 "unique_state": self.environment.parsed_options.systemone_unique_state,
             }
 
+        if self.environment.parsed_options.shape_mix:
+            mix = parse_shape_mix(self.environment.parsed_options.shape_mix)
+            logging_params["prompt_tokens"] = round(mix.weighted_mean("prompt_tokens"))
+            logging_params["generation_tokens"] = f"shape-mix mean {mix.weighted_mean('generated_tokens'):.0f}"
+            logging_params["completion_tokens"] = logging_params["generation_tokens"]
+            logging_params["shape_mix"] = mix.describe()
+            logging_params["shape_mix_seed"] = mix.seed
+
         InitTracker.notify_init(self.environment, logging_params)
 
         if self.environment.parsed_options.qps is not None:
@@ -1588,6 +1900,7 @@ class LLMUser(HttpUser):
             pacer = FixedQPSPacer.instance(
                 self.environment.parsed_options.qps,
                 self.environment.parsed_options.qps_distribution,
+                self.environment.parsed_options.qps_cv2,
             )
             # it will be called by Locust after each task
             self.wait_time = pacer.wait_time_till_next
@@ -1624,6 +1937,14 @@ class LLMUser(HttpUser):
             self._init_systemone_dataset()
             return
 
+        if self.environment.parsed_options.shape_mix:
+            runner = self.environment.runner
+            self.shape_mix_dataset = DatasetHolder.get_shape_mix_instance(
+                self.environment.parsed_options, getattr(runner, "worker_index", 0) or 0
+            )
+            self.prompt_tokenizer_tokens = None
+            return
+
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
 
@@ -1641,6 +1962,19 @@ class LLMUser(HttpUser):
             )
             synthetic_prompt = "\n\n".join(PROMPT_PREFIX_TOKEN * tokens_per_doc for _ in range(num_docs))
             self.dataset = iter(itertools.cycle([(synthetic_prompt, num_docs * tokens_per_doc)]))
+
+    def _validate_shape_mix_options(self):
+        options = self.environment.parsed_options
+        if options.systemone or options.embeddings or options.rerank:
+            raise ValueError("--shape-mix only applies to text generation (not --systemone, --embeddings, --rerank)")
+        if options.dataset != "limericks":
+            raise ValueError("--shape-mix builds its own prompts and can't be combined with --dataset")
+        if options.prompt_cache_max_len > 0:
+            raise ValueError("--shape-mix sets cached tokens per class; drop -pcml/--prompt-cache-max-len")
+        if options.prompt_images_with_resolutions:
+            raise ValueError("--shape-mix doesn't support --prompt-images-with-resolutions")
+        if not isinstance(self.provider_formatter, OpenAIProvider):
+            raise ValueError(f"--shape-mix needs an OpenAI-compatible provider, got {self.provider}")
 
     def _init_systemone_dataset(self):
         options = self.environment.parsed_options
@@ -1806,18 +2140,27 @@ class LLMUser(HttpUser):
         if self.environment.parsed_options.systemone:
             self._do_systemone_request()
             return
-        max_tokens = self.max_tokens_sampler.sample()
+        shape_request = None
+        request_headers = None
         is_embeddings = self.provider_formatter.parsed_options.embeddings
         batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
-        if is_embeddings and batch_size > 1:
+        if self.shape_mix_dataset is not None:
+            shape_request = next(self.shape_mix_dataset)
+            max_tokens = shape_request.generated_tokens
+            prompt_tokens = shape_request.prompt_tokens
+            data, request_headers = build_shape_mix_request(self.provider_formatter, shape_request)
+        elif is_embeddings and batch_size > 1:
+            max_tokens = self.max_tokens_sampler.sample()
             prompts = []
             for _ in range(batch_size):
                 p, _, _ = self._get_input()
                 prompts.append(p)
             prompt, prompt_tokens, images = prompts, 0, None
         else:
+            max_tokens = self.max_tokens_sampler.sample()
             prompt, prompt_tokens, images = self._get_input()
-        data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+        if shape_request is None:
+            data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
             print(json.dumps(data, indent=2))
@@ -1827,6 +2170,7 @@ class LLMUser(HttpUser):
         with self.client.post(
             self.provider_formatter.get_url(),
             data=json.dumps(data),
+            headers=request_headers,
             stream=True,
             catch_response=True,
             timeout=60,
@@ -2035,6 +2379,16 @@ class LLMUser(HttpUser):
                     add_custom_metric("prompt_tokens", prompt_tokens)
                 if cached_tokens is not None:
                     add_custom_metric("cached_tokens", cached_tokens)
+
+            if shape_request is not None:
+                record_shape_class_metrics(
+                    shape_request.class_name,
+                    ttft_ms=dur_first_token * 1000 if self.stream else None,
+                    total_latency_ms=dur_total * 1000,
+                    prompt_tokens=prompt_tokens,
+                    cached_tokens=cached_tokens,
+                    completion_tokens=num_tokens,
+                )
 
             # Allow provider to process response (e.g., for custom metrics)
             self.provider_formatter.post_response_hook(response.headers, num_tokens, perf_metrics)
@@ -2332,9 +2686,27 @@ def init_parser(parser):
     parser.add_argument(
         "--qps-distribution",
         type=str,
-        choices=["constant", "uniform", "exponential"],
+        choices=["constant", "uniform", "exponential", "gamma"],
         default="constant",
-        help="Must be used with --qps. Specifies how to space out requests: equally ('constant') or by sampling wait times from a distribution ('uniform' or 'exponential'). Expected QPS is going to match --qps",
+        help="Must be used with --qps. Specifies how to space out requests: equally ('constant') or by sampling wait times from a distribution ('uniform', 'exponential' or 'gamma'). Expected QPS is going to match --qps",
+    )
+    parser.add_argument(
+        "--qps-cv2",
+        type=float,
+        default=1.0,
+        help="For --qps-distribution gamma: squared coefficient of variation of inter-arrival times. "
+        "1 is Poisson (same as exponential), > 1 clumps arrivals into bursts, < 1 spaces them more evenly.",
+    )
+    parser.add_argument(
+        "--shape-mix",
+        type=str,
+        default=None,
+        help="Class-mix workload as inline JSON or @file: "
+        '{"seed": 0, "classes": [{"name": "chat", "weight": 0.7, "prompt_tokens": 8000, '
+        '"cached_prompt_tokens": 6000, "generated_tokens": 200, "prefix_pool_size": 16}, ...]}. '
+        "Each request picks a class by weight, reuses one of the class's prefix_pool_size seeded shared prefixes "
+        "(cached_prompt_tokens long, sent with x-session-affinity) plus a unique tail up to prompt_tokens, and "
+        "forces generated_tokens output (max_tokens = min_tokens, ignore_eos). Replaces -p/-o/--dataset/-pcml.",
     )
     parser.add_argument(
         "--cancel-rate",
@@ -2533,6 +2905,50 @@ def text_summary_entries(stats, stream: bool) -> tuple[dict[str, Any], list[str]
     return entries, percentile_metrics
 
 
+SHAPE_CLASS_PERCENTILES = [50, 90, 99]
+
+
+def record_shape_class_metrics(
+    class_name: str,
+    ttft_ms: Optional[float],
+    total_latency_ms: float,
+    prompt_tokens: Optional[int],
+    cached_tokens: Optional[int],
+    completion_tokens: Optional[int],
+) -> None:
+    prefix = f"class_{class_name}_"
+    add_custom_metric(prefix + "total_latency", total_latency_ms)
+    if ttft_ms is not None:
+        add_custom_metric(prefix + "time_to_first_token", ttft_ms)
+    if prompt_tokens:
+        add_custom_metric(prefix + "prompt_tokens", prompt_tokens)
+    if cached_tokens is not None:
+        add_custom_metric(prefix + "cached_tokens", cached_tokens)
+    if completion_tokens:
+        add_custom_metric(prefix + "completion_tokens", completion_tokens)
+
+
+def shape_mix_summary_entries(stats, class_names: list[str], stream: bool) -> dict[str, Any]:
+    """Per-class summary columns for --shape-mix; requests count the class's successful responses."""
+    entries: dict[str, Any] = {}
+    for name in class_names:
+        prefix = f"class_{name}_"
+        latency = stats.entries.get((prefix + "total_latency", "METRIC"))
+        entries[prefix + "requests"] = latency.num_requests if latency else 0
+        for metric in ["time_to_first_token", "total_latency", "prompt_tokens", "cached_tokens", "completion_tokens"]:
+            entry = stats.entries.get((prefix + metric, "METRIC"))
+            entries[prefix + metric] = entry.avg_response_time if entry else ""
+        for metric in ["time_to_first_token", "total_latency"]:
+            entry = stats.entries.get((prefix + metric, "METRIC"))
+            for percentile in SHAPE_CLASS_PERCENTILES:
+                entries[f"{prefix}P{percentile}_{metric}"] = (
+                    entry.get_response_time_percentile(percentile / 100) if entry else ""
+                )
+        if not stream:
+            entries[prefix + "time_to_first_token"] = ""
+    return entries
+
+
 def systemone_summary_entries(stats, num_questions: int) -> dict[str, Any]:
     """Systemone summary columns; latency percentiles are appended by the shared summary code."""
     # Locust names the entry after the full request path, which includes any host base path (e.g. /inference).
@@ -2582,6 +2998,8 @@ def _(environment, **kw):
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
         entries["concurrency"] = f"QPS {environment.parsed_options.qps} {environment.parsed_options.qps_distribution}"
+        if environment.parsed_options.qps_distribution == "gamma":
+            entries["concurrency"] += f" cv2={environment.parsed_options.qps_cv2:g}"
     else:
         entries["concurrency"] = InitTracker.users
 
@@ -2632,6 +3050,14 @@ def _(environment, **kw):
         for percentile in percentile_to_report:
             name = f"P{percentile}_{percentile_metric}"
             entries[name] = metric_entry.get_response_time_percentile(percentile / 100)
+
+    if getattr(environment.parsed_options, "shape_mix", None):
+        mix = parse_shape_mix(environment.parsed_options.shape_mix)
+        entries.update(
+            shape_mix_summary_entries(
+                environment.stats, [c.name for c in mix.classes], environment.parsed_options.stream
+            )
+        )
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
