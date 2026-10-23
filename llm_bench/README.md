@@ -35,7 +35,7 @@ There are several primary modes the script can be used:
 2. **Fixed QPS**. The script ensures that input requests are issued at specific times to average out at the specified rate per second. If the target QPS is too high and the server is overloaded it will likely drop additional requests or stall.
    - `--qps`: the desired rate of requests per second. Can be a fractional number, e.g. `0.1`.
    - `-u <high number> -r <high number>`: needs to be set to a sufficiently high value to allow generating the target QPS. The script will complain if it's too low. Passing something like `-u 100 -r 100` is a good choice.
-   - (optional) `--qps-distribution`: specify how to space out requests. Default is `constant` meaning evenly spaced out. `exponential` is an option simulating [Poisson distribution](https://en.wikipedia.org/wiki/Traffic_generation_model#Poisson_traffic_model).
+   - (optional) `--qps-distribution`: specify how to space out requests. Default is `constant` meaning evenly spaced out. `exponential` is an option simulating [Poisson distribution](https://en.wikipedia.org/wiki/Traffic_generation_model#Poisson_traffic_model). `gamma` draws gamma inter-arrival times with mean `1/qps` and squared coefficient of variation `--qps-cv2` (default 1, which is the same as `exponential`). `--qps-cv2` above 1 clumps arrivals into bursts like production traffic; below 1 spaces them more evenly. Clumped arrivals need more `-u` headroom than the average concurrency suggests.
 
 ### Workload
 
@@ -60,6 +60,25 @@ The benchmark makes the best effort to ensure the desired `max_tokens` number is
 - the default prompt is a lengthy code generation request that usually doesn't stop early
 - it verifies the number of tokens actually generated and prints warnings on mismatch. Different providers use varying mechanisms of returning generated number of tokens. For some of them `--logprobs` might be needed in the streaming mode.
 - optionally, `--tokenizer` can be passed specifying Huggingface tokenizer to be used to count the output tokens on client side.
+
+Class-mix workload (`--shape-mix`), for traffic shaped like a production profile instead of a single prompt length with one shared prefix:
+- `--shape-mix '<json>'` or `--shape-mix @profile.json`. The JSON is an object with `seed` (default 0), optional `arrivals.cv2` and a `classes` list; a traffic profile can be passed as is, other top-level fields are ignored. Each class has `weight`, `prompt_tokens`, `cached_prompt_tokens` (default 0), `generated_tokens`, `prefix_pool_size` (default 1, with a warning for classes that have cached tokens) and an optional `name`. Token counts may be fractional (profile means) and are rounded. Without `name`, the class is named from `cache_class` and `prompt_band` (`marginal` when both are null, `class<i>` when absent), made unique with a `_2`, `_3` suffix; names appear in the summary columns and the affinity key. Other unknown class fields are ignored with a warning.
+- `arrivals.cv2` is the default for `--qps-cv2` when the flag isn't given (it only applies with `--qps-distribution gamma`).
+- Each request picks a class by weight. Its prompt is one of the class's `prefix_pool_size` shared prefixes, `cached_prompt_tokens` long, followed by a unique tail up to exactly `prompt_tokens` (sized with `--tokenizer`, including the chat template in `--chat` mode). The tail starts with a per-request nonce, so a full prompt never repeats and a class with `cached_prompt_tokens: 0` stays cold.
+- Requests that use a shared prefix send `x-session-affinity: shape-<seed>-<class>-<prefix index>`, so routing keeps each prefix on one replica as in production.
+- Output length is forced per class: `max_tokens = min_tokens = generated_tokens` with `ignore_eos: true`.
+- Prefixes depend only on `seed`, so every worker and every run uses the same prefix working set. The request sequence is reproducible for a fixed seed and worker; distributed workers get different tails.
+- Replaces `-p`, `-o`, `--dataset` and `-pcml`, which can't be combined with it. Works with `--chat` and `--no-chat`, streaming or not.
+- The summary adds, per class: `Class <name> Requests`, average `Time To First Token`, `Total Latency`, `Prompt Tokens`, `Cached Tokens` (as reported by the server) and `Completion Tokens`, plus P50/P90/P99 TTFT and latency.
+
+```
+locust -t 10min -u 200 -r 200 --qps 4 --qps-distribution gamma --qps-cv2 4 \
+  --tokenizer NousResearch/Meta-Llama-3.1-8B-Instruct --summary-file results.csv \
+  --shape-mix '{"seed": 0, "classes": [
+    {"name": "chat", "weight": 0.7, "prompt_tokens": 6000, "cached_prompt_tokens": 5000, "generated_tokens": 200, "prefix_pool_size": 32},
+    {"name": "rag", "weight": 0.2, "prompt_tokens": 12000, "cached_prompt_tokens": 2000, "generated_tokens": 400, "prefix_pool_size": 4},
+    {"name": "cold", "weight": 0.1, "prompt_tokens": 2000, "generated_tokens": 100}]}'
+```
 
 Generation options:
 - `--chat`: specify to call chat API instead of raw completions
