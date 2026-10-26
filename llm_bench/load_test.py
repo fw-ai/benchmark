@@ -1136,6 +1136,8 @@ class FireworksProvider(OpenAIProvider):
             return data
         if self.parsed_options.force_min_tokens:
             data["min_tokens"] = max_tokens
+        if getattr(self.parsed_options, "ignore_eos", False):
+            data["ignore_eos"] = True
         # Enable perf_metrics_in_response to get speculation stats in streaming responses
         data["perf_metrics_in_response"] = True
         # Only send prompt_cache_max_len when the user explicitly opted in (>0). The
@@ -2455,6 +2457,13 @@ def init_parser(parser):
         help="Set min_tokens = max_tokens in Fireworks requests to force exact output length. "
         "This causes ignore_eos=True on the serving side, which can cause some models to "
         "generate far more tokens than requested.",
+    )
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        default=False,
+        help="Send ignore_eos=true in Fireworks requests so every request generates max_tokens. "
+        "Replaces the deprecated min_tokens alias used by --force-min-tokens.",
     )
     parser.add_argument(
         "--first-visible-token",
