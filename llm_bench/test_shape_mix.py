@@ -2113,7 +2113,8 @@ def test_replay_retime_controls_every_row_with_a_heavy_user(tmp_path) -> None:
         assert summary["replay_retime_slot_gap_cv2"] == pytest.approx(target, rel=0.03)
         span = original[-1].offset - original[0].offset
         assert summary["replay_retime_requested_qps"] == pytest.approx((len(original) - 1) / span)
-        assert 0 < summary["replay_retime_followups_within_0_5s"] <= summary["replay_retime_followups"]
+        assert 0 < summary["replay_retime_followups_within_0_5s"] <= summary["replay_retime_followups_within_5s"]
+        assert summary["replay_retime_followups_within_5s"] <= summary["replay_retime_followups"]
         last, recorded_close = {}, 0
         for e in original:
             if e.session is None:
@@ -2122,7 +2123,13 @@ def test_replay_retime_controls_every_row_with_a_heavy_user(tmp_path) -> None:
                 recorded_close += e.offset - last[e.session] < 0.5
             last[e.session] = e.offset
         assert summary["replay_retime_followups_within_0_5s_recorded"] == recorded_close
-    assert retime_summary_entries(ReplayPacer(original, path)) == {}
+    # a replay that isn't retimed still reports its follow-up gaps (C-180), as sent equal to as recorded
+    plain = retime_summary_entries(ReplayPacer(original, path))
+    assert set(plain) == {"replay_retime_followups"} | {
+        f"replay_retime_followups_within_{t}{suffix}" for t in ("0_5s", "5s") for suffix in ("", "_recorded")
+    }
+    assert plain["replay_retime_followups_within_5s"] == plain["replay_retime_followups_within_5s_recorded"]
+    assert plain["replay_retime_followups_within_0_5s"] <= plain["replay_retime_followups_within_5s"]
     for bad in ("gamma", "gamma:0", "gamma:x", "uniform"):
         with pytest.raises(ValueError):
             parse_replay_retime(bad)
@@ -2329,6 +2336,39 @@ def test_sized_pool_prefix_closes_the_first_row_shortfall(tmp_path) -> None:
     assert _common_prefix(a, b) >= 700  # one shared copy of the prefix text across sessions
     # the second turn of session a reuses its own first prompt (1400 cached) even though the pool stops at 900
     assert reqs[2].reusable_tokens == 1400
+
+
+def test_replay_class_metrics_split_first_rows_and_followups(monkeypatch) -> None:
+    """C-180: per class, the server's and the recorded cached tokens over first rows and over follow-up rows (the
+    same rows, those whose server cached tokens are known), with the names task 07 parses."""
+    calls = []
+    monkeypatch.setattr(load_test, "add_custom_metric", lambda name, value: calls.append((name, value)))
+    record = load_test.record_shape_class_metrics
+    record("chat", 10, 100, 900, 400, 5, recorded_cached_tokens=500, laid_out_cached_tokens=500, replay_role="first")
+    record("chat", 10, 100, 900, 800, 5, recorded_cached_tokens=850, laid_out_cached_tokens=850, replay_role="followup")
+    record("chat", 10, 100, 900, 600, 5, recorded_cached_tokens=700, laid_out_cached_tokens=700, replay_role="followup")
+    record(
+        "chat", 10, 100, 900, None, 5, recorded_cached_tokens=900, laid_out_cached_tokens=900, replay_role="followup"
+    )
+    record("chat", 10, 100, 900, 100, 5)  # not a replay row: no role metrics
+    names = [n for n, _ in calls]
+    assert names.count("class_chat_followup_cached_tokens") == 2  # the row without a server count isn't in either mean
+    assert names.count("class_chat_followup_recorded_cached_tokens") == 2
+    assert names.count("class_chat_first_row_cached_tokens") == 1
+
+    stats = RequestStats()
+    for name, value in calls:
+        stats.log_request("METRIC", name, value, 0)
+    entries = shape_mix_summary_entries(stats, ["chat", "cold"], True)
+    assert entries["class_chat_followup_requests"] == 2
+    assert entries["class_chat_followup_cached_tokens"] == pytest.approx(700)
+    assert entries["class_chat_followup_recorded_cached_tokens"] == pytest.approx(775)
+    assert entries["class_chat_first_row_cached_tokens"] == 400
+    assert entries["class_chat_first_row_recorded_cached_tokens"] == 500
+    # a class with no replay rows, and a run that isn't a replay, print no role columns
+    assert "class_cold_followup_requests" not in entries
+    plain = shape_mix_summary_entries(RequestStats(), ["chat"], True)
+    assert not [k for k in plain if "followup" in k or "first_row" in k]
 
 
 def test_replay_schedule_warns_on_unknown_fields(tmp_path, caplog) -> None:

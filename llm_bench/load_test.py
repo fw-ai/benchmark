@@ -1029,6 +1029,8 @@ class ShapeRequest:
     recorded_cached_tokens: Optional[int] = None
     overrides: Optional[dict] = None
     cancelled: bool = False
+    # "first" for a session's first scored row (or a row without a session), "followup" for its later rows
+    replay_role: Optional[str] = None
 
 
 class _CyclicText:
@@ -1961,6 +1963,7 @@ class ShapeMixDataset:
         reusable = self._reusable_of(reused)
         target = None if recorded is None else self._aligned_cached(recorded)
         first_scored = not entry.lead_in and (entry.session is None or entry.session not in self._scored_sessions)
+        role = None if entry.lead_in else "first" if first_scored else "followup"
         if not entry.lead_in and entry.session is not None:
             self._scored_sessions.add(entry.session)
         if target is not None and first_scored and target > 0:
@@ -1981,6 +1984,7 @@ class ShapeMixDataset:
             "reusable": max(0, reusable),
             "recorded_cached": recorded,
             "output": output,
+            "role": role,
         }
 
     def _lead_in_covered(self, entry: "ScheduleEntry", plan: dict, prompts: Optional[list], pool_sent: dict) -> bool:
@@ -2294,6 +2298,7 @@ class ShapeMixDataset:
             recorded_cached_tokens=plan["recorded_cached"],
             overrides=overrides or None,
             cancelled=entry.cancelled,
+            replay_role=plan.get("role"),
         )
 
     def fill_plan(self) -> list[tuple[int, int]]:
@@ -5643,6 +5648,7 @@ class LLMUser(HttpUser):
                     completion_tokens=num_tokens,
                     recorded_cached_tokens=shape_request.recorded_cached_tokens,
                     laid_out_cached_tokens=shape_request.reusable_tokens,
+                    replay_role=shape_request.replay_role,
                 )
 
             # Allow provider to process response (e.g., for custom metrics)
@@ -6405,6 +6411,9 @@ def text_summary_entries(stats, stream: bool) -> tuple[dict[str, Any], list[str]
 SHAPE_CLASS_PERCENTILES = [50, 90, 99]
 
 
+REPLAY_ROLE_METRICS = {"first": "first_row", "followup": "followup"}
+
+
 def record_shape_class_metrics(
     class_name: str,
     ttft_ms: Optional[float],
@@ -6414,9 +6423,16 @@ def record_shape_class_metrics(
     completion_tokens: Optional[int],
     recorded_cached_tokens: Optional[int] = None,
     laid_out_cached_tokens: Optional[int] = None,
+    replay_role: Optional[str] = None,
 ) -> None:
     prefix = f"class_{class_name}_"
     add_custom_metric(prefix + "total_latency", total_latency_ms)
+    if replay_role and recorded_cached_tokens is not None and cached_tokens is not None:
+        # First rows and follow-ups apart, over the rows whose server cached tokens are known (so the recorded
+        # mean covers the same rows)
+        metric = REPLAY_ROLE_METRICS[replay_role]
+        add_custom_metric(f"{prefix}{metric}_cached_tokens", cached_tokens)
+        add_custom_metric(f"{prefix}{metric}_recorded_cached_tokens", recorded_cached_tokens)
     if recorded_cached_tokens is not None:
         # Per row: recorded (replay schedule), laid out by the generator, and server-reported (cached_tokens)
         add_custom_metric(prefix + "recorded_cached_tokens", recorded_cached_tokens)
@@ -6431,40 +6447,56 @@ def record_shape_class_metrics(
         add_custom_metric(prefix + "completion_tokens", completion_tokens)
 
 
-RETIME_CLOSE_FOLLOWUP_S = 0.5
+RETIME_CLOSE_FOLLOWUP_S = (0.5, 5.0)
+
+
+def _seconds_label(seconds: float) -> str:
+    return f"{seconds:g}".replace(".", "_") + "s"
 
 
 def retime_summary_entries(pacer) -> dict[str, Any]:
-    """For a retimed replay: the requested gap CV² and rate against the stream's (drawn slot times) and what was
-    delivered (send times on the wire), plus follow-ups that now land within 0.5 s of their session's previous
-    row (recorded gaps between turns aren't kept, so such a row can arrive while its parent is in prefill)."""
+    """Follow-ups (a session's later rows) that land within 0.5 s and 5 s of the session's previous row, as sent
+    and as recorded; the two agree unless the replay is retimed, when recorded gaps between turns aren't kept and
+    such a row can arrive while its parent is still in prefill. For a retimed replay also the requested gap CV²
+    and rate against the stream's (drawn slot times) and what was delivered (send times on the wire)."""
+    previous: dict[str, ScheduleEntry] = {}
+    followups = 0
+    close = {t: [0, 0] for t in RETIME_CLOSE_FOLLOWUP_S}  # [as sent, as recorded]
+    for e in pacer.entries:
+        if e.session is None:
+            continue
+        parent = previous.get(e.session)
+        if parent is not None:
+            followups += 1
+            gap = e.offset - parent.offset
+            recorded_gap = (
+                gap
+                if e.recorded_offset is None or parent.recorded_offset is None
+                else e.recorded_offset - parent.recorded_offset
+            )
+            for t in RETIME_CLOSE_FOLLOWUP_S:
+                close[t][0] += gap < t
+                close[t][1] += recorded_gap < t
+        previous[e.session] = e
+    entries: dict[str, Any] = {"replay_retime_followups": followups}
+    for t, (sent, recorded) in close.items():
+        name = f"replay_retime_followups_within_{_seconds_label(t)}"
+        entries[name] = sent
+        entries[name + "_recorded"] = recorded
     spec = parse_replay_retime(getattr(pacer, "retime", None))
     if spec is None:
-        return {}
+        return entries
     offsets = [e.offset for e in pacer.entries]
     span = offsets[-1] - offsets[0] if len(offsets) > 1 else 0.0
     actual = sorted(SendTimeline.actual)
     delivered_span = actual[-1] - actual[0] if len(actual) > 1 else 0.0
-    previous: dict[str, ScheduleEntry] = {}
-    close = recorded_close = followups = 0
-    for e in pacer.entries:
-        if e.session is not None:
-            parent = previous.get(e.session)
-            if parent is not None:
-                followups += 1
-                close += e.offset - parent.offset < RETIME_CLOSE_FOLLOWUP_S
-                if e.recorded_offset is not None and parent.recorded_offset is not None:
-                    recorded_close += e.recorded_offset - parent.recorded_offset < RETIME_CLOSE_FOLLOWUP_S
-            previous[e.session] = e
     slot_cv2 = gap_cv2(offsets)
     return {
         "replay_retime_requested_gap_cv2": spec[1],
         "replay_retime_slot_gap_cv2": "" if slot_cv2 is None else slot_cv2,
         "replay_retime_requested_qps": (len(offsets) - 1) / span if span else "",
         "replay_retime_delivered_qps": (len(actual) - 1) / delivered_span if delivered_span else "",
-        "replay_retime_followups": followups,
-        "replay_retime_followups_within_0_5s": close,
-        "replay_retime_followups_within_0_5s_recorded": recorded_close,
+        **entries,
     }
 
 
@@ -6558,6 +6590,17 @@ def shape_mix_summary_entries(
             delivered = entries[prefix + "cached_tokens"]
             entries[prefix + "delivered_over_recorded_cached"] = (
                 delivered / recorded.avg_response_time if delivered != "" and recorded.avg_response_time else ""
+            )
+        for role, metric in REPLAY_ROLE_METRICS.items():
+            cached = stats.entries.get((f"{prefix}{metric}_cached_tokens", "METRIC"))
+            recorded_role = stats.entries.get((f"{prefix}{metric}_recorded_cached_tokens", "METRIC"))
+            if recorded is None and cached is None:
+                continue  # not a replay
+            if role == "followup":
+                entries[prefix + "followup_requests"] = cached.num_requests if cached else 0
+            entries[f"{prefix}{metric}_cached_tokens"] = cached.avg_response_time if cached else ""
+            entries[f"{prefix}{metric}_recorded_cached_tokens"] = (
+                recorded_role.avg_response_time if recorded_role else ""
             )
         for metric in ["time_to_first_token", "total_latency"]:
             entry = stats.entries.get((prefix + metric, "METRIC"))
