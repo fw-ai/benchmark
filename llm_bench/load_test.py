@@ -1,6 +1,7 @@
 import abc
 import argparse
 from array import array
+import contextlib
 import csv
 import heapq
 from dataclasses import dataclass
@@ -2781,6 +2782,11 @@ class FixedQPSPacer:
                 "--qps-modulation-window needs --qps-dispersion (or arrivals.dispersion_10s in --shape-mix)"
             )
         sample_interarrival(distribution, 1.0, cv2)
+        if distribution != "gamma" and cv2 != 1.0:
+            logger.warning(
+                f"--qps-cv2 {cv2:g} is ignored with --qps-distribution {distribution}: only gamma takes a gap CV^2 "
+                f"(exponential is 1, constant 0, uniform 1/3)"
+            )
         self.qps = qps
         self.distribution = distribution
         self.cv2 = cv2
@@ -3811,9 +3817,9 @@ class InitTracker:
         if now - cls.last_late_warning >= 10:
             logger.warning(
                 f"{cls.late_sends} sends left more than {LATE_SEND_WARNING_SECONDS * 1000:.0f} ms after their "
-                f"scheduled time (latest {late_seconds * 1000:.0f} ms; sends over {max_lateness:g} s late are "
-                f"skipped and the schedule moves later): the load generator's CPU can't keep up, or -u is too small to prepare requests ahead of "
-                f"a burst"
+                f"scheduled time (latest {late_seconds * 1000:.0f} ms; past {max_lateness:g} s late the schedule "
+                f"moves later): the load generator's CPU can't keep up, or -u is too small to prepare requests ahead "
+                f"of a burst"
             )
             cls.last_late_warning = now
 
@@ -4119,7 +4125,7 @@ class ClientCpu:
         if peak > 90:
             logger.warning(
                 f"Client CPU peaked at {peak:.0f}% (mean {mean:.0f}%): this process was saturated, so its send timing "
-                f"is unreliable; use more processes or a lower rate"
+                f"is unreliable; lower the rate (--qps is per process: every process you add sends the full rate)"
             )
         return {"client_cpu_percent": mean, "client_cpu_peak_5s_percent": peak}
 
@@ -5364,7 +5370,7 @@ class LLMUser(HttpUser):
         finally:
             self.qps_pacer.untrack(tracked)
         if delay < -LATE_SEND_WARNING_SECONDS:
-            InitTracker.warn_late_send(-delay)
+            InitTracker.warn_late_send(-delay, max_lateness)
         self._in_flight.spawn(self._send_paced, prepared, intended)
 
     def _finish_replay(self):
@@ -6053,7 +6059,10 @@ def init_parser(parser):
         "processing takes (each send runs in its own greenlet, so slow responses don't delay later sends). Users "
         "prepare upcoming requests ahead of their send times, so -u bounds how many sends can be prepared ahead of a "
         "burst (e.g. -u 100). Sending starts once all users have spawned. The summary reports intended against "
-        "delivered gap CV^2, 1 s / 10 s count dispersion and send lateness.",
+        "delivered gap CV^2, 1 s / 10 s count dispersion, send lateness and client CPU. The rate is per process: "
+        "a second process sends the full --qps again. Sends are not capped in flight, so a stalled server at a high "
+        "rate can exhaust file descriptors (raise ulimit -n or lower the rate). Timed Sends can exceed the requests "
+        "counted at the end of a run: it includes sends still waiting for a response.",
     )
     parser.add_argument(
         "--qps-distribution",
@@ -6462,7 +6471,35 @@ def init_parser(parser):
     )
 
 
+@contextlib.contextmanager
+def _summary_file_lock(path: str):
+    """An exclusive lock beside the summary file, so parallel runs appending to one file (or one of them widening its
+    header) don't lose each other's rows. Without fcntl (Windows) there is no lock."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    with open(f"{path}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def append_summary_row(path: str, entries: dict) -> None:
+    """Append one run's summary row to the CSV at `path`, under a lock; the row is never dropped (see
+    _append_summary_row for how the header is handled)."""
+    try:
+        with _summary_file_lock(path):
+            _append_summary_row(path, entries)
+    except OSError as e:  # e.g. the lock file can't be created: still write the row
+        logger.warning(f"--summary-file {path}: no lock ({e!r}); appending without it")
+        _append_summary_row(path, entries)
+
+
+def _append_summary_row(path: str, entries: dict) -> None:
     """Append one run's summary row to the CSV at `path`; the row is never dropped.
 
     The file's header decides the columns. A row with columns the header lacks (the file came from an older

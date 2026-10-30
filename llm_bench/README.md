@@ -41,6 +41,8 @@ There are several primary modes the script can be used:
    - The schedule is seeded from `--request-seed` (or the shape mix's `request_seed`), so runs with the same seed send at the same offsets.
    - Delivered send times are stamped when the request has been written to the socket (not before the POST call), so they include connection setup and request writing.
    - The summary reports the intended and delivered gap CV² and 1 s / 10 s count dispersion (averaged over bin alignments), plus send lateness P50/P99/max, so a generator that can't keep up shows in the results.
+   - `--qps` is per process: a second process sends the full rate again. Sends are open loop and not capped in flight, so against a stalled server at a high rate the client can run out of file descriptors (raise `ulimit -n` or lower the rate). `Timed Sends` can be higher than the requests counted at the end of a run, because it includes sends still waiting for a response.
+   - `--summary-file` appends take a lock (`<file>.lock`), so parallel runs can share one file. A run with columns the file lacks (an older client's file, or `--qps` columns after a plain run) extends the header and leaves earlier rows blank there, with a warning; code that reads these files by column position should read by name.
 
 ### Workload
 

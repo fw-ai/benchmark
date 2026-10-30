@@ -319,3 +319,50 @@ def test_both_pacers_count_their_resyncs_in_epoch() -> None:
     replay = ReplayPacer((ScheduleEntry(0.0, 0), ScheduleEntry(1.0, 0, index=1)))
     replay.start = time.monotonic()
     assert replay.epoch == 0 and replay.resync(0, 0.3) and replay.epoch == 1 and not hasattr(replay, "shifts")
+
+
+def test_parallel_summary_appends_with_changing_columns_lose_no_row(tmp_path) -> None:
+    """Review of #143: parallel runs sharing one --summary-file (one of them widening the header) keep every row."""
+    import csv
+    import multiprocessing
+
+    from load_test import append_summary_row
+
+    path = str(tmp_path / "sweep.csv")
+    # An older client's file, long enough that rewriting its header takes a while: without the lock, writers that
+    # rewrite it at the same time overwrite each other's rows (22 of 25 were lost)
+    with open(path, "w") as f:
+        f.write("a,b\n" + "\n".join(f"{-i},{-i}" for i in range(1, 30001)) + "\n0,0\n")
+    rows = [{"a": i, "b": i, f"col{i % 4}": i} for i in range(1, 25)]  # each widens the header in its own way
+    context = multiprocessing.get_context("fork")
+    workers = [context.Process(target=append_summary_row, args=(path, row)) for row in rows]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    assert all(w.exitcode == 0 for w in workers)
+    written = list(csv.DictReader(open(path)))
+    assert sorted(int(r["a"]) for r in written if int(r["a"]) >= 0) == list(range(25))
+    assert len(written) == 30001 + 24
+    assert {c for c in written[0] if c.startswith("col")} == {"col0", "col1", "col2", "col3"}
+
+
+def test_qps_cv2_without_gamma_warns(caplog) -> None:
+    with caplog.at_level("WARNING", logger="load_test"):
+        FixedQPSPacer(10, "exponential", 4.0)
+        FixedQPSPacer(10, "gamma", 4.0)
+        FixedQPSPacer(10, "exponential", 1.0)
+    assert caplog.text.count("--qps-cv2") == 1 and "ignored with --qps-distribution exponential" in caplog.text
+
+
+def test_the_late_send_warning_names_the_configured_threshold(monkeypatch, caplog) -> None:
+    """The late-send warning said "past 0.5 s" whatever --qps-max-lateness was."""
+    InitTracker.spawned.set()
+    monkeypatch.setattr(InitTracker, "last_late_warning", 0.0)
+    pacer = FixedQPSPacer(10, "constant")
+    pacer.start = time.monotonic() - 0.2  # the first send is 0.1 s late: over 50 ms, under any max lateness
+    user = _stalled_user(pacer, [])
+    user.environment.parsed_options.qps_max_lateness = 2.0
+    with caplog.at_level("WARNING", logger="load_test"):
+        LLMUser._paced_request(user)
+    assert "past 2 s late" in caplog.text
