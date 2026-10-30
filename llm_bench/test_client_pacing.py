@@ -307,3 +307,15 @@ def test_client_cpu_summary_reports_mean_and_peak() -> None:
     entries = ClientCpu.summary_entries()
     assert 50 <= entries["client_cpu_percent"] <= 105
     assert entries["client_cpu_peak_5s_percent"] >= entries["client_cpu_percent"] - 1e-9
+
+
+def test_both_pacers_count_their_resyncs_in_epoch() -> None:
+    """The summary's Schedule Resyncs reads `epoch` from whichever pacer ran (replay's has no `shifts`)."""
+    from load_test import ReplayPacer, ScheduleEntry
+
+    fixed = FixedQPSPacer(10, "constant")
+    fixed.start = time.monotonic()
+    assert fixed.epoch == 0 and fixed.resync(0, 0.3) and fixed.epoch == 1
+    replay = ReplayPacer((ScheduleEntry(0.0, 0), ScheduleEntry(1.0, 0, index=1)))
+    replay.start = time.monotonic()
+    assert replay.epoch == 0 and replay.resync(0, 0.3) and replay.epoch == 1 and not hasattr(replay, "shifts")

@@ -6832,7 +6832,8 @@ def _(environment, **kw):
         if replaying and pacer is not None:
             entries.update(replay_summary_entries(pacer, DatasetHolder._shape_mix_instance))
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
-        entries["schedule_resyncs"] = len(pacer.shifts) if pacer is not None else 0
+        # Both pacers move the schedule once per resync and count it in `epoch`
+        entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())
 
     class_names = None
