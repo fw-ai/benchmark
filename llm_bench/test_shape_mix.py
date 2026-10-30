@@ -2334,6 +2334,54 @@ def test_replay_class_metrics_split_first_rows_and_followups(monkeypatch) -> Non
     assert not [k for k in plain if "followup" in k or "first_row" in k]
 
 
+def test_a_class_whose_tiny_prefix_cannot_be_built_gets_no_pool_instead_of_failing(monkeypatch, caplog) -> None:
+    """C-187: a tokenizer that can't hold a 5-9 token window (DeepSeek V4) must not stop the run: that class loses
+    its shared prefix, with a warning, and the other classes are untouched."""
+    real = ShapeMixDataset._build_prefix_keys
+
+    def failing(self, keys):
+        small = [(ci, j) for ci, j in keys if self.prefix_tokens[ci] < 12]
+        if small:
+            raise ValueError(f"--shape-mix: could not build a {self.prefix_tokens[small[0][0]]}-token window")
+        return real(self, keys)
+
+    monkeypatch.setattr(ShapeMixDataset, "_build_prefix_keys", failing)
+    mix = json.loads(json.dumps(MIX))
+    mix["classes"][0]["cached_prompt_tokens"] = 9  # chat: a tiny shared prefix
+    with caplog.at_level("WARNING", logger="load_test"):
+        ds = _dataset(mix, tokenizer=WordTokenizer())
+    assert "class chat: a 9-token shared prefix can't be built" in caplog.text
+    assert (ds.prefix_tokens[0], ds.reusable_tokens[0], ds.pool_sizes[0]) == (0, 0, 0)
+    assert ds.pool_dropped == ["chat"]  # the summary lists it (Prefix Pool Dropped Classes / Class Names)
+    assert ds.pool_sizes[1] == 2 and ds.prefix_tokens[1] > 0  # agent keeps its pool
+    ds.build_prefixes()
+    for r in _take(ds, 60):
+        assert r.prompt_tokens == len(WordTokenizer().encode(r.prompt))
+        assert r.prefix_index is None or r.class_name != "chat"
+
+
+def test_real_tokenizer_builds_or_drops_tiny_pool_prefixes() -> None:
+    """C-187 with the real DeepSeek V4 tokenizer: 5-9 token prefixes couldn't be built (the run crashed)."""
+    from load_test import _load_auto_tokenizer, chat_template_head_tokens, empty_chat_template_token_ids
+
+    path = "deepseek-ai/DeepSeek-V4-Flash"
+    try:
+        tokenizer = _load_auto_tokenizer(path)
+    except Exception as e:
+        pytest.skip(f"DeepSeek V4 tokenizer unavailable: {e}")
+    overhead = len(empty_chat_template_token_ids(tokenizer, path))
+    head = chat_template_head_tokens(tokenizer, path)
+    for cached in (0, 1, 3, 5, 7, 9, 12, 36):
+        spec = json.loads(json.dumps(MIX))
+        spec["classes"] = [dict(spec["classes"][0], cached_prompt_tokens=cached or 400)]
+        mix = parse_shape_mix(json.dumps(spec), chat_overhead_tokens=overhead)
+        if cached:
+            mix = load_test.replay_sized_mix(mix, {spec["classes"][0]["name"]: cached})
+        ds = ShapeMixDataset(mix, tokenizer, LIMERICKS, overhead, head, request_seed=1, split_restore_classes=False)
+        ds.build_prefixes()  # never raises
+        assert ds.prefix_tokens[0] == 0 or ds.pool_sizes[0] > 0
+
+
 def test_replay_summary_says_where_the_pool_prefix_came_from(tmp_path, caplog) -> None:
     """C-185: a replay that ran without its meta says so in the summary (Replay Pool Prefix Source) and loudly."""
     from types import SimpleNamespace
@@ -2402,6 +2450,56 @@ def test_replay_start_overrun_warning_counts_the_rows_due(tmp_path, caplog, monk
         assert InitTracker._replay_start_wait() == 0.0
     assert "11 rows already due" in caplog.text  # rows at 0..10 s are due 10.5 s after the start
     assert ReplayPacer._instance is not None
+
+
+def test_retime_min_parent_gap_keeps_recorded_gaps_and_the_rate(tmp_path) -> None:
+    """C-188 / D-62: with --replay-retime-min-parent-gap recorded, no follow-up comes sooner than its recorded gap
+    after its parent, every other row keeps its slot, and the run keeps its rate and span."""
+    from load_test import ReplayPacer, load_replay_schedule, retime_summary_entries
+
+    names = ("chat", "agent", "cold")
+    path = _write_schedule(tmp_path / "s.jsonl", _heavy_user_rows())
+    original = load_replay_schedule(path, names)
+    by_index = {e.index: e for e in original}
+    parent_of, last = {}, {}
+    for e in original:  # previous scored row of the session, with the recorded gap to it
+        if e.session is not None:
+            if e.session in last:
+                parent_of[e.index] = (last[e.session].index, e.offset - last[e.session].offset)
+            last[e.session] = e
+    assert parent_of
+    for spec in ("poisson", "gamma:4"):
+        plain = load_replay_schedule(path, names, retime=spec, seed=5)
+        gapped = load_replay_schedule(path, names, retime=spec, seed=5, retime_min_parent_gap=True)
+        new = {e.index: e for e in gapped}
+        assert sorted(new) == sorted(by_index) and len(gapped) == len(original)
+        assert all(a.offset <= b.offset for a, b in zip(gapped, gapped[1:]))
+        for index, (parent, recorded_gap) in parent_of.items():  # the parent is always first, by its recorded gap
+            assert new[index].offset - new[parent].offset >= recorded_gap - 1e-9, (spec, index)
+        # rows that needed no delay keep their slot exactly; the rest only move later
+        slot = {e.index: e.offset for e in plain}
+        assert all(e.offset >= slot[e.index] - 1e-9 for e in gapped)
+        assert all(e.plain_offset == pytest.approx(slot[e.index]) for e in gapped)
+        assert sum(e.offset > slot[e.index] + 1e-9 for e in gapped) > 0
+        assert (len(gapped) - 1) / gapped[-1].offset == pytest.approx((len(plain) - 1) / plain[-1].offset, rel=0.1)
+        pacers = []
+        for entries in (plain, gapped):
+            pacer = ReplayPacer(entries, path)
+            pacer.retime = spec
+            pacer.retime_min_parent_gap = "recorded" if entries is gapped else "off"
+            pacers.append(retime_summary_entries(pacer))
+        off, on = pacers
+        # never sooner than recorded: follow-ups within 0.5 s / 5 s of their parent can't exceed the recorded counts
+        # (plain retiming can: 5.6% to 20.7% on P1's median pod under gamma:4)
+        assert on["replay_retime_followups_within_0_5s"] <= on["replay_retime_followups_within_0_5s_recorded"]
+        assert on["replay_retime_followups_within_5s"] <= on["replay_retime_followups_within_5s_recorded"]
+        assert on["replay_retime_min_parent_gap"] == "recorded" and "replay_retime_min_parent_gap" not in off
+        assert 0 < on["replay_retime_followups_delayed"] <= on["replay_retime_followups"]
+        assert on["replay_retime_delay_max_s"] >= on["replay_retime_delay_mean_s"] > 0
+        strip = lambda e: (e.class_index, e.input_length, e.cached_length, e.session, e.temperature)
+        assert all(strip(e) == strip(by_index[e.index]) for e in gapped)  # rows keep their fields; only times differ
+        assert load_replay_schedule(path, names, retime=spec, seed=5, retime_min_parent_gap=True) == gapped  # seeded
+    assert load_replay_schedule(path, names, retime_min_parent_gap=True) == original  # no --replay-retime: no effect
 
 
 def _pod_rows():

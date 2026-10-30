@@ -75,6 +75,8 @@ DEFAULT_MAX_LATENESS_SECONDS = 0.5
 _MIN_MODULATED_BASE_CV2 = 0.05
 _DEFAULT_RATE_BLOCK_WINDOWS = 30
 _PROMPT_ESTIMATE_SAMPLES = 16
+# Shared prefixes up to this many tokens are probed at startup: short windows are the ones a tokenizer can fail on
+_SMALL_PREFIX_PROBE_TOKENS = 32
 
 
 def _load_auto_tokenizer(tokenizer_path: str):
@@ -1262,6 +1264,7 @@ class ShapeMixDataset:
             self.pool_sizes.append(pool_size)
             self._prefix_offsets.append(array("I", bytes(4 * pool_size)))
             self._prefix_widths.append(array("I", [_UNBUILT]) * pool_size)
+        self._drop_unbuildable_small_pools()
 
         nonce_tokens = (self.fixed_nonce_tokens or {}).get(SHAPE_MIX_TAIL_START, SHAPE_MIX_TAIL_RESERVE_TOKENS // 2)
         too_short = [
@@ -1291,6 +1294,31 @@ class ShapeMixDataset:
             self._build_fillers(missing)
             for ci in missing:
                 self._save_cached(*self._filler_cache_slot(ci))
+
+    def _drop_unbuildable_small_pools(self) -> None:
+        """A very short shared prefix (a cold class's few shared tokens, or the replay meta's tiny shared_max) can be
+        too small for the tokenizer to hold a whole-word window that re-encodes exactly and doesn't merge with the
+        tail (DeepSeek V4 fails at 5 to 9 tokens). Probe each such class's first prefix now; a class that fails
+        gets no pool and says so, instead of failing the run: a prefix that short caches nothing worth keeping."""
+        self.pool_dropped: list[str] = []  # classes that ran without a shared prefix, reported in the summary
+        for ci, cls in enumerate(self.classes):
+            tokens = self.prefix_tokens[ci]
+            if not self.pool_sizes[ci] or not 0 < tokens <= _SMALL_PREFIX_PROBE_TOKENS:
+                continue
+            try:
+                self._build_prefix_keys([(ci, 0)])
+            except ValueError as e:
+                logger.warning(
+                    f"--shape-mix class {cls.name}: a {tokens}-token shared prefix can't be built with this tokenizer "
+                    f"({e}); the class gets no shared prefix (its cached_prompt_tokens of {cls.cached_prompt_tokens} "
+                    f"won't be reused)"
+                )
+                self.prefix_tokens[ci] = 0
+                self.reusable_tokens[ci] = 0
+                self.pool_sizes[ci] = 0
+                self._prefix_offsets[ci] = array("I")
+                self._prefix_widths[ci] = array("I")
+                self.pool_dropped.append(cls.name)
 
     def _with_restore_companions(self, mix: ShapeMix, chat_overhead_tokens: int) -> list[ShapeClass]:
         """With a restore boundary b, a class's cached mean c lays out as floor(c / b) * b, which can lose most of
@@ -3020,6 +3048,7 @@ class ScheduleEntry:
     pod: Optional[str] = None  # the recorded pod (the row's "pod" field)
     lead_in: bool = False  # a warm-up row: sent unscored before time 0, only if nothing earlier covers it
     recorded_offset: Optional[float] = None  # the recorded offset of a retimed row
+    plain_offset: Optional[float] = None  # with a minimum parent gap: where plain retiming would have put the row
     defaulted: tuple = ()  # optional fields that were invalid and dropped (or output_length 0 sent as 1)
 
 
@@ -3135,19 +3164,47 @@ def retimed_offsets(count: int, span: float, retime: tuple[str, float], seed) ->
     return offsets
 
 
+def _delay_followups_to_parent_gap(scored: list, slots: list[float]) -> list[float]:
+    """Send time for each scored row (in `scored` order): its slot of the retimed process, except that a follow-up
+    (a row with an earlier row of its session) goes no sooner than its recorded gap after that parent's send time.
+    Rows are visited in recorded order, so a parent is always placed first and a delay carries down a session's chain.
+    A delayed follow-up leaves its slot empty and lands later, off the process's grid."""
+    placed = [0.0] * len(scored)
+    last: dict = {}
+    for i, (e, slot) in enumerate(zip(scored, slots)):
+        at = slot
+        if e.session is not None:
+            j = last.get(e.session)
+            if j is not None:
+                at = max(slot, placed[j] + max(0.0, e.offset - scored[j].offset))
+            last[e.session] = i
+        placed[i] = at
+    return placed
+
+
 @lru_cache(maxsize=None)
-def retime_rows(entries: tuple, retime: tuple[str, float], seed) -> tuple:
+def retime_rows(entries: tuple, retime: tuple[str, float], seed, min_parent_gap: bool = False) -> tuple:
     """--replay-retime: redraw this stream's send times as one seeded Poisson / gamma process (at the requested
     gap CV²) with as many arrivals as it has rows, over its own span, so its rate is unchanged. Rows fill the new
     slots in their recorded order: a follow-up still comes after its parent (and every earlier row), and the
     layout (what each row reuses, which lead-ins are covered) is the same as the recorded replay's. Only the
-    recorded gaps between turns are not kept. Lead-in rows keep their times (before time 0)."""
+    recorded gaps between turns are not kept, unless `min_parent_gap` (--replay-retime-min-parent-gap recorded):
+    then no follow-up comes sooner than its recorded gap after its parent, and the rest keep their slots (see
+    _delay_followups_to_parent_gap). Lead-in rows keep their times (before time 0)."""
     lead_ins = tuple(e for e in entries if e.lead_in)
     scored = [e for e in entries if not e.lead_in]
     if len(scored) < 3:
         return entries
     first, last = scored[0].offset, scored[-1].offset
     offsets = retimed_offsets(len(scored), last - first, retime, seed)
+    if min_parent_gap:
+        placed = _delay_followups_to_parent_gap(scored, [first + o for o in offsets])
+        retimed = [
+            dataclasses.replace(e, offset=at, recorded_offset=e.offset, plain_offset=first + o)
+            for e, at, o in zip(scored, placed, offsets)
+        ]
+        retimed.sort(key=lambda e: (e.offset, e.index))
+        return lead_ins + tuple(retimed)
     retimed = tuple(dataclasses.replace(e, offset=first + o, recorded_offset=e.offset) for e, o in zip(scored, offsets))
     return lead_ins + retimed
 
@@ -3160,6 +3217,7 @@ def load_replay_schedule(
     retime: Optional[str] = None,
     seed=None,
     pod_select: Optional[str] = None,
+    retime_min_parent_gap: bool = False,
 ) -> tuple:
     """--replay-schedule JSONL: one request per line, {"timestamp": <ms>, "class": "<name>"} (AIPerf's
     millisecond timestamps; "time_s" in seconds also works), optionally "prefix_index" (a prefix of the class
@@ -3271,7 +3329,7 @@ def load_replay_schedule(
         if not entries:
             raise ValueError(f"--replay-schedule {path}: no rows for pod(s) {', '.join(chosen)}")
         if retime_spec is not None:
-            entries = retime_rows(entries, retime_spec, f"{seed}:{','.join(chosen)}")
+            entries = retime_rows(entries, retime_spec, f"{seed}:{','.join(chosen)}", retime_min_parent_gap)
         return entries
     if pod_select:
         raise ValueError(f"--replay-pod: {path} has no 'pod' field on its rows")
@@ -3280,7 +3338,9 @@ def load_replay_schedule(
         entries = tuple(e for e in entries if _replay_pod(e, pods) == pod_index)
     if retime_spec is not None:
         # After the split: each generator's own stream gets the requested arrival process
-        entries = retime_rows(entries, retime_spec, seed if pods == 1 else f"{seed}:{pod_index}/{pods}")
+        entries = retime_rows(
+            entries, retime_spec, seed if pods == 1 else f"{seed}:{pod_index}/{pods}", retime_min_parent_gap
+        )
     return entries
 
 
@@ -3294,6 +3354,7 @@ def replay_entries(options: argparse.Namespace, class_names: tuple) -> tuple:
         getattr(options, "replay_retime", None),
         resolve_request_seed(options),
         getattr(options, "replay_pod", None),
+        getattr(options, "replay_retime_min_parent_gap", "off") == "recorded",
     )
 
 
@@ -3494,6 +3555,7 @@ class ReplayPacer:
             if cls._instance is None:
                 cls._instance = cls(replay_entries(options, class_names), options.replay_schedule)
                 cls._instance.retime = getattr(options, "replay_retime", None)
+                cls._instance.retime_min_parent_gap = getattr(options, "replay_retime_min_parent_gap", "off")
                 cls._instance.start_at = getattr(options, "replay_start_at", None)
             return cls._instance
 
@@ -6136,6 +6198,16 @@ def init_parser(parser):
         help="With --replay-pods: this pod's index, 0 to N-1 (default $REPLAY_POD_INDEX or 0).",
     )
     parser.add_argument(
+        "--replay-retime-min-parent-gap",
+        choices=["off", "recorded"],
+        default="off",
+        help="With --replay-retime: 'recorded' sends no follow-up sooner than its recorded gap after its parent (the "
+        "session's previous row) and leaves every other row in its slot of the retimed process; 'off' (default) "
+        "fills the slots in recorded order, so a follow-up can arrive while its parent is still in prefill. The "
+        "delays also thin the burstiness a gamma process asked for: the summary reports delivered against "
+        "requested gap CV², and counts the follow-ups delayed.",
+    )
+    parser.add_argument(
         "--replay-schedule-meta",
         type=str,
         default=None,
@@ -6548,10 +6620,12 @@ def _seconds_label(seconds: float) -> str:
 def retime_summary_entries(pacer) -> dict[str, Any]:
     """Follow-ups (a session's later rows) that land within 0.5 s and 5 s of the session's previous row, as sent
     and as recorded; the two agree unless the replay is retimed, when recorded gaps between turns aren't kept and
-    such a row can arrive while its parent is still in prefill. For a retimed replay also the requested gap CV²
+    such a row can arrive while its parent is still in prefill (unless --replay-retime-min-parent-gap recorded, which
+    also reports how many follow-ups it delayed and by how much). For a retimed replay also the requested gap CV²
     and rate against the stream's (drawn slot times) and what was delivered (send times on the wire)."""
     previous: dict[str, ScheduleEntry] = {}
     followups = 0
+    delays: list[float] = []  # follow-ups sent later than plain retiming would (--replay-retime-min-parent-gap)
     close = {t: [0, 0] for t in RETIME_CLOSE_FOLLOWUP_S}  # [as sent, as recorded]
     for e in pacer.entries:
         if e.session is None:
@@ -6559,6 +6633,8 @@ def retime_summary_entries(pacer) -> dict[str, Any]:
         parent = previous.get(e.session)
         if parent is not None:
             followups += 1
+            if e.plain_offset is not None and e.offset > e.plain_offset + 1e-9:
+                delays.append(e.offset - e.plain_offset)
             gap = e.offset - parent.offset
             recorded_gap = (
                 gap
@@ -6577,6 +6653,11 @@ def retime_summary_entries(pacer) -> dict[str, Any]:
     spec = parse_replay_retime(getattr(pacer, "retime", None))
     if spec is None:
         return entries
+    if getattr(pacer, "retime_min_parent_gap", "off") == "recorded":
+        entries["replay_retime_min_parent_gap"] = "recorded"
+        entries["replay_retime_followups_delayed"] = len(delays)
+        entries["replay_retime_delay_mean_s"] = sum(delays) / len(delays) if delays else 0.0
+        entries["replay_retime_delay_max_s"] = max(delays, default=0.0)
     offsets = [e.offset for e in pacer.entries]
     span = offsets[-1] - offsets[0] if len(offsets) > 1 else 0.0
     actual = sorted(SendTimeline.actual)
@@ -6853,6 +6934,10 @@ def _(environment, **kw):
             entries["prefix_pool_tokens"] = dataset.pool_tokens
             entries["prefix_pool_loaded_from_cache"] = dataset.cache_loaded_prefixes
             entries["prefix_pool_build_s"] = dataset.build_seconds
+            dropped = getattr(dataset, "pool_dropped", [])
+            entries["prefix_pool_dropped_classes"] = len(dropped)
+            if dropped:
+                entries["prefix_pool_dropped_class_names"] = ",".join(dropped)
             if dataset.context_tokens:
                 entries["shape_mix_context_tokens"] = dataset.context_tokens
                 entries["shape_mix_context_cut_requests"] = dataset.context_cut_requests
