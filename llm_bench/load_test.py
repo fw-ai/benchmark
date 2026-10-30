@@ -1850,6 +1850,9 @@ class ShapeMixDataset:
         self._replay_windows: dict[tuple, tuple[int, int]] = {}
         self._sep_tokens = len(self._encode("\n\n"))
         self.replay_shortfall = {"rows": 0, "tokens": 0, "input_rows": 0, "input_tokens": 0, "length_rows": 0}
+        # Per class: [first scored rows (a session's first, or a row without a session), of which short, tokens short]
+        self.replay_first_rows: dict[str, list] = {}
+        self._scored_sessions: set = set()
         self.replay_salt = session_salt or secrets.token_hex(4)
         self._edge_memo: dict[tuple, tuple[str, str]] = {}
         self._junction_memo: dict[tuple, int] = {}
@@ -1957,6 +1960,15 @@ class ShapeMixDataset:
             tail_segment = self._tail_segment(tail_start, tail, entry.index, variant)
         reusable = self._reusable_of(reused)
         target = None if recorded is None else self._aligned_cached(recorded)
+        first_scored = not entry.lead_in and (entry.session is None or entry.session not in self._scored_sessions)
+        if not entry.lead_in and entry.session is not None:
+            self._scored_sessions.add(entry.session)
+        if target is not None and first_scored and target > 0:
+            first = self.replay_first_rows.setdefault(cls.name, [0, 0, 0])
+            first[0] += 1
+            if reusable < target:
+                first[1] += 1
+                first[2] += target - reusable
         if target is not None and reusable < target and not entry.lead_in:  # lead-ins are unscored
             self.replay_shortfall["rows"] += 1
             self.replay_shortfall["tokens"] += target - reusable
@@ -2440,8 +2452,14 @@ class DatasetHolder:
                 if options.chat:
                     overhead = len(empty_chat_template_token_ids(tokenizer, tokenizer_path))
                     head = chat_template_head_tokens(tokenizer, tokenizer_path)
+                mix = parse_shape_mix(options.shape_mix, chat_overhead_tokens=overhead)
+                pool_sizes = None
+                if getattr(options, "replay_schedule", None):
+                    names = tuple(c.name for c in mix.classes)
+                    pool_sizes = replay_pool_prefix_tokens(options, replay_entries(options, names), names)
+                    mix = replay_sized_mix(mix, pool_sizes)
                 cls._shape_mix_instance = ShapeMixDataset(
-                    mix=parse_shape_mix(options.shape_mix, chat_overhead_tokens=overhead),
+                    mix=mix,
                     tokenizer=tokenizer,
                     corpus_path=resolve_shape_mix_corpus(getattr(options, "shape_mix_corpus", None)),
                     chat_overhead_tokens=overhead,
@@ -2460,6 +2478,14 @@ class DatasetHolder:
                     split_restore_classes=not getattr(options, "replay_schedule", None),
                 )
                 ds = cls._shape_mix_instance
+                ds.replay_pool_sizes = pool_sizes
+                if pool_sizes:
+                    logger.info(
+                        f"--replay-schedule: pool prefixes sized to the longest recorded shared length "
+                        f"({getattr(options, 'replay_pool_prefix', 'max')}) per class: "
+                        + ", ".join(f"{n} {t}" for n, t in sorted(pool_sizes.items())[:12])
+                        + (" ..." if len(pool_sizes) > 12 else "")
+                    )
                 if ds.reuse_overhang_tokens:
                     logger.info(
                         f"--shape-mix: prefixes are {ds.reuse_overhang_tokens} tokens longer than cached_prompt_tokens "
@@ -3224,6 +3250,85 @@ def replay_entries(options: argparse.Namespace, class_names: tuple) -> tuple:
         resolve_request_seed(options),
         getattr(options, "replay_pod", None),
     )
+
+
+# Task 15's schedule meta: pool_prefix[<slot>][<class>]["*"] = {shared_max, shared_p99, ...}, the recorded shared
+# length (what an earlier same-class row on the replica had cached) of that class's session-first rows, over all
+# of its prefix indexes. Field names live here so a rename is one edit.
+REPLAY_META_POOL_KEY = "pool_prefix"
+REPLAY_META_CLASS_ALL = "*"
+REPLAY_META_POOL_FIELDS = {"max": "shared_max", "p99": "shared_p99"}
+
+
+def replay_meta_path(options: argparse.Namespace) -> Optional[str]:
+    """--replay-schedule-meta, else `<schedule>.meta.json` next to the schedule when it exists."""
+    explicit = getattr(options, "replay_schedule_meta", None)
+    if explicit:
+        return explicit
+    default = f"{options.replay_schedule}.meta.json"
+    return default if os.path.exists(default) else None
+
+
+def replay_pool_prefix_tokens(options: argparse.Namespace, entries: tuple, class_names: tuple) -> dict[str, int]:
+    """Pool prefix length per class for a replay: the longest recorded shared length (or its p99 with
+    --replay-pool-prefix p99) on the replayed replica(s), from the schedule meta. A class the meta doesn't cover
+    keeps its mean cached length, with a warning (rows recorded with a longer shared part then fall short)."""
+    which = getattr(options, "replay_pool_prefix", "max") or "max"
+    field = REPLAY_META_POOL_FIELDS[which]
+    path = replay_meta_path(options)
+    pool = None
+    if path is not None:
+        try:
+            with open(path) as f:
+                pool = json.load(f).get(REPLAY_META_POOL_KEY)
+        except (OSError, ValueError) as e:
+            raise ValueError(f"--replay-schedule-meta {path}: can't read it ({e})")
+    slots = sorted({e.pod for e in entries if e.pod is not None})
+    sizes: dict[str, int] = {}
+    if isinstance(pool, dict) and slots:
+        for name in class_names:
+            values = []
+            for slot in slots:
+                entry = ((pool.get(slot) or {}).get(name) or {}).get(REPLAY_META_CLASS_ALL) or {}
+                value = entry.get(field)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                    values.append(int(math.ceil(value)))
+            if values:
+                sizes[name] = max(values)
+    used = {e.class_index for e in entries}
+    missing = [name for i, name in enumerate(class_names) if name not in sizes and i in used]
+    if missing and not sizes:
+        why = (
+            "no schedule meta found (--replay-schedule-meta, or <schedule>.meta.json)"
+            if path is None
+            else f"{path} has no usable '{REPLAY_META_POOL_KEY}' for the replayed replica(s)"
+        )
+        logger.warning(
+            f"--replay-schedule: {why}: pool prefixes stay at the class mean cached length; session-first rows "
+            f"recorded with a longer shared part will get less cache than recorded (see First Row Shortfall in "
+            f"the summary)"
+        )
+    elif missing:
+        # The meta covers the replica, so these classes have no session-first row with a shared part to size for
+        logger.info(
+            f"--replay-schedule: the schedule meta has no shared length for {', '.join(missing[:12])}"
+            f"{' ...' if len(missing) > 12 else ''}; their pool prefixes stay at the class mean cached length"
+        )
+    return sizes
+
+
+def replay_sized_mix(mix: ShapeMix, sizes: dict[str, int]) -> ShapeMix:
+    """The mix with each class's cached_prompt_tokens (its pool prefix length) set to `sizes`, and its prompt
+    long enough to keep its tail: replay rows carry their own lengths, the class values only size the pool."""
+    classes = []
+    for cls in mix.classes:
+        length = sizes.get(cls.name)
+        if length is None:
+            classes.append(cls)
+            continue
+        tail = max(cls.prompt_tokens - cls.cached_prompt_tokens, 2 * SHAPE_MIX_TAIL_RESERVE_TOKENS)
+        classes.append(dataclasses.replace(cls, cached_prompt_tokens=length, prompt_tokens=length + tail))
+    return dataclasses.replace(mix, classes=classes)
 
 
 def _pod_sort_key(pod: str):
@@ -5980,6 +6085,21 @@ def init_parser(parser):
         help="With --replay-pods: this pod's index, 0 to N-1 (default $REPLAY_POD_INDEX or 0).",
     )
     parser.add_argument(
+        "--replay-schedule-meta",
+        type=str,
+        default=None,
+        help="With --replay-schedule: the schedule's meta JSON (default <schedule>.meta.json when it exists). Its "
+        "pool_prefix gives each class's longest recorded shared length on the replayed replica, which sizes the "
+        "class's pool prefix; without it pool prefixes stay at the class mean cached length (with a warning).",
+    )
+    parser.add_argument(
+        "--replay-pool-prefix",
+        choices=["max", "p99"],
+        default="max",
+        help="With --replay-schedule: size each class's pool prefix to the longest ('max', default) or the p99 "
+        "recorded shared length, for when the longer prefixes push warm-up cache occupancy above production's.",
+    )
+    parser.add_argument(
         "--replay-retime",
         default=None,
         metavar="poisson|gamma:CV2",
@@ -6348,6 +6468,27 @@ def retime_summary_entries(pacer) -> dict[str, Any]:
     }
 
 
+def first_row_shortfall_entries(dataset) -> dict[str, Any]:
+    """Session-first rows whose recorded cached length the layout couldn't meet, in total and per class: the
+    shortfall left once pool prefixes are sized (rows with cached_length > 0 only)."""
+    first = getattr(dataset, "replay_first_rows", None)
+    if not first:
+        return {}
+    entries: dict[str, Any] = {
+        "replay_first_rows": sum(v[0] for v in first.values()),
+        "replay_first_row_shortfall_rows": sum(v[1] for v in first.values()),
+        "replay_first_row_shortfall_tokens": sum(v[2] for v in first.values()),
+    }
+    sizes = getattr(dataset, "replay_pool_sizes", None) or {}
+    for name, (rows, short_rows, short_tokens) in sorted(first.items()):
+        entries[f"class_{name}_first_rows"] = rows
+        entries[f"class_{name}_first_row_shortfall_rows"] = short_rows
+        entries[f"class_{name}_first_row_shortfall_tokens"] = short_tokens
+        if name in sizes:
+            entries[f"class_{name}_pool_prefix_tokens"] = sizes[name]
+    return entries
+
+
 def replay_summary_entries(pacer, dataset) -> dict[str, Any]:
     """Rows of this pod, how many went out late (and their share; none are dropped silently), cancelled rows,
     and rows whose recorded cached length the layout couldn't meet."""
@@ -6381,6 +6522,7 @@ def replay_summary_entries(pacer, dataset) -> dict[str, Any]:
         "replay_input_overflow_rows": shortfall["input_rows"],
         "replay_input_overflow_tokens": shortfall["input_tokens"],
         "replay_length_mismatch_rows": shortfall["length_rows"],
+        **first_row_shortfall_entries(dataset),
         "replay_lead_in_rows": LeadIns.rows,
         "replay_lead_in_remainder_rows": LeadIns.remainder_rows,
         "replay_lead_in_sent": LeadIns.sent,

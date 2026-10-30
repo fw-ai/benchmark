@@ -2206,6 +2206,131 @@ def test_remainder_lead_ins_and_cross_session_cover(tmp_path) -> None:
     assert sum(1 for e in entries if e.lead_in and e.cached_length < e.input_length) == 2
 
 
+def _pool_meta(tmp_path, per_slot) -> str:
+    """A schedule meta file with pool_prefix[slot][class]["*"] = {shared_max, shared_p99}."""
+    pool = {
+        slot: {name: {"*": {"shared_max": mx, "shared_p99": p99}} for name, (mx, p99) in classes.items()}
+        for slot, classes in per_slot.items()
+    }
+    path = tmp_path / "s.jsonl.meta.json"
+    path.write_text(json.dumps({"version": 1, "pool_prefix": pool}))
+    return str(path)
+
+
+def test_replay_pool_prefix_sizes_come_from_the_schedule_meta(tmp_path, caplog) -> None:
+    """C-178 / D-61: the pool prefix is the longest recorded shared length per class on the replayed replica."""
+    from load_test import load_replay_schedule, replay_pool_prefix_tokens, replay_sized_mix
+
+    rows = [
+        {"time_s": 0, "pod": "3", "class": "chat", "input_length": 1500, "cached_length": 900},
+        {"time_s": 1, "pod": "3", "class": "agent", "input_length": 2000, "cached_length": 0},
+        {"time_s": 2, "pod": "4", "class": "chat", "input_length": 1500, "cached_length": 100},
+    ]
+    schedule = _write_schedule(tmp_path / "s.jsonl", rows)
+    names = ("chat", "agent", "cold")
+    _pool_meta(tmp_path, {"3": {"chat": (950, 700), "agent": (1800, 1500)}, "4": {"chat": (200, 150)}})
+    options = argparse.Namespace(replay_schedule=schedule, replay_schedule_meta=None, replay_pool_prefix="max")
+
+    entries = load_replay_schedule(schedule, names, pod_select="3")
+    sizes = replay_pool_prefix_tokens(options, entries, names)
+    assert sizes == {"chat": 950, "agent": 1800}  # the replayed slot only; cold has no rows, so no warning
+    options.replay_pool_prefix = "p99"
+    assert replay_pool_prefix_tokens(options, entries, names) == {"chat": 700, "agent": 1500}
+    merged = load_replay_schedule(schedule, names, pod_select="all")
+    options.replay_pool_prefix = "max"
+    assert replay_pool_prefix_tokens(options, merged, names)["chat"] == 950  # merged pods: the longest of them
+
+    mix = replay_sized_mix(parse_shape_mix(json.dumps(MIX)), {"chat": 950})
+    chat, agent, cold = mix.classes
+    assert chat.cached_prompt_tokens == 950 and chat.prompt_tokens >= 950 + 32  # tail kept
+    assert (agent.cached_prompt_tokens, agent.prompt_tokens) == (1000, 1200) and cold.cached_prompt_tokens == 0
+
+    # a class the meta doesn't list (no session-first row with a shared part) keeps its mean quietly; a meta with
+    # nothing for the replica, and no meta at all, warn
+    _pool_meta(tmp_path, {"3": {"chat": (950, 700)}})
+    caplog.clear()
+    with caplog.at_level("INFO", logger="load_test"):
+        assert replay_pool_prefix_tokens(options, entries, names) == {"chat": 950}
+    assert "WARNING" not in caplog.text and "no shared length for agent" in caplog.text
+    _pool_meta(tmp_path, {"9": {"chat": (950, 700)}})
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="load_test"):
+        assert replay_pool_prefix_tokens(options, entries, names) == {}
+    assert "has no usable 'pool_prefix' for the replayed replica" in caplog.text
+    os.remove(tmp_path / "s.jsonl.meta.json")
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="load_test"):
+        assert replay_pool_prefix_tokens(options, entries, names) == {}
+    assert "no schedule meta found" in caplog.text
+    (tmp_path / "bad.json").write_text("{")
+    options.replay_schedule_meta = str(tmp_path / "bad.json")
+    with pytest.raises(ValueError):
+        replay_pool_prefix_tokens(options, entries, names)
+
+
+def test_sized_pool_prefix_closes_the_first_row_shortfall(tmp_path) -> None:
+    from load_test import first_row_shortfall_entries, load_replay_schedule, replay_sized_mix
+
+    rows = [
+        # two sessions whose first rows share more than the class mean (400): 900 and 700 recorded, cross-session
+        {
+            "time_s": 0,
+            "class": "chat",
+            "session_id": "a",
+            "input_length": 1500,
+            "cached_length": 900,
+            "prefix_index": 0,
+        },
+        {
+            "time_s": 1,
+            "class": "chat",
+            "session_id": "b",
+            "input_length": 1300,
+            "cached_length": 700,
+            "prefix_index": 0,
+        },
+        {
+            "time_s": 2,
+            "class": "chat",
+            "session_id": "a",
+            "input_length": 1700,
+            "cached_length": 1400,
+            "prefix_index": 0,
+        },
+        {"time_s": 3, "class": "cold", "input_length": 500, "cached_length": 0},
+    ]
+    schedule = _write_schedule(tmp_path / "s.jsonl", rows)
+    names = ("chat", "agent", "cold")
+    entries = load_replay_schedule(schedule, names)
+    tokenizer = WordTokenizer()
+
+    def layout(sizes):
+        mix = replay_sized_mix(parse_shape_mix(json.dumps(MIX)), sizes)
+        ds = ShapeMixDataset(mix, tokenizer, LIMERICKS, request_seed=3, tail_variants=0)
+        ds.build_prefixes()
+        ds.prepare_replay(entries)
+        return ds
+
+    mean = layout({})  # today: the class mean (400) is the pool prefix
+    summary = first_row_shortfall_entries(mean)
+    assert summary["class_chat_first_rows"] == 2 and summary["class_chat_first_row_shortfall_rows"] == 2
+    assert summary["class_chat_first_row_shortfall_tokens"] == (900 - 400) + (700 - 400)
+    assert "class_chat_pool_prefix_tokens" not in summary  # nothing sized it
+
+    sized = layout({"chat": 900})
+    summary = first_row_shortfall_entries(sized)
+    assert summary["replay_first_rows"] == 2  # cold's row records no cached tokens, so it isn't a first row to check
+    assert summary["replay_first_row_shortfall_rows"] == 0 and summary["replay_first_row_shortfall_tokens"] == 0
+    sized.replay_pool_sizes = {"chat": 900}
+    assert first_row_shortfall_entries(sized)["class_chat_pool_prefix_tokens"] == 900
+    reqs = {e.index: sized.replay_request(e) for e in entries}
+    assert [reqs[i].reusable_tokens for i in (0, 1)] == [900, 700]  # each row cuts the shared prefix at its own length
+    a, b = (tokenizer.encode(reqs[i].prompt) for i in (0, 1))
+    assert _common_prefix(a, b) >= 700  # one shared copy of the prefix text across sessions
+    # the second turn of session a reuses its own first prompt (1400 cached) even though the pool stops at 900
+    assert reqs[2].reusable_tokens == 1400
+
+
 def test_replay_schedule_warns_on_unknown_fields(tmp_path, caplog) -> None:
     """N8-140-1: fields llm_bench doesn't read are named in a warning, not dropped silently."""
     from load_test import load_replay_schedule
