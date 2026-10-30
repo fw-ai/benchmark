@@ -2486,6 +2486,7 @@ class DatasetHolder:
                 )
                 ds = cls._shape_mix_instance
                 ds.replay_pool_sizes = pool_sizes
+                ds.replay_pool_source = "meta" if pool_sizes else "class_mean" if pool_sizes is not None else ""
                 if pool_sizes:
                     logger.info(
                         f"--replay-schedule: pool prefixes sized to the longest recorded shared length "
@@ -3348,9 +3349,9 @@ def replay_pool_prefix_tokens(options: argparse.Namespace, entries: tuple, class
             else f"{path} has no usable '{REPLAY_META_POOL_KEY}' for the replayed replica(s)"
         )
         logger.warning(
-            f"--replay-schedule: {why}: pool prefixes stay at the class mean cached length; session-first rows "
-            f"recorded with a longer shared part will get less cache than recorded (see First Row Shortfall in "
-            f"the summary)"
+            f"!!! --replay-schedule: {why}: pool prefixes stay at the CLASS MEAN cached length (Replay Pool Prefix "
+            f"Source: class_mean); session-first rows recorded with a longer shared part will get less cache than "
+            f"recorded (see First Row Shortfall in the summary). A replay without its meta is not the recorded traffic."
         )
     elif missing:
         # The meta covers the replica, so these classes have no session-first row with a shared part to size for
@@ -6615,6 +6616,11 @@ def replay_summary_entries(pacer, dataset) -> dict[str, Any]:
     """Rows of this pod, how many went out late (and their share; none are dropped silently), cancelled rows,
     and rows whose recorded cached length the layout couldn't meet."""
     rows = len(pacer.entries)
+    if getattr(dataset, "replay_pool_source", "") == "class_mean":
+        logger.warning(
+            "!!! This replay ran without the schedule meta: pool prefixes were the class mean cached length "
+            "(Replay Pool Prefix Source: class_mean), so its first-row cache hits fall short of the recording"
+        )
     shortfall = {
         "rows": 0,
         "tokens": 0,
@@ -6645,6 +6651,7 @@ def replay_summary_entries(pacer, dataset) -> dict[str, Any]:
         "replay_input_overflow_tokens": shortfall["input_tokens"],
         "replay_length_mismatch_rows": shortfall["length_rows"],
         **first_row_shortfall_entries(dataset),
+        "replay_pool_prefix_source": getattr(dataset, "replay_pool_source", ""),
         "replay_lead_in_rows": LeadIns.rows,
         "replay_lead_in_remainder_rows": LeadIns.remainder_rows,
         "replay_lead_in_sent": LeadIns.sent,

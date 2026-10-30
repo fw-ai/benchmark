@@ -2231,7 +2231,7 @@ def test_replay_pool_prefix_sizes_come_from_the_schedule_meta(tmp_path, caplog) 
     caplog.clear()
     with caplog.at_level("WARNING", logger="load_test"):
         assert replay_pool_prefix_tokens(options, entries, names) == {}
-    assert "no schedule meta found" in caplog.text
+    assert "no schedule meta found" in caplog.text and "Replay Pool Prefix Source: class_mean" in caplog.text
     (tmp_path / "bad.json").write_text("{")
     options.replay_schedule_meta = str(tmp_path / "bad.json")
     with pytest.raises(ValueError):
@@ -2332,6 +2332,24 @@ def test_replay_class_metrics_split_first_rows_and_followups(monkeypatch) -> Non
     assert "class_cold_followup_requests" not in entries
     plain = shape_mix_summary_entries(RequestStats(), ["chat"], True)
     assert not [k for k in plain if "followup" in k or "first_row" in k]
+
+
+def test_replay_summary_says_where_the_pool_prefix_came_from(tmp_path, caplog) -> None:
+    """C-185: a replay that ran without its meta says so in the summary (Replay Pool Prefix Source) and loudly."""
+    from types import SimpleNamespace
+
+    from load_test import ReplayPacer, load_replay_schedule, replay_summary_entries
+
+    rows = [{"time_s": 0, "class": "chat", "input_length": 900, "cached_length": 0}]
+    entries = load_replay_schedule(_write_schedule(tmp_path / "s.jsonl", rows), ("chat", "agent", "cold"))
+    pacer = ReplayPacer(entries, "s.jsonl")
+    for source in ("meta", "class_mean"):
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="load_test"):
+            summary = replay_summary_entries(pacer, SimpleNamespace(replay_pool_source=source))
+        assert summary["replay_pool_prefix_source"] == source
+        assert ("ran without the schedule meta" in caplog.text) == (source == "class_mean")
+    assert replay_summary_entries(pacer, None)["replay_pool_prefix_source"] == ""  # not built from a meta lookup
 
 
 def test_replay_schedule_warns_on_unknown_fields(tmp_path, caplog) -> None:
