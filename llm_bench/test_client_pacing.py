@@ -82,6 +82,8 @@ def test_arrival_summary_reports_intended_delivered_and_lateness() -> None:
     assert entries["intended_dispersion_10s"] == pytest.approx(1.0, rel=0.35)
     assert entries["send_lateness_p50_ms"] == pytest.approx(2.0, abs=0.01)
     assert entries["send_lateness_max_ms"] == pytest.approx(502.0, abs=0.01)
+    assert entries["dispersion_10s_bins"] == int((actual[-1] - actual[0]) // 10)  # how few bins the 10 s figure has
+    assert entries["timed_sends"] == 3000
     assert arrival_summary_entries([], []) == {}
     assert gap_cv2([0.0, 1.0]) is None  # too few arrivals
 
@@ -142,35 +144,130 @@ def test_users_asleep_during_a_stall_keep_the_schedule_spacing(monkeypatch) -> N
     assert all(g == pytest.approx(0.1, abs=0.03) for g in gaps), (gaps, times[0] - stall_end, pacer.shifts)
 
 
-def test_delivered_time_is_stamped_once_the_request_is_on_the_wire() -> None:
-    from load_test import _begin_wire_timing, _timed_adapter, _wire_send_time
+class _SlowHandler(BaseHTTPRequestHandler):
+    delay = 0.4
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
-            time.sleep(0.3)
-            self.send_response(200)
-            self.send_header("Content-Length", "2")
-            self.end_headers()
-            self.wfile.write(b"ok")
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        time.sleep(self.delay)
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
 
-        def log_message(self, *a):
-            pass
+    def log_message(self, *a):
+        pass
 
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+
+def test_a_send_is_on_the_timeline_once_it_is_on_the_wire_not_when_answered() -> None:
+    """N9-143-1: sends still waiting for their response at the end of a run must be in the figures."""
+    from load_test import _begin_wire_timing, _finish_wire_timing, _timed_adapter
+
+    server = HTTPServer(("127.0.0.1", 0), _SlowHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     session = requests.Session()
     session.mount("http://", _timed_adapter(pool_maxsize=4))
+    SendTimeline.reset()
+    answered = []
+
+    def send():
+        _begin_wire_timing(intended=time.monotonic() - 0.05)
+        try:
+            session.post(f"http://127.0.0.1:{server.server_port}/v1/completions", data=b"x" * 200_000)
+            answered.append(time.monotonic())
+        finally:
+            _finish_wire_timing()
+
     try:
-        dispatched = _begin_wire_timing()
-        session.post(f"http://127.0.0.1:{server.server_port}/v1/completions", data=b"x" * 200_000)
-        answered = time.monotonic()
-        wire = _wire_send_time(dispatched)
+        sent_at = time.monotonic()
+        greenlet = gevent.spawn(send)
+        gevent.sleep(0.2)  # the server is still holding the response
+        assert not answered and len(SendTimeline.actual) == 1  # already recorded, before the headers arrive
+        assert SendTimeline.actual[0] - sent_at < 0.15 and SendTimeline.actual[0] - SendTimeline.intended[0] >= 0.04
+        greenlet.join()
     finally:
         server.shutdown()
+    assert len(SendTimeline.actual) == 1  # not recorded a second time when the response came
 
-    assert dispatched < wire < answered - 0.25  # after the body went out, before the 0.3 s server delay
-    assert _wire_send_time(123.0) == 123.0  # consumed: a request that never went out falls back
+
+def test_a_send_that_never_reaches_the_wire_is_still_counted() -> None:
+    from load_test import _begin_wire_timing, _finish_wire_timing, _timed_adapter
+
+    session = requests.Session()
+    session.mount("http://", _timed_adapter(pool_maxsize=4))
+    SendTimeline.reset()
+    dispatched = _begin_wire_timing(intended=time.monotonic())
+    with pytest.raises(requests.ConnectionError):
+        session.post("http://127.0.0.1:9/v1/completions", data=b"x")  # nothing listens on the discard port
+    _finish_wire_timing()
+    assert len(SendTimeline.actual) == 1 and SendTimeline.actual[0] == pytest.approx(dispatched, abs=0.5)
+    _finish_wire_timing()  # idempotent
+    assert len(SendTimeline.actual) == 1
+
+
+def test_oldest_pending_matches_a_scan_across_stalls() -> None:
+    """N9-143-4: the heap and cumulative shift give the same oldest pending send as scanning every pending one."""
+    rng = random.Random(4)
+    pacer = FixedQPSPacer(100, "constant")
+    pacer.start = time.monotonic()
+    live = {}
+    for step in range(400):
+        action = rng.random()
+        if action < 0.5:
+            intended, epoch = pacer.claim_with_epoch()
+            live[pacer.track(intended, epoch)] = (intended, epoch)
+        elif action < 0.8 and live:
+            key = rng.choice(list(live))
+            pacer.untrack(key)
+            del live[key]
+        elif action < 0.9:
+            pacer.resync(pacer.epoch, rng.uniform(0.0, 0.5))
+        if live:
+            expected = max(0.0, time.monotonic() - min(t + sum(pacer.shifts[e:]) for t, e in live.values()))
+            assert pacer.oldest_lateness() == pytest.approx(expected, abs=1e-3)
+        else:
+            assert pacer.oldest_lateness() == 0.0
+        e = rng.randrange(pacer.epoch + 1)
+        assert pacer.shift_since(e)[0] == pytest.approx(sum(pacer.shifts[e:]))
+
+
+def test_summary_file_append_never_drops_the_row(tmp_path, caplog) -> None:
+    """N9-143-2: an older client's header, or a --qps row after a plain one, extends the header; no row is lost."""
+    import csv
+
+    from load_test import append_summary_row
+
+    path = str(tmp_path / "sweep.csv")
+    append_summary_row(path, {"a": 1, "b": 2})  # new file: header and row
+    append_summary_row(path, {"a": 3, "b": 4})  # same columns
+    append_summary_row(path, {"b": 5})  # fewer columns: blank
+    with caplog.at_level("WARNING", logger="load_test"):
+        append_summary_row(path, {"a": 6, "b": 7, "client_cpu_percent": 9.5, "qps": 20})  # more columns
+    assert "header lacked 2 column(s)" in caplog.text and "client_cpu_percent" in caplog.text
+    append_summary_row(path, {"qps": 21, "a": 8, "b": 9, "client_cpu_percent": 1.5})  # a subset of the widened header
+    rows = list(csv.DictReader(open(path)))
+    assert list(rows[0]) == ["a", "b", "client_cpu_percent", "qps"]
+    assert [(r["a"], r["b"], r["client_cpu_percent"], r["qps"]) for r in rows] == [
+        ("1", "2", "", ""),
+        ("3", "4", "", ""),
+        ("", "5", "", ""),
+        ("6", "7", "9.5", "20"),
+        ("8", "9", "1.5", "21"),
+    ]
+    # an empty existing file gets its header
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    append_summary_row(str(empty), {"x": 1})
+    assert empty.read_text().splitlines() == ["x", "1"]
+    # a path that can't be written still saves the row beside it
+    caplog.clear()
+    blocked = tmp_path / "dir.csv"
+    blocked.mkdir()
+    with caplog.at_level("ERROR", logger="load_test"):
+        append_summary_row(str(blocked), {"x": 2})
+    assert "couldn't append the row" in caplog.text
+    saved = [f for f in tmp_path.iterdir() if f.name.startswith("dir.csv.") and f.name.endswith(".csv")]
+    assert len(saved) == 1 and saved[0].read_text().splitlines() == ["x", "2"]
 
 
 def test_prompt_token_estimate_is_once_per_process_without_tokenizing(monkeypatch) -> None:
@@ -183,12 +280,22 @@ def test_prompt_token_estimate_is_once_per_process_without_tokenizing(monkeypatc
     )
     get_input = lambda: ("a long prompt " * 1000, 16000, None)
     opts = argparse.Namespace(tokenizer=None)
-    # C-151: every user used to tokenize a whole prompt in on_start, inside the run window
+    # every user used to tokenize a whole prompt in on_start, inside the run window
     assert [DatasetHolder.prompt_token_estimate(opts, get_input) for _ in range(100)] == [16000] * 100
     assert calls == []
     monkeypatch.setattr(DatasetHolder, "_prompt_tokens_estimate", None)
     assert DatasetHolder.prompt_token_estimate(opts, lambda: ("three short words", 0, None)) == 3  # no count: once
     assert len(calls) == 1
+
+
+def test_prompt_token_estimate_averages_a_variable_length_dataset(monkeypatch) -> None:
+    """N9-143-7: with dataset-provided counts the one per-process estimate is a mean over a few prompts."""
+    monkeypatch.setattr(DatasetHolder, "_prompt_tokens_estimate", None)
+    counts = iter([100, 200] * 8 + [999])
+    estimate = DatasetHolder.prompt_token_estimate(
+        argparse.Namespace(tokenizer=None), lambda: ("p", next(counts), None)
+    )
+    assert estimate == 150 and next(counts) == 999  # 16 prompts drawn, once
 
 
 def test_client_cpu_summary_reports_mean_and_peak() -> None:

@@ -2,6 +2,7 @@ import abc
 import argparse
 from array import array
 import csv
+import heapq
 from dataclasses import dataclass
 from functools import lru_cache, partial
 import importlib.util
@@ -63,6 +64,7 @@ DEFAULT_TOKENIZER = "NousResearch/Meta-Llama-3.1-8B-Instruct"
 QPS_CONNECTION_POOL_SIZE = 1024
 LATE_SEND_WARNING_SECONDS = 0.05
 DEFAULT_MAX_LATENESS_SECONDS = 0.5
+_PROMPT_ESTIMATE_SAMPLES = 16
 
 
 def _load_auto_tokenizer(tokenizer_path: str):
@@ -469,11 +471,16 @@ class DatasetHolder:
 
     @classmethod
     def prompt_token_estimate(cls, options: argparse.Namespace, get_input) -> int:
-        """Prompt tokens to report when the server doesn't: the dataset's own count when it has one, else one
-        prompt tokenized, once per process."""
+        """Prompt tokens to report when the server doesn't, once per process: the mean of the dataset's own counts
+        over a few prompts when it carries them (variable-length datasets), else one prompt tokenized."""
         if cls._prompt_tokens_estimate is None:
             prompt, prompt_tokens, _ = get_input()
-            if not prompt_tokens:
+            if prompt_tokens:
+                counts = [prompt_tokens] + [
+                    get_input()[1] or prompt_tokens for _ in range(_PROMPT_ESTIMATE_SAMPLES - 1)
+                ]
+                prompt_tokens = round(sum(counts) / len(counts))
+            else:
                 tokenizer = InitTracker.load_tokenizer(options.tokenizer)
                 prompt_tokens = len(tokenizer.encode(prompt if isinstance(prompt, str) else str(prompt)))
             cls._prompt_tokens_estimate = prompt_tokens
@@ -547,6 +554,11 @@ class FixedQPSPacer:
         self._pending: dict[int, tuple[float, int]] = {}
         self._pending_seq = 0
         self._unit_time = 0.0
+        # A pending send's time in the current schedule is its intended time plus every shift since its epoch,
+        # i.e. (t - _cum[epoch]) + _cum[-1]: the heap orders pending sends by the first part (entries of sends that
+        # went out are dropped lazily), so the oldest is found without scanning them.
+        self._cum = [0.0]  # _cum[e]: seconds the schedule moved in the epochs before e
+        self._heap: list[tuple[float, int]] = []
 
     def next_offset(self) -> float:
         """Seconds from the schedule start to the next intended send."""
@@ -569,13 +581,20 @@ class FixedQPSPacer:
         with self._lock:
             self._pending_seq += 1
             self._pending[self._pending_seq] = (intended, epoch)
+            heapq.heappush(self._heap, (intended - self._cum[epoch], self._pending_seq))
             return self._pending_seq
+
+    def _oldest_pending(self) -> Optional[float]:
+        """Time of the oldest pending send in the current schedule, None with none (lock held)."""
+        while self._heap and self._heap[0][1] not in self._pending:
+            heapq.heappop(self._heap)
+        return self._heap[0][0] + self._cum[-1] if self._heap else None
 
     def oldest_lateness(self) -> float:
         """How late the oldest pending send is now (0 with none), in the current epoch's schedule."""
         with self._lock:
-            now = time.monotonic()
-            return max((now - (t + sum(self.shifts[e:])) for t, e in self._pending.values()), default=0.0)
+            oldest = self._oldest_pending()
+            return 0.0 if oldest is None else max(0.0, time.monotonic() - oldest)
 
     def untrack(self, key: int) -> None:
         with self._lock:
@@ -589,18 +608,19 @@ class FixedQPSPacer:
             if epoch != self.epoch:
                 return False
             now = time.monotonic()
-            oldest = min((t + sum(self.shifts[e:]) for t, e in self._pending.values()), default=now - late_seconds)
-            shift = max(late_seconds, now - oldest)
+            oldest = self._oldest_pending()
+            shift = late_seconds if oldest is None else max(late_seconds, now - oldest)
             self.start += shift
             self.shifted_seconds += shift
             self.shifts.append(shift)
+            self._cum.append(self._cum[-1] + shift)
             self.epoch += 1
             return True
 
     def shift_since(self, epoch: int) -> tuple[float, int]:
         """(Seconds the schedule moved since `epoch`, the current epoch)."""
         with self._lock:
-            return sum(self.shifts[epoch:]), self.epoch
+            return self._cum[-1] - self._cum[epoch], self.epoch
 
     def describe(self) -> str:
         label = f"QPS {self.qps} {self.distribution}"
@@ -620,7 +640,16 @@ class FixedQPSPacer:
             return cls._instance
 
 
-_WIRE_SEND_TIMES: dict = {}
+# greenlet id -> (intended, dispatched) of a paced send that hasn't gone out on the wire yet
+_WIRE_PENDING: dict = {}
+
+
+def _stamp_wire_send() -> None:
+    """The request has been written to the socket: put a paced send on the timeline now, stamped with this
+    moment, so a send still waiting for its response at the end of the run isn't missing from the figures."""
+    pending = _WIRE_PENDING.pop(id(gevent.getcurrent()), None)
+    if pending is not None:
+        SendTimeline.record(pending[0], time.monotonic())
 
 
 class _TimedHTTPConnection(urllib3.connection.HTTPConnection):
@@ -628,13 +657,13 @@ class _TimedHTTPConnection(urllib3.connection.HTTPConnection):
 
     def request(self, *args, **kwargs):
         super().request(*args, **kwargs)
-        _WIRE_SEND_TIMES[id(gevent.getcurrent())] = time.monotonic()
+        _stamp_wire_send()
 
 
 class _TimedHTTPSConnection(urllib3.connection.HTTPSConnection):
     def request(self, *args, **kwargs):
         super().request(*args, **kwargs)
-        _WIRE_SEND_TIMES[id(gevent.getcurrent())] = time.monotonic()
+        _stamp_wire_send()
 
 
 class _TimedHTTPConnectionPool(urllib3.connectionpool.HTTPConnectionPool):
@@ -651,14 +680,24 @@ def _timed_adapter(pool_maxsize: int) -> LocustHttpAdapter:
     return adapter
 
 
-def _begin_wire_timing() -> float:
-    _WIRE_SEND_TIMES.pop(id(gevent.getcurrent()), None)
-    return time.monotonic()
+def _begin_wire_timing(intended: Optional[float] = None) -> float:
+    """Start timing this greenlet's request; with `intended` (a paced send), it is recorded on the SendTimeline
+    when it goes out on the wire (or by _finish_wire_timing, if it never does)."""
+    key = id(gevent.getcurrent())
+    dispatched = time.monotonic()
+    if intended is None:
+        _WIRE_PENDING.pop(key, None)
+    else:
+        _WIRE_PENDING[key] = (intended, dispatched)
+    return dispatched
 
 
-def _wire_send_time(dispatched: float) -> float:
-    """When this greenlet's request finished going out on the wire, or `dispatched` if it never did."""
-    return _WIRE_SEND_TIMES.pop(id(gevent.getcurrent()), dispatched)
+def _finish_wire_timing() -> None:
+    """A paced send that failed before it reached the wire (refused connection, connect timeout) still counts,
+    stamped at dispatch."""
+    pending = _WIRE_PENDING.pop(id(gevent.getcurrent()), None)
+    if pending is not None:
+        SendTimeline.record(*pending)
 
 
 class SendTimeline:
@@ -711,6 +750,11 @@ def count_dispersion(times, window: float, offsets: int = 10) -> Optional[float]
     return sum(values) / len(values) if values else None
 
 
+def dispersion_bins(times, window: float) -> int:
+    """How many `window`-second bins the arrivals span (the 10 s dispersion is a noisy estimate from a few)."""
+    return int((times[-1] - times[0]) // window) if len(times) > 1 else 0
+
+
 def arrival_summary_entries(intended, actual) -> dict[str, Any]:
     """Intended vs delivered gap CV^2 and 1 s / 10 s count dispersion, plus how late sends left."""
     if len(actual) < 3:
@@ -723,6 +767,8 @@ def arrival_summary_entries(intended, actual) -> dict[str, Any]:
         entries[f"{name}_gap_cv2"] = gap_cv2(times)
         entries[f"{name}_dispersion_1s"] = count_dispersion(times, 1.0)
         entries[f"{name}_dispersion_10s"] = count_dispersion(times, 10.0)
+    entries["timed_sends"] = len(actual)
+    entries["dispersion_10s_bins"] = dispersion_bins(actual, 10.0)
     entries["send_lateness_p50_ms"] = pct(0.5)
     entries["send_lateness_p99_ms"] = pct(0.99)
     entries["send_lateness_max_ms"] = lateness[-1]
@@ -731,7 +777,7 @@ def arrival_summary_entries(intended, actual) -> dict[str, Any]:
 
 class ClientCpu:
     """This process's CPU use over the run window (mean, and the busiest 5 s), sampled each second: a client near
-    100% sends late and evenly, which voids send-timing results (C-151)."""
+    100% sends late and evenly, which voids send-timing results."""
 
     _samples: list = []
     _window_start = None
@@ -1121,7 +1167,7 @@ def _setup_before_spawning(environment, **_kwargs):
     """Build the text dataset (it tokenizes its corpus) before any user spawns.
 
     Locust spawns every user and fires spawning_complete, which starts the run window (stats reset, deferred -t,
-    QPS sends), before the first user's on_start runs; built there, the dataset would eat into the window (C-151).
+    QPS sends), before the first user's on_start runs; built there, the dataset would eat into the window.
     """
     options = getattr(environment, "parsed_options", None)
     if options is None or isinstance(environment.runner, MasterRunner):
@@ -1929,7 +1975,7 @@ class LLMUser(HttpUser):
         self.dataset = iter(dataset)
 
         # Once per process, not per user: users start inside the run window, and tokenizing a long prompt for
-        # each of them blocked the event loop there (C-151)
+        # each of them blocked the event loop there
         self.prompt_tokenizer_tokens = DatasetHolder.prompt_token_estimate(
             self.environment.parsed_options, self._get_input
         )
@@ -2084,6 +2130,8 @@ class LLMUser(HttpUser):
                 self._do_generate_text(prepared, intended)
         except Exception as e:
             logger.error(f"Paced request failed: {e!r}\n{traceback.format_exc()}")
+        finally:
+            _finish_wire_timing()
 
     def _prepare_request(self):
         if self.environment.parsed_options.systemone:
@@ -2116,7 +2164,7 @@ class LLMUser(HttpUser):
             print("--- Request payload ---")
             print(json.dumps(data, indent=2))
             print("---")
-        dispatched = _begin_wire_timing()
+        _begin_wire_timing(intended)
         t_start = time.perf_counter()
 
         with self.client.post(
@@ -2125,8 +2173,6 @@ class LLMUser(HttpUser):
             catch_response=True,
             timeout=60,
         ) as response:
-            if intended is not None:
-                SendTimeline.record(intended, _wire_send_time(dispatched))
             body = response.content
             dur_total = time.perf_counter() - t_start
             if response.status_code != 200:
@@ -2188,7 +2234,7 @@ class LLMUser(HttpUser):
             print("--- Request payload ---")
             print(json.dumps(data, indent=2))
             print("---")
-        dispatched = _begin_wire_timing()
+        _begin_wire_timing(intended)
         t_start = time.perf_counter()
 
         with self.client.post(
@@ -2198,8 +2244,6 @@ class LLMUser(HttpUser):
             catch_response=True,
             timeout=60,
         ) as response:
-            if intended is not None:
-                SendTimeline.record(intended, _wire_send_time(dispatched))
             combined_text = ""
             done = False
             completion_tokens = None
@@ -2869,6 +2913,52 @@ def init_parser(parser):
     )
 
 
+def append_summary_row(path: str, entries: dict) -> None:
+    """Append one run's summary row to the CSV at `path`; the row is never dropped.
+
+    The file's header decides the columns. A row with columns the header lacks (the file came from an older
+    client, or an earlier run had fewer columns, e.g. a non-qps run before a --qps one) extends the header in place,
+    blank for the older rows, with a warning; a row missing some of the header's columns leaves them blank."""
+    fields = list(entries)
+    try:
+        header = None
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            with open(path, newline="") as f:
+                header = next(csv.reader(f), None)
+        if not header:
+            with open(path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fields)
+                writer.writeheader()
+                writer.writerow(entries)
+            return
+        added = [k for k in fields if k not in header]
+        if added:
+            with open(path, newline="") as f:
+                rows = list(csv.DictReader(f))
+            widened = header + added
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=widened, restval="")
+                writer.writeheader()
+                writer.writerows(rows)
+            os.replace(tmp, path)
+            header = widened
+            logger.warning(
+                f"--summary-file {path}: its header lacked {len(added)} column(s) of this run "
+                f"({', '.join(added[:6])}{' ...' if len(added) > 6 else ''}; an older client's file, or a run with "
+                f"other options); the header was extended and earlier rows are blank there"
+            )
+        with open(path, "a", newline="") as f:
+            csv.DictWriter(f, fieldnames=header, restval="").writerow(entries)
+    except Exception as e:
+        fallback = f"{path}.{int(time.time())}.csv"
+        logger.error(f"--summary-file {path}: couldn't append the row ({e!r}); writing it to {fallback}")
+        with open(fallback, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerow(entries)
+
+
 SYSTEMONE_SERVER_TIMING_HEADERS = {
     "fireworks-prefill-duration": "server_side_prefill_latency",
     "fireworks-prefill-queue-duration": "server_side_prefill_queue_latency",
@@ -3037,6 +3127,7 @@ def _(environment, **kw):
         entries.update(arrival_summary_entries(SendTimeline.intended, SendTimeline.actual))
         pacer = FixedQPSPacer._instance
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
+        entries["schedule_resyncs"] = len(pacer.shifts) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
@@ -3052,8 +3143,4 @@ def _(environment, **kw):
         print("=" * 80)
 
     if environment.parsed_options.summary_file:
-        with open(environment.parsed_options.summary_file, "a") as f:
-            writer = csv.DictWriter(f, fieldnames=entries.keys())
-            if f.tell() == 0:
-                writer.writeheader()
-            writer.writerow(entries)
+        append_summary_row(environment.parsed_options.summary_file, entries)
