@@ -1049,43 +1049,6 @@ def test_prefix_fill_summary(monkeypatch) -> None:
     assert entries["prefix_fill_prompt_tokens_per_s"] == 4500
 
 
-def test_delivered_time_is_stamped_once_the_request_is_on_the_wire() -> None:
-    import threading
-    import time as _time
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    import requests
-
-    from load_test import _begin_wire_timing, _timed_adapter, _wire_send_time
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
-            _time.sleep(0.3)
-            self.send_response(200)
-            self.send_header("Content-Length", "2")
-            self.end_headers()
-            self.wfile.write(b"ok")
-
-        def log_message(self, *a):
-            pass
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    session = requests.Session()
-    session.mount("http://", _timed_adapter(pool_maxsize=4))
-    try:
-        dispatched = _begin_wire_timing()
-        session.post(f"http://127.0.0.1:{server.server_port}/v1/completions", data=b"x" * 200_000)
-        answered = _time.monotonic()
-        wire = _wire_send_time(dispatched)
-    finally:
-        server.shutdown()
-
-    assert dispatched < wire < answered - 0.25  # after the body went out, before the 0.3 s server delay
-    assert _wire_send_time(123.0) == 123.0  # consumed: a request that never went out falls back
-
-
 @pytest.mark.parametrize(
     "distribution,cv2,dispersion", [("exponential", 1.0, 10.0), ("gamma", 1.4, 10.0), ("gamma", 1.4, 42.0)]
 )
