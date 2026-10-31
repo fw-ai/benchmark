@@ -2382,6 +2382,27 @@ def test_real_tokenizer_builds_or_drops_tiny_pool_prefixes() -> None:
         assert ds.prefix_tokens[0] == 0 or ds.pool_sizes[0] > 0
 
 
+def test_prefix_fill_summary_reports_passes_order_source_and_prefix_lengths() -> None:
+    """C-203: a fill prints what it sent: passes, order, where the pool came from, and each class's prefix length."""
+    from types import SimpleNamespace
+
+    from load_test import PrefixFill, prefix_fill_summary_entries
+
+    dataset = SimpleNamespace(
+        classes=[SimpleNamespace(name="chat"), SimpleNamespace(name="cold"), SimpleNamespace(name="agent")],
+        reusable_tokens=[900, 0, 1500],
+        pool_sizes=[3, 0, 2],
+        replay_pool_source="meta",
+    )
+    PrefixFill.passes, PrefixFill.order = 1, "classes interleaved"
+    entries = prefix_fill_summary_entries(RequestStats(), ["chat", "cold", "agent"], dataset)
+    assert entries["prefix_fill_passes"] == 1 and entries["prefix_fill_order"] == "classes interleaved"
+    assert entries["prefix_fill_pool_source"] == "meta" and entries["prefix_fill_prefixes"] == 5
+    assert entries["prefix_fill_prefix_tokens_by_class"] == "chat=900,agent=1500"  # classes without a pool are left out
+    dataset.replay_pool_source = ""  # not a replay: the pool is the mix's
+    assert prefix_fill_summary_entries(RequestStats(), ["chat"], dataset)["prefix_fill_pool_source"] == "mix"
+
+
 def test_replay_summary_says_where_the_pool_prefix_came_from(tmp_path, caplog) -> None:
     """C-185: a replay that ran without its meta says so in the summary (Replay Pool Prefix Source) and loudly."""
     from types import SimpleNamespace

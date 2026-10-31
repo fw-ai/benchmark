@@ -2562,8 +2562,9 @@ class DatasetHolder:
                     f"{seconds:.1f}s; pool resident size {ds.resident_bytes() / 2**20:.2f} MiB"
                     + (f", process RSS {rss / 2**20:.0f} MiB (peak {peak / 2**20:.0f} MiB)" if rss and peak else "")
                 )
-                if getattr(options, "replay_schedule", None):
-                    # After the pool: replay rows reuse (truncated) pool prefixes
+                if getattr(options, "replay_schedule", None) and not getattr(options, "prefix_fill", False):
+                    # After the pool: replay rows reuse (truncated) pool prefixes. A --prefix-fill run only needs the
+                    # pool (sized for the replay), not the layout of its rows
                     cls._prepare_replay(ds, options, tokenizer, tokenizer_path)
             return cls._shape_mix_instance
 
@@ -3023,9 +3024,11 @@ class PrefixFill:
     prompt_tokens_sent = 0
     prefix_tokens_sent = 0
     seconds = 0.0
+    passes = 0
+    order = ""
 
 
-def prefix_fill_summary_entries(stats, class_names: list[str]) -> dict[str, Any]:
+def prefix_fill_summary_entries(stats, class_names: list[str], dataset=None) -> dict[str, Any]:
     """Tokens sent and time taken by --prefix-fill, with server-reported prompt and cached tokens."""
 
     def total(metric):
@@ -3036,8 +3039,19 @@ def prefix_fill_summary_entries(stats, class_names: list[str]) -> dict[str, Any]
         )
 
     seconds = PrefixFill.seconds
+    lengths = {}
+    if dataset is not None:
+        # What each class's prefix pool holds (the tokens the server can reuse), for the classes that have one
+        lengths = {
+            c.name: dataset.reusable_tokens[ci] for ci, c in enumerate(dataset.classes) if dataset.pool_sizes[ci]
+        }
     return {
         "mode": "prefix_fill",
+        "prefix_fill_passes": PrefixFill.passes,
+        "prefix_fill_order": PrefixFill.order,
+        "prefix_fill_pool_source": getattr(dataset, "replay_pool_source", "") or "mix" if dataset is not None else "",
+        "prefix_fill_prefixes": sum(dataset.pool_sizes) if dataset is not None else "",
+        "prefix_fill_prefix_tokens_by_class": ",".join(f"{n}={t}" for n, t in lengths.items()),
         "prefix_fill_requests": PrefixFill.requests,
         "prefix_fill_prompt_tokens_sent": PrefixFill.prompt_tokens_sent,
         "prefix_fill_shared_prefix_tokens_sent": PrefixFill.prefix_tokens_sent,
@@ -4098,7 +4112,7 @@ def _build_shape_mix_before_spawning(environment, **_kwargs):
             # Pods are separate processes with worker index 0: tell their nonces apart by pod
             worker_index = options.replay_pod_index
         ds = DatasetHolder.get_shape_mix_instance(options, worker_index)
-        if getattr(options, "replay_schedule", None):
+        if getattr(options, "replay_schedule", None) and not getattr(options, "prefix_fill", False):
             send_replay_lead_ins(environment, options, ds)
     except Exception as e:
         logger.error(f"--shape-mix setup failed: {e!r}\n{traceback.format_exc()}")
@@ -5095,14 +5109,14 @@ class LLMUser(HttpUser):
 
         InitTracker.notify_init(self.environment, logging_params)
 
-        if getattr(self.environment.parsed_options, "replay_schedule", None):
+        if getattr(self.environment.parsed_options, "replay_schedule", None) and not getattr(
+            self.environment.parsed_options, "prefix_fill", False
+        ):
             options = self.environment.parsed_options
             if not options.shape_mix:
                 raise ValueError("--replay-schedule needs --shape-mix (its classes and prefix pools)")
-            if options.qps is not None or options.burst or options.ramping_time is not None or options.prefix_fill:
-                raise ValueError(
-                    "--replay-schedule sets the send times; drop --qps, --burst, --ramping-time and --prefix-fill"
-                )
+            if options.qps is not None or options.burst or options.ramping_time is not None:
+                raise ValueError("--replay-schedule sets the send times; drop --qps, --burst and --ramping-time")
             names = tuple(c.name for c in parse_shape_mix(options.shape_mix).classes)
             self.qps_pacer = ReplayPacer.instance(options, names)
             self.wait_time = lambda: 0
@@ -5325,8 +5339,18 @@ class LLMUser(HttpUser):
         ds = self.shape_mix_dataset
         plan = ds.fill_plan()
         concurrency = self.environment.parsed_options.prefix_fill_concurrency
+        PrefixFill.passes = 1
+        PrefixFill.order = "classes interleaved"
+        source = getattr(ds, "replay_pool_source", "") or "mix"
+        by_class = ", ".join(
+            f"{c.name} {ds.reusable_tokens[ci]}x{ds.pool_sizes[ci]}"
+            for ci, c in enumerate(ds.classes)
+            if ds.pool_sizes[ci]
+        )
         logger.info(
-            f"--prefix-fill: sending {len(plan)} prefixes ({ds.pool_tokens / 1e6:.1f}M prefix tokens) at concurrency {concurrency}"
+            f"--prefix-fill: {PrefixFill.passes} pass, sending {len(plan)} prefixes ({ds.pool_tokens / 1e6:.1f}M "
+            f"prefix tokens, order: {PrefixFill.order}) at concurrency {concurrency}; pool from {source}; reusable "
+            f"tokens x prefixes per class: {by_class}"
         )
         pool = gevent.pool.Pool(concurrency)
         started = time.monotonic()
@@ -7022,7 +7046,7 @@ def _(environment, **kw):
         class_names = [c.name for c in parse_shape_mix(environment.parsed_options.shape_mix).classes]
     if getattr(environment.parsed_options, "prefix_fill", False):
         entries["concurrency"] = f"prefix fill at {environment.parsed_options.prefix_fill_concurrency}"
-        entries.update(prefix_fill_summary_entries(environment.stats, class_names))
+        entries.update(prefix_fill_summary_entries(environment.stats, class_names, DatasetHolder._shape_mix_instance))
     entries["request_timeout_s"] = request_timeout(environment.parsed_options) or ""
     entries.update(request_outcome_entries(environment.stats, class_names))
 
