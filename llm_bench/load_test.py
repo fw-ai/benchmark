@@ -4262,6 +4262,16 @@ def request_timeout(options: argparse.Namespace) -> Optional[float]:
     return value if value and value > 0 else None
 
 
+# Statuses a server answers with when it sheds load
+LOAD_SHED_STATUSES = (429, 503)
+
+
+def _is_load_shed_error(error: Optional[BaseException]) -> bool:
+    """An error whose text says the server shed the request (an overload message inside a streamed response)."""
+    text = str(error).lower() if error is not None else ""
+    return "overloaded" in text or "load shed" in text or "load-shed" in text
+
+
 def _is_timeout(error: Optional[BaseException]) -> bool:
     seen = set()
     stack = [error]
@@ -4290,7 +4300,7 @@ def _guard_stream(chunks, errors: list):
 class RequestOutcomes:
     """Client-side cancellations and failures by kind, overall and per --shape-mix class."""
 
-    KINDS = ("timeout", "http_299", "cancel_rate", "other_error")
+    KINDS = ("load_shed", "timeout", "http_299", "cancel_rate", "other_error")
     counts: dict = {}
     by_class: dict = {}
 
@@ -4298,6 +4308,8 @@ class RequestOutcomes:
     def classify(cls, error: Optional[BaseException] = None, status_code: Optional[int] = None) -> str:
         if status_code == CLIENT_CANCELLED_STATUS:
             return "http_299"
+        if status_code in LOAD_SHED_STATUSES or _is_load_shed_error(error):
+            return "load_shed"  # the server shed the request ("service overloaded"): overload, not a client fault
         if _is_timeout(error):
             return "timeout"
         return "other_error"
@@ -4324,12 +4336,16 @@ def request_counts(stats) -> tuple[int, int]:
 def request_outcome_entries(stats, class_names: Optional[list[str]] = None) -> dict[str, Any]:
     """Timeouts, HTTP 299s, --cancel-rate cancellations and other failures, plus the client-cancelled fraction
     (timeouts and 299s) of all requests sent."""
-    sent, _ = request_counts(stats)
+    sent, failed = request_counts(stats)
     entries = {f"requests_{kind}": RequestOutcomes.counts.get(kind, 0) for kind in RequestOutcomes.KINDS}
+    entries["requests_sent"] = sent
+    entries["requests_failed"] = failed
+    entries["failed_fraction"] = failed / sent if sent else 0.0
     cancelled = entries["requests_timeout"] + entries["requests_http_299"]
     entries["client_cancelled_fraction"] = cancelled / sent if sent else 0.0
     for name in class_names or []:
         per_class = RequestOutcomes.by_class.get(name, {})
+        entries[f"class_{name}_load_shed"] = per_class.get("load_shed", 0)
         entries[f"class_{name}_timeouts"] = per_class.get("timeout", 0)
         entries[f"class_{name}_http_299"] = per_class.get("http_299", 0)
     return entries
@@ -6968,18 +6984,21 @@ def _(environment, **kw):
     if fail_ratio > environment.parsed_options.max_fail_ratio or total_latency is None:
         logger.error(
             f"Test failed: {num_failures}/{num_requests} requests failed ({fail_ratio:.2%}); "
-            f"timeouts {outcomes['requests_timeout']}, HTTP {CLIENT_CANCELLED_STATUS} {outcomes['requests_http_299']}, "
-            f"other errors {outcomes['requests_other_error']} (--request-timeout "
-            f"{request_timeout(environment.parsed_options)} s)"
+            f"load-shed (429/503) {outcomes['requests_load_shed']}, timeouts {outcomes['requests_timeout']}, "
+            f"HTTP {CLIENT_CANCELLED_STATUS} {outcomes['requests_http_299']}, other errors "
+            f"{outcomes['requests_other_error']} (--request-timeout {request_timeout(environment.parsed_options)} s); "
+            f"the summary is still written, and the exit code is 1"
         )
+        # The summary below is written anyway: an overloaded run's send timing, rate and latency are what its
+        # steps are scored on
         environment.process_exit_code = 1
-        return
-    # Explicitly set exit code 0 so that locust's default policy does not force
-    # a non-zero exit when runner.exceptions is non-empty (e.g. unhandled
-    # exceptions from non-request paths like dataset loading).
-    environment.process_exit_code = 0
+    else:
+        # Explicitly set exit code 0 so that locust's default policy does not force
+        # a non-zero exit when runner.exceptions is non-empty (e.g. unhandled
+        # exceptions from non-request paths like dataset loading).
+        environment.process_exit_code = 0
 
-    entries = copy.copy(InitTracker.logging_params)
+    entries = copy.copy(InitTracker.logging_params) or {}
     replaying = bool(getattr(environment.parsed_options, "replay_schedule", None))
     if replaying and ReplayPacer._instance is not None:
         entries["concurrency"] = ReplayPacer._instance.describe()
@@ -7031,8 +7050,9 @@ def _(environment, **kw):
         text_entries, percentile_metrics = text_summary_entries(environment.stats, environment.parsed_options.stream)
         entries.update(text_entries)
 
-    entries["num_requests"] = total_latency.num_requests
-    entries["qps"] = total_latency.total_rps
+    # Successful requests (failed ones are in the outcome counts); nothing succeeded: 0
+    entries["num_requests"] = total_latency.num_requests if total_latency is not None else 0
+    entries["qps"] = total_latency.total_rps if total_latency is not None else 0.0
     percentile_to_report = [50, 90, 95, 99, 99.9]
     for percentile_metric in percentile_metrics:
         metric_entry = environment.stats.entries.get((percentile_metric, "METRIC"))

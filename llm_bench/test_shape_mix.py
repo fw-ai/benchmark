@@ -2391,6 +2391,33 @@ def test_real_tokenizer_builds_or_drops_tiny_pool_prefixes() -> None:
         assert ds.prefix_tokens[0] == 0 or ds.pool_sizes[0] > 0
 
 
+def test_load_shed_is_its_own_error_kind() -> None:
+    """C-216: a 429/503 or an "overloaded" message is load shedding, counted apart from timeouts and other errors."""
+    import requests
+
+    from load_test import RequestOutcomes, request_outcome_entries
+
+    classify = RequestOutcomes.classify
+    assert classify(status_code=503) == "load_shed" and classify(status_code=429) == "load_shed"
+    assert classify(RuntimeError('{"error": "service overloaded"}'), 200) == "load_shed"
+    assert classify(requests.exceptions.ReadTimeout("read timed out"), None) == "timeout"
+    assert classify(RuntimeError("boom"), 500) == "other_error"
+    assert classify(status_code=299) == "http_299"
+    RequestOutcomes.reset()
+    for kind in ("load_shed", "load_shed", "timeout", "other_error"):
+        RequestOutcomes.record(kind, "chat")
+    stats = RequestStats()
+    for ok in (True, True, True, True, False, False, False, False):
+        stats.log_request("POST", "/v1/completions", 10, 0)
+        if not ok:
+            stats.log_error("POST", "/v1/completions", "x")
+    entries = request_outcome_entries(stats, ["chat"])
+    assert (entries["requests_load_shed"], entries["requests_timeout"], entries["requests_other_error"]) == (2, 1, 1)
+    assert entries["requests_sent"] == 8 and entries["requests_failed"] == 4 and entries["failed_fraction"] == 0.5
+    assert entries["class_chat_load_shed"] == 2 and entries["client_cancelled_fraction"] == pytest.approx(1 / 8)
+    RequestOutcomes.reset()
+
+
 def test_prefix_fill_summary_reports_passes_order_source_and_prefix_lengths() -> None:
     """C-203: a fill prints what it sent: passes, order, where the pool came from, and each class's prefix length."""
     from types import SimpleNamespace
