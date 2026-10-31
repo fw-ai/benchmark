@@ -2202,7 +2202,7 @@ class LLMUser(HttpUser):
             self.provider_formatter.get_url(),
             data=json.dumps(data),
             catch_response=True,
-            timeout=60,
+            timeout=self.environment.parsed_options.request_timeout,
         ) as response:
             body = response.content
             dur_total = time.perf_counter() - t_start
@@ -2277,7 +2277,7 @@ class LLMUser(HttpUser):
             name=request_name,
             stream=True,
             catch_response=True,
-            timeout=60,
+            timeout=self.environment.parsed_options.request_timeout,
         ) as response:
             combined_text = ""
             done = False
@@ -2549,6 +2549,12 @@ def init_parser(parser):
         type=parse_lora_adapters,
         default=(),
         help="Comma-separated exact model strings to select round-robin per request",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=600,
+        help="Per-request HTTP timeout in seconds. Defaults to 600 for long uncached prefills.",
     )
     parser.add_argument(
         "--tokenizer",

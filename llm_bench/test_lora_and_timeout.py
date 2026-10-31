@@ -62,11 +62,11 @@ def test_the_adapter_is_in_the_serialized_body(monkeypatch) -> None:
     assert data["model"] == "base" and json.loads(body)["model"] == "base" and (max_tokens, prompt_tokens) == (8, 5)
 
 
-def test_lora_flag_and_default() -> None:
+def test_flags_and_defaults() -> None:
     parser = get_empty_argument_parser()
     setup_parser_arguments(parser)
     load_test.init_parser(parser)
     default = parser.parse_args([])
-    assert default.lora_adapters == ()
-    given = parser.parse_args(["--lora-adapters", "x,y"])
-    assert given.lora_adapters == ("x", "y")
+    assert default.lora_adapters == () and default.request_timeout == 600
+    given = parser.parse_args(["--lora-adapters", "x,y", "--request-timeout", "5"])
+    assert given.lora_adapters == ("x", "y") and given.request_timeout == 5.0
