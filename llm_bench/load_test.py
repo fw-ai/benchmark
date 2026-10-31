@@ -3583,6 +3583,9 @@ class SendTimeline:
     intended = array("d")
     actual = array("d")
     skipped = 0
+    # --qps: the time each committed send was claimed for, before any stall moved the schedule (so a stall isn't
+    # hidden from the planned sends per minute)
+    planned = array("d")
 
     @classmethod
     def record(cls, intended: float, actual: float) -> None:
@@ -3593,6 +3596,7 @@ class SendTimeline:
     def reset(cls) -> None:
         cls.intended = array("d")
         cls.actual = array("d")
+        cls.planned = array("d")
         cls.skipped = 0
 
 
@@ -3632,6 +3636,19 @@ def count_dispersion(times, window: float, offsets: int = 10) -> Optional[float]
 def dispersion_bins(times, window: float) -> int:
     """How many `window`-second bins the arrivals span (the 10 s dispersion is a noisy estimate from a few)."""
     return int((times[-1] - times[0]) // window) if len(times) > 1 else 0
+
+
+def sends_per_minute(planned_times) -> str:
+    """Requests planned in each minute from the first planned send, comma-separated (the last minute is partial).
+    `planned_times` are intended send times in seconds, before any lateness."""
+    if not len(planned_times):
+        return ""
+    first = min(planned_times)
+    counts: dict[int, int] = {}
+    for t in planned_times:
+        minute = int((t - first) // 60)
+        counts[minute] = counts.get(minute, 0) + 1
+    return ",".join(str(counts.get(m, 0)) for m in range(max(counts) + 1))
 
 
 def arrival_summary_entries(intended, actual) -> dict[str, Any]:
@@ -5348,6 +5365,7 @@ class LLMUser(HttpUser):
         self._pace_and_send(self._prepare_request(), intended, epoch)
 
     def _pace_and_send(self, prepared, intended: float, epoch: int, replay_entry=None) -> None:
+        claimed = intended
         delay = intended - time.monotonic()
         max_lateness = getattr(self.environment.parsed_options, "qps_max_lateness", DEFAULT_MAX_LATENESS_SECONDS)
         if replay_entry is not None:
@@ -5391,6 +5409,7 @@ class LLMUser(HttpUser):
                     InitTracker.warn_late_send(self.qps_pacer.shifts[-1], max_lateness)
         finally:
             self.qps_pacer.untrack(tracked)
+        SendTimeline.planned.append(claimed)
         if delay < -LATE_SEND_WARNING_SECONDS:
             InitTracker.warn_late_send(-delay, max_lateness)
         self._in_flight.spawn(self._send_paced, prepared, intended)
@@ -6984,6 +7003,15 @@ def _(environment, **kw):
         pacer = ReplayPacer._instance if replaying else FixedQPSPacer._instance
         if replaying and pacer is not None:
             entries.update(replay_summary_entries(pacer, DatasetHolder._shape_mix_instance))
+        # What the schedule planned, per minute from its first send, before lateness and before any stall moved the
+        # schedule (D-68's rate gate). For replay, every row claimed, so one skipped for lateness still counts as
+        # planned; lead-ins and fills aren't paced
+        planned = (
+            [e.offset for e in pacer.entries[: pacer._next]]
+            if replaying and pacer is not None
+            else list(SendTimeline.planned)
+        )
+        entries["intended_sends_per_minute"] = sends_per_minute(planned)
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0

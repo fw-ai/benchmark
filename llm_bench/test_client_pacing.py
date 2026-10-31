@@ -109,8 +109,12 @@ def test_a_stall_moves_the_schedule_once_without_a_burst(monkeypatch) -> None:
     sent = []
     user = _stalled_user(pacer, sent)
 
+    claimed_start = pacer.start
     LLMUser._paced_request(user)  # 2.9 s late: the schedule moves ~2.9 s later and this send moves with it
     assert pacer.epoch == 1
+    # the planned time is the claimed one, not the shifted one: the stall stays visible in Intended Sends Per Minute
+    assert SendTimeline.planned[0] == pytest.approx(claimed_start + 0.1, abs=1e-6)
+    assert sent[0][0] - SendTimeline.planned[0] == pytest.approx(pacer.shifted_seconds, abs=1e-6)
     assert pacer.shifted_seconds == pytest.approx(2.9, abs=0.05)
     assert pacer.resync(0, 5.0) is False  # a second stale send from the same stall doesn't shift again
     assert len(sent) == 1 and abs(sent[0][0] - time.monotonic()) < 0.1
@@ -366,3 +370,15 @@ def test_the_late_send_warning_names_the_configured_threshold(monkeypatch, caplo
     with caplog.at_level("WARNING", logger="load_test"):
         LLMUser._paced_request(user)
     assert "past 2 s late" in caplog.text
+
+
+def test_sends_per_minute_counts_planned_sends_from_the_first_one() -> None:
+    from load_test import sends_per_minute
+
+    assert sends_per_minute([]) == ""
+    assert sends_per_minute([100.0]) == "1"
+    # minutes count from the first planned send; a minute with none reads 0; the last minute is partial
+    times = [100.0 + t for t in (0, 10, 59.9, 60.0, 61, 179.9, 180.0)]
+    assert sends_per_minute(times) == "3,2,1,1"
+    assert sends_per_minute([100.0, 400.0]) == "1,0,0,0,0,1"
+    assert sends_per_minute([5.0, 1.0, 62.0]) == "2,1"  # any order
