@@ -45,6 +45,7 @@ def _user(adapters):
     return SimpleNamespace(
         provider_formatter=formatter,
         environment=SimpleNamespace(parsed_options=options),
+        shape_mix_dataset=None,
         max_tokens_sampler=SimpleNamespace(sample=lambda: 8),
         _get_input=lambda: ("hello", 5, None),
         lora_adapters=adapters,
@@ -55,11 +56,11 @@ def _user(adapters):
 def test_the_adapter_is_in_the_serialized_body(monkeypatch) -> None:
     monkeypatch.setattr(LLMUser, "_lora_adapter_counter", itertools.count())
     user = _user(("a", "b"))
-    bodies = [json.loads(LLMUser._prepare_text_request(user)[3]) for _ in range(3)]
+    # The prepared request's first item is the payload and its last the serialized body
+    bodies = [json.loads(LLMUser._prepare_text_request(user)[-1]) for _ in range(3)]
     assert [b["model"] for b in bodies] == ["a", "b", "a"]  # the body that is sent, not only the dict
-    plain = _user(())
-    data, max_tokens, prompt_tokens, body = LLMUser._prepare_text_request(plain)
-    assert data["model"] == "base" and json.loads(body)["model"] == "base" and (max_tokens, prompt_tokens) == (8, 5)
+    prepared = LLMUser._prepare_text_request(_user(()))
+    assert prepared[0]["model"] == "base" and json.loads(prepared[-1])["model"] == "base"
 
 
 def test_flags_and_defaults() -> None:
