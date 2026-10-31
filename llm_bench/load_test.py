@@ -80,6 +80,17 @@ _PROMPT_ESTIMATE_SAMPLES = 16
 _SMALL_PREFIX_PROBE_TOKENS = 32
 
 
+def parse_lora_adapters(value: str) -> tuple[str, ...]:
+    adapters = tuple(adapter.strip() for adapter in value.split(",") if adapter.strip())
+    if not adapters:
+        raise argparse.ArgumentTypeError("--lora-adapters must contain at least one model")
+    return adapters
+
+
+def select_round_robin(values: tuple[str, ...], index: int) -> Optional[str]:
+    return values[index % len(values)] if values else None
+
+
 def _load_auto_tokenizer(tokenizer_path: str):
     _install_transformers_tokenizer_compat_shim()
     return transformers.AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
@@ -4879,6 +4890,16 @@ class LLMUser(HttpUser):
 
     # In-flight paced sends (--qps, --replay-schedule) of all users, so the end of a replay can wait for them
     _paced_sends = gevent.pool.Group()
+    _lora_adapter_counter = itertools.count()
+    _lora_adapter_lock = threading.Lock()
+
+    @classmethod
+    def _next_lora_adapter(cls, adapters: tuple[str, ...]) -> Optional[str]:
+        if not adapters:
+            return None
+        with cls._lora_adapter_lock:
+            index = next(cls._lora_adapter_counter)
+        return select_round_robin(adapters, index)
 
     def on_start(self):
         try:
@@ -4954,6 +4975,7 @@ class LLMUser(HttpUser):
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
+        self.lora_adapters = self.environment.parsed_options.lora_adapters
 
         self.stream = self.environment.parsed_options.stream
         # Rerank, embeddings and systemone endpoints are non-streaming single-response APIs
@@ -5497,6 +5519,9 @@ class LLMUser(HttpUser):
             prompt, prompt_tokens, images = self._get_input()
         if shape_request is None:
             data = self.provider_formatter.format_payload(prompt, max_tokens, images)
+        request_model = self._next_lora_adapter(self.lora_adapters)
+        if request_model is not None:
+            data["model"] = request_model  # --lora-adapters: the request goes to this adapter
         return data, request_headers, max_tokens, prompt_tokens, shape_request, json.dumps(data)
 
     def _do_generate_text(self, prepared=None, intended=None):
@@ -5513,11 +5538,15 @@ class LLMUser(HttpUser):
             print("---")
         _begin_wire_timing(intended)
         t_start = time.perf_counter()
+        request_url = self.provider_formatter.get_url()
+        # With --lora-adapters each adapter gets its own row in the Locust stats
+        request_name = f"{request_url} [{data['model']}]" if self.lora_adapters else None
 
         with self.client.post(
-            self.provider_formatter.get_url(),
+            request_url,
             data=body,
             headers=request_headers,
+            name=request_name,
             stream=True,
             catch_response=True,
             timeout=request_timeout(self.environment.parsed_options),
@@ -5825,6 +5854,12 @@ def init_parser(parser):
         help="The model to use for generating text. If not specified we will pick the first model from the service as returned by /v1/models",
     )
     parser.add_argument(
+        "--lora-adapters",
+        type=parse_lora_adapters,
+        default=(),
+        help="Comma-separated exact model strings to select round-robin per request",
+    )
+    parser.add_argument(
         "--tokenizer",
         env_var="TOKENIZER",
         type=str,
@@ -6074,9 +6109,9 @@ def init_parser(parser):
     parser.add_argument(
         "--request-timeout",
         type=float,
-        default=60.0,
-        help="Seconds to wait for a connection and, for streaming responses, between reads (default 60). "
-        "0 waits forever. Timed-out requests count as failures and are reported as Requests Timeout in the summary.",
+        default=600.0,
+        help="Seconds to wait for a connection and, for streaming responses, between reads (default 600, for long "
+        "uncached prefills). 0 waits forever. Timed-out requests count as failures and are reported as Requests Timeout in the summary.",
     )
     parser.add_argument(
         "--qps-max-lateness",
