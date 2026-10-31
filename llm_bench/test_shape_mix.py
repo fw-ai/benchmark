@@ -1018,7 +1018,16 @@ def test_prefix_fill_sends_every_prefix_once_shaped_like_traffic() -> None:
     plan = ds.fill_plan()
 
     assert sorted(plan) == [(ci, j) for ci, n in enumerate(ds.pool_sizes) for j in range(n)]
-    assert plan[:4] == [(0, 0), (1, 0), (0, 1), (1, 1)]
+    # C-203: a random order across classes (seeded), reshuffled each pass
+    assert plan == ds.fill_plan() == ds.fill_plan(0)  # the same seed and pass give the same order
+    assert ds.fill_plan(1) != plan and sorted(ds.fill_plan(1)) == sorted(plan)
+    other = _dataset(tokenizer=tokenizer, request_seed=99)
+    assert sorted(other.fill_plan()) == sorted(plan) and other.fill_plan() != plan
+    big = _dataset(
+        dict(MIX, classes=[dict(MIX["classes"][0], prefix_pool_size=20), dict(MIX["classes"][1], prefix_pool_size=20)])
+    )
+    classes = [ci for ci, _ in big.fill_plan()]
+    assert classes != sorted(classes) and classes[:20] != [0] * 20  # not grouped by class
     requests = [ds.fill_request(ci, j) for ci, j in plan]
     assert all(r.generated_tokens == 1 for r in requests)
     assert len({r.prompt for r in requests}) == len(plan)

@@ -2343,11 +2343,13 @@ class ShapeMixDataset:
             replay_role=plan.get("role"),
         )
 
-    def fill_plan(self) -> list[tuple[int, int]]:
-        """Every (class, prefix) once, classes interleaved so each warms at the same pace."""
-        return [
-            (ci, j) for j in range(max(self.pool_sizes, default=0)) for ci, n in enumerate(self.pool_sizes) if j < n
-        ]
+    def fill_plan(self, pass_index: int = 0) -> list[tuple[int, int]]:
+        """Every (class, prefix) once, in a random order across classes (seeded by the run's request seed and the
+        pass), so a pass doesn't end with one class artificially hottest and no class is evicted first by fill
+        order; each pass reshuffles."""
+        plan = [(ci, j) for ci, n in enumerate(self.pool_sizes) for j in range(n)]
+        random.Random(f"shape-mix:{self.request_seed}:fill-order:{pass_index}").shuffle(plan)
+        return plan
 
     def fill_request(self, class_index: int, prefix_index: int) -> ShapeRequest:
         """A request on one prefix shaped like live traffic (prefix + unique tail), generating one token.
@@ -5337,10 +5339,13 @@ class LLMUser(HttpUser):
         PrefixFill.started = True
         InitTracker.spawned.wait()
         ds = self.shape_mix_dataset
-        plan = ds.fill_plan()
-        concurrency = self.environment.parsed_options.prefix_fill_concurrency
-        PrefixFill.passes = 1
-        PrefixFill.order = "classes interleaved"
+        options = self.environment.parsed_options
+        concurrency = options.prefix_fill_concurrency
+        first_pass, passes = options.prefix_fill_first_pass, options.prefix_fill_passes
+        if passes < 1:
+            raise ValueError("--prefix-fill-passes must be >= 1")
+        PrefixFill.passes = passes
+        PrefixFill.order = f"shuffled, seed {ds.request_seed}, passes {first_pass}..{first_pass + passes - 1}"
         source = getattr(ds, "replay_pool_source", "") or "mix"
         by_class = ", ".join(
             f"{c.name} {ds.reusable_tokens[ci]}x{ds.pool_sizes[ci]}"
@@ -5348,20 +5353,21 @@ class LLMUser(HttpUser):
             if ds.pool_sizes[ci]
         )
         logger.info(
-            f"--prefix-fill: {PrefixFill.passes} pass, sending {len(plan)} prefixes ({ds.pool_tokens / 1e6:.1f}M "
-            f"prefix tokens, order: {PrefixFill.order}) at concurrency {concurrency}; pool from {source}; reusable "
-            f"tokens x prefixes per class: {by_class}"
+            f"--prefix-fill: {passes} pass(es), {sum(ds.pool_sizes)} prefixes each ({ds.pool_tokens / 1e6:.1f}M prefix "
+            f"tokens, order: {PrefixFill.order}) at concurrency {concurrency}; pool from {source}; reusable tokens x "
+            f"prefixes per class: {by_class}"
         )
         pool = gevent.pool.Pool(concurrency)
         started = time.monotonic()
-        for ci, j in plan:
-            request = ds.fill_request(ci, j)
-            data, headers = build_shape_mix_request(self.provider_formatter, request)
-            PrefixFill.prompt_tokens_sent += request.prompt_tokens
-            PrefixFill.prefix_tokens_sent += ds._head + ds.prefix_tokens[ci]
-            PrefixFill.requests += 1
-            pool.spawn(self._send_paced, (data, headers, 1, request.prompt_tokens, request, json.dumps(data)), None)
-        pool.join()
+        for pass_index in range(first_pass, first_pass + passes):
+            for ci, j in ds.fill_plan(pass_index):
+                request = ds.fill_request(ci, j)
+                data, headers = build_shape_mix_request(self.provider_formatter, request)
+                PrefixFill.prompt_tokens_sent += request.prompt_tokens
+                PrefixFill.prefix_tokens_sent += ds._head + ds.prefix_tokens[ci]
+                PrefixFill.requests += 1
+                pool.spawn(self._send_paced, (data, headers, 1, request.prompt_tokens, request, json.dumps(data)), None)
+            pool.join()  # a pass completes before the next starts
         PrefixFill.seconds = time.monotonic() - started
         logger.info(
             f"--prefix-fill: sent {PrefixFill.requests} requests, {PrefixFill.prompt_tokens_sent} prompt tokens in "
@@ -6338,10 +6344,25 @@ def init_parser(parser):
         "--prefix-fill",
         action="store_true",
         default=False,
-        help="For --shape-mix: prefill-only cache fill. Sends every prefix of every class once (classes "
-        "interleaved), each as a request shaped like live traffic (prefix + unique tail) with max_tokens 1, at "
+        help="For --shape-mix: prefill-only cache fill. Sends every prefix of every class once per "
+        "pass (--prefix-fill-passes), in a random order across classes that is reshuffled each pass, each as a "
+        "request shaped like live traffic (prefix + unique tail) with max_tokens 1, at "
         "--prefix-fill-concurrency, then exits. The summary reports requests, prompt tokens and shared-prefix tokens sent, "
         "server-reported prompt and cached tokens, and the time taken. Run it in one process, without -t.",
+    )
+    parser.add_argument(
+        "--prefix-fill-passes",
+        type=int,
+        default=1,
+        help="With --prefix-fill: send every prefix this many times, each pass in its own random order across "
+        "classes (seeded by the request seed and the pass number). Default 1.",
+    )
+    parser.add_argument(
+        "--prefix-fill-first-pass",
+        type=int,
+        default=0,
+        help="With --prefix-fill: the first pass's number, which seeds its order. A fill run in several processes "
+        "gives each a different first pass so their orders differ. Default 0.",
     )
     parser.add_argument(
         "--prefix-fill-concurrency",
