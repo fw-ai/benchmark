@@ -2848,6 +2848,39 @@ def test_sampled_lengths_keep_a_skewed_classs_mean_on_a_small_uncached_base() ->
         assert q(out, level) == pytest.approx(value, rel=tol), level
 
 
+def test_infer_reuse_semantics_from_probe_points() -> None:
+    """C-247 / D-111: the probe's points infer the overhang and restore boundary, in either form (the overhang
+    outside the restore blocks, as measured on serverless DeepSeek V4, or inside), and report a size-dependent
+    overhang."""
+    from load_test import infer_reuse_semantics
+
+    ladder = [1097, 1388, 2649, 4395, 6238, 7984, 9730, 11476, 13219, 15065, 16811, 20012, 2079, 8223, 32803]
+    # token-exact with a 128-token recompute (the P1 replica's DeepSeek V4)
+    w, b, form, error, table, under, over = infer_reuse_semantics([(s2, s2 - 128) for s2 in ladder])
+    assert (w, b, error) == (128, 0, 0) and under == over == 128
+    # blocks outside the overhang, as measured on serverless DSV4 (2067 -> 1920, 4722 -> 3968, 10916 -> 10112)
+    outer = [(2067, 1920), (3321, 1920), (4722, 3968), (10916, 10112), (500, 0), (15000, 14208), (20000, 18304)]
+    w, b, form, error, table, under, over = infer_reuse_semantics(outer)
+    assert (w, b, form) == (128, 2048, "outer") and error == 0
+    # the overhang inside the blocks: floor((S - W) / B) * B, distinguishable at S mod B < W
+    inner = [(2170, 0), (2400, 2048), (4300, 4096), (8300, 6144), (20000, 18432), (1200, 0)]
+    w, b, form, error, table, under, over = infer_reuse_semantics(inner)
+    # the inner form only bounds W (every W in 123..352 reproduces this ladder); the smallest is returned
+    assert (b, form, error) == (2048, "inner", 0) and 123 <= w <= 352
+    # a fine boundary without a recompute
+    w, b, form, error, table, under, over = infer_reuse_semantics([(s2, (s2 // 64) * 64) for s2 in ladder])
+    assert (w, b, error) == (0, 64, 0)
+    # noise +-2 doesn't move the fit
+    noisy = [(s2, s2 - 128 + (i % 3) - 1) for i, s2 in enumerate(ladder)]
+    w, b, form, error, table, under, over = infer_reuse_semantics(noisy)
+    assert (w, b) == (128, 0) and error <= 15
+    # a size-dependent overhang is reported: 128 under 4K, 300 above
+    w, b, form, error, table, under, over = infer_reuse_semantics(
+        [(s2, s2 - 128) for s2 in ladder if s2 < 4096] + [(s2, s2 - 300) for s2 in ladder if s2 >= 4096]
+    )
+    assert under == 128 and over == 300
+
+
 def test_bare_tails_never_reuse_more_than_the_recorded_cached_length(tmp_path) -> None:
     """D-102 point 3: a bare tail opens with a per-row word, so it diverges at the cut like a nonce tail. An
     engine's prefix cache is the longest common token prefix with an earlier prompt; simulating it over the whole

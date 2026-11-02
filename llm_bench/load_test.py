@@ -963,6 +963,43 @@ _RESTORE_BOUNDARY_FROM_INDEX_TOPK = {"glm_moe_dsa"}
 RESTORE_BOUNDARY_MARGIN_TOKENS = 16
 
 
+# Restore-block candidates the probe distinguishes (0: token-exact reuse, no boundary)
+_REUSE_BOUNDARY_CANDIDATES = (0, 64, 128, 256, 512, 1024, 2048, 4096, 8192)
+
+
+def infer_reuse_semantics(points: list) -> tuple:
+    """(overhang, boundary, form, residual, table) inferred from probe points [(shared, engine cached)].
+
+    The engine reuses an S-token shared prefix as either floor(S / B) * B - W (the overhang outside the blocks;
+    measured on serverless DeepSeek V4: shared 2067 -> 1920) or floor((S - W) / B) * B (inside). B = 0 (or 1)
+    means token-exact reuse with a recompute of W at the divergence. The best (B, W, form) by absolute error
+    wins; `table` is the per-point fit. With the inner form the overhang is only bounded: every W in an interval
+    reproduces the ladder, and the smallest one is returned. The overhang is also fitted separately below and
+    above 4K shared tokens: if those differ, it is size-dependent and the probe's numbers don't extrapolate."""
+    forms = {
+        "outer": lambda shared, w, b: max(0, (shared // b) * b - w) if b else max(0, shared - w),
+        "inner": lambda shared, w, b: max(0, (shared - w) // b) * b if b else max(0, shared - w),
+    }
+    best = None
+    for form, predicted in forms.items():
+        for b in _REUSE_BOUNDARY_CANDIDATES:
+            for w in range(0, 1025):
+                error = sum(abs(cached - predicted(shared, w, b)) for shared, cached in points)
+                if best is None or error < best[3]:
+                    best = (w, b, form, error, predicted)
+    w, b, form, error, predicted = best
+    table = [(shared, cached, predicted(shared, w, b)) for shared, cached in points]
+
+    def fit_overhang(bucket):
+        if not bucket:
+            return None
+        return min(range(0, 1025), key=lambda w2: sum(abs(c - predicted(sh, w2, b)) for sh, c in bucket))
+
+    under = fit_overhang([(sh, c) for sh, c, _ in table if sh < 4096])
+    over = fit_overhang([(sh, c) for sh, c, _ in table if sh >= 4096])
+    return w, b, form, error, table, under, over
+
+
 def resolve_served_model_config(options: argparse.Namespace) -> str:
     """Where the SERVED model's reuse semantics come from: --served-model-config if given, else --tokenizer.
 
@@ -3070,6 +3107,48 @@ def _finish_wire_timing() -> None:
         SendTimeline.record(*pending)
 
 
+def _common_prefix_count(a, b) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+class PrefixReuseProbe:
+    """Results of a --prefix-reuse-probe run: what the engine reuses per shared-prefix length, and the
+    (overhang, restore boundary) inferred from it (D-111)."""
+
+    started = False
+    points: list = []  # (shared prompt tokens, engine cached tokens)
+    overhang = None
+    boundary = None
+    form = ""
+    residual = 0
+    under_4k = None
+    over_4k = None
+    failed = 0
+    seconds = 0.0
+
+
+def prefix_reuse_probe_entries() -> dict[str, Any]:
+    if not PrefixReuseProbe.points:
+        return {}
+    w, b = PrefixReuseProbe.overhang, PrefixReuseProbe.boundary
+    suggested = f"--prefix-reuse-overhang {w}" + (f" --prefix-restore-boundary {b}" if b else "")
+    return {
+        "prefix_reuse_probe_points": "; ".join(f"{s}shared->{c}cached" for s, c in PrefixReuseProbe.points),
+        "prefix_reuse_probe_overhang": "" if w is None else w,
+        "prefix_reuse_probe_boundary": "" if b is None else b,
+        "prefix_reuse_probe_form": PrefixReuseProbe.form,
+        "prefix_reuse_probe_overhang_under_4k": "" if PrefixReuseProbe.under_4k is None else PrefixReuseProbe.under_4k,
+        "prefix_reuse_probe_overhang_over_4k": "" if PrefixReuseProbe.over_4k is None else PrefixReuseProbe.over_4k,
+        "prefix_reuse_probe_residual": PrefixReuseProbe.residual,
+        "prefix_reuse_probe_failed": PrefixReuseProbe.failed,
+        "prefix_reuse_probe_suggested": "" if w is None else suggested,
+    }
+
+
 class PrefixFill:
     """Progress of a --prefix-fill run, reported in the summary."""
 
@@ -4119,7 +4198,8 @@ def validate_shape_mix_options(options: argparse.Namespace) -> None:
             f"sliding window at the divergence (DeepSeek V4: 128 tokens) will reuse LESS than designed - on P1 "
             f"that cost ~127 cached tokens per class, +33% uncached on partial_lt_2k. If the model served differs "
             f"from --tokenizer {getattr(options, 'tokenizer', None) or DEFAULT_TOKENIZER!r}, pass "
-            f"--served-model-config <its config>, or --prefix-reuse-overhang <tokens>."
+            f"--served-model-config <its config> or --prefix-reuse-overhang <tokens>, or measure the engine with "
+            f"--prefix-reuse-probe (a family outside the measured table is a warning until probed)."
         )
     if getattr(options, "replay_schedule", None):
         pods, pod_index = getattr(options, "replay_pods", 1), getattr(options, "replay_pod_index", 0)
@@ -5208,6 +5288,16 @@ class LLMUser(HttpUser):
             adapter = _timed_adapter(pool_maxsize=QPS_CONNECTION_POOL_SIZE)
             self.client.mount("http://", adapter)
             self.client.mount("https://", adapter)
+        elif getattr(self.environment.parsed_options, "prefix_reuse_probe", False):
+            options = self.environment.parsed_options
+            if options.qps is not None or options.burst or options.ramping_time is not None:
+                raise ValueError("--prefix-reuse-probe is a standalone step; drop --qps, --burst and --ramping-time")
+            if options.replay_schedule or options.prefix_fill:
+                raise ValueError("--prefix-reuse-probe is a standalone step; drop --replay-schedule and --prefix-fill")
+            self.wait_time = lambda: 0
+            adapter = _timed_adapter(pool_maxsize=QPS_CONNECTION_POOL_SIZE)
+            self.client.mount("http://", adapter)
+            self.client.mount("https://", adapter)
         elif getattr(self.environment.parsed_options, "prefix_fill", False):
             options = self.environment.parsed_options
             if not options.shape_mix:
@@ -5397,6 +5487,9 @@ class LLMUser(HttpUser):
 
     @task
     def generate_text(self):
+        if getattr(self.environment.parsed_options, "prefix_reuse_probe", False):
+            self._run_prefix_reuse_probe()
+            return
         if getattr(self.environment.parsed_options, "prefix_fill", False):
             self._run_prefix_fill()
             return
@@ -5412,6 +5505,104 @@ class LLMUser(HttpUser):
         finally:
             if self.ramping_pacer:
                 self.ramping_pacer.request_end()
+
+    def _run_prefix_reuse_probe(self):
+        """Measure what the engine reuses (D-111): send one prompt, then prompts sharing its first S tokens with
+        divergent tails, read the engine's cached tokens, and infer the overhang and restore boundary. Sequential
+        (each read must follow its cache write), then quit: a standalone step for a family's first job."""
+        if PrefixReuseProbe.started:
+            gevent.sleep(1)
+            return
+        PrefixReuseProbe.started = True
+        InitTracker.spawned.wait()
+        options = self.environment.parsed_options
+        tokenizer = InitTracker.load_tokenizer(options.tokenizer)
+        tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
+        ladder = [int(x) for x in options.prefix_reuse_probe_lengths.split(",") if x.strip()]
+        with gzip.open(resolve_shape_mix_corpus(None), "rt", encoding="utf-8") as f:
+            words = [w for w in f.read().split() if w][:]
+        base_text = " ".join(words)
+        ids = tokenizer.encode(base_text, add_special_tokens=False)
+        prompt_ids = lambda text: (
+            chat_template_token_ids(tokenizer, tokenizer_path, text)
+            if options.chat
+            else tokenizer.encode(text, add_special_tokens=False)
+        )
+
+        def exact_prefix_text(n):
+            """The first n tokens of the corpus, as text that re-encodes to exactly them."""
+            while n > 0:
+                text = tokenizer.decode(ids[:n])
+                if tokenizer.encode(text, add_special_tokens=False) == ids[:n]:
+                    return text
+                n -= 1
+            raise ValueError("--prefix-reuse-probe: couldn't slice the corpus to exact tokens")
+
+        top = max(ladder)
+        tail_a = "\n\n" + " ".join(words[-200:])
+        prompt_a = exact_prefix_text(top) + tail_a
+        formatter = self.provider_formatter
+        http = requests.Session()
+        url_headers = {"Content-Type": "application/json"}
+        if options.api_key:
+            url_headers["Authorization"] = "Bearer " + options.api_key
+        for header in options.header or []:
+            key, val = header.split(":", 1)
+            url_headers[key] = val
+        url = self.environment.host.rstrip("/") + formatter.get_url()
+
+        def send(prompt):
+            data = formatter.format_payload(prompt, 1, None)
+            data["max_tokens"] = 1
+            data["stream"] = False
+            for key in ("min_tokens", "ignore_eos", "stream_options"):
+                data.pop(key, None)
+            response = http.post(
+                url, data=json.dumps(data), headers=url_headers, timeout=request_timeout(options) or 600
+            )
+            response.raise_for_status()
+            # Parsed here, not through the formatter: its parser follows --stream, while the probe always
+            # reads a non-streaming body
+            usage = (orjson.loads(response.content).get("usage") or {})
+            details = usage.get("prompt_tokens_details") or {}
+            cached = details.get("cached_tokens", usage.get("cached_input_tokens"))
+            if cached is None:
+                raise ValueError("the response reports no cached tokens (usage.prompt_tokens_details.cached_tokens)")
+            return int(cached)
+
+        started = time.monotonic()
+        logger.info(f"--prefix-reuse-probe: warming a {top}-token prompt, then {len(ladder)} shared prefixes")
+        try:
+            send(prompt_a)  # caches the prefix; its own cached tokens aren't a shared-prefix measurement
+            ids_a = prompt_ids(prompt_a)
+            for shared in ladder:
+                tail_b = f"\n\nRequest {secrets.token_hex(8)}: " + " ".join(words[-400:-200])
+                prompt_b = exact_prefix_text(shared) + tail_b
+                shared_tokens = _common_prefix_count(ids_a, prompt_ids(prompt_b))
+                cached = send(prompt_b)
+                PrefixReuseProbe.points.append((shared_tokens, cached))
+                logger.info(f"--prefix-reuse-probe: {shared_tokens} shared tokens -> {cached} cached")
+        except Exception as e:
+            PrefixReuseProbe.failed += 1
+            logger.error(f"--prefix-reuse-probe failed ({e!r}); no inference")
+        PrefixReuseProbe.seconds = time.monotonic() - started
+        if PrefixReuseProbe.points:
+            w, b, form, error, table, under, over = infer_reuse_semantics(PrefixReuseProbe.points)
+            PrefixReuseProbe.overhang, PrefixReuseProbe.boundary, PrefixReuseProbe.residual = w, b, error
+            PrefixReuseProbe.form, PrefixReuseProbe.under_4k, PrefixReuseProbe.over_4k = form, under, over
+            size_note = (
+                ""
+                if under is None or over is None or abs(under - over) <= 8
+                else f"; !!! the overhang differs by size ({under} under 4K, {over} above): size-dependent"
+            )
+            logger.info(
+                f"--prefix-reuse-probe: overhang {w}, restore boundary {b} ({form} form, residual {error} over "
+                f"{len(PrefixReuseProbe.points)} points, overhang {under} under 4K and {over} above) in "
+                f"{PrefixReuseProbe.seconds:.1f}s{size_note}; use --prefix-reuse-overhang {w}"
+                + (f" --prefix-restore-boundary {b}" if b else "")
+            )
+        gevent.spawn(InitTracker._do_quit)
+        gevent.sleep(1)
 
     def _run_prefix_fill(self):
         """Send every prefix once (see ShapeMixDataset.fill_request) at --prefix-fill-concurrency, then quit."""
@@ -6432,6 +6623,24 @@ def init_parser(parser):
         "treats input_length as content tokens only.",
     )
     parser.add_argument(
+        "--prefix-reuse-probe",
+        action="store_true",
+        default=False,
+        help="Standalone step (D-111): measure what the server reuses. Sends one prompt, then prompts sharing its "
+        "first S tokens with divergent tails (a comma list of S with --prefix-reuse-probe-lengths), reads the "
+        "engine's cached tokens, and infers the prefix reuse overhang and restore boundary, printed and in the "
+        "summary (Prefix Reuse Probe ...), with the flags to pass. Run it as a family's first job, before scored "
+        "steps; it quits when done.",
+    )
+    parser.add_argument(
+        "--prefix-reuse-probe-lengths",
+        type=str,
+        default="1097,1388,2649,4395,6238,7984,9730,11476,13219,15065,16811,20012,2079,8223,32803",
+        help="Shared-prefix lengths (content tokens) the probe measures, comma-separated. The default is a dozen "
+        "off-round values (1000 + k*97) across 1K-20K, so cached lengths snap to a restore granularity instead of "
+        "landing on it, plus one value near 2K, 8K and 32K to check the overhang is size-independent.",
+    )
+    parser.add_argument(
         "--prefix-fill",
         action="store_true",
         default=False,
@@ -7156,6 +7365,7 @@ def _(environment, **kw):
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())
+    entries.update(prefix_reuse_probe_entries())
 
     class_names = None
     if getattr(environment.parsed_options, "shape_mix", None):
