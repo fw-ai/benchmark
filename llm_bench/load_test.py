@@ -1975,7 +1975,8 @@ class ShapeMixDataset:
             # The row's own length, short of what's already counted as input overflow (N8-140-5: checking against
             # the planned length missed tails whose junction didn't settle)
             target = reused + max(content - reused, self._bare_min())
-            tail_segment = self._bare_tail(content - reused, segments[-1], variant)
+            continuation = self._source_continuation(segments, source)
+            tail_segment = self._bare_tail(content - reused, segments[-1], variant, entry.index, continuation)
             tail = tail_segment[-1]
             for attempt in range(2):
                 actual = len(self._encode("".join(self._render_segment(sg) for sg in segments + [tail_segment])))
@@ -1986,7 +1987,7 @@ class ShapeMixDataset:
                 if attempt:
                     self.replay_shortfall["length_rows"] += 1
                     break
-                tail_segment = self._bare_tail(tail - off, segments[-1], variant)
+                tail_segment = self._bare_tail(tail - off, segments[-1], variant, entry.index, continuation)
                 tail = tail_segment[-1]
         else:
             joint = (
@@ -2076,11 +2077,8 @@ class ShapeMixDataset:
             start = SHAPE_MIX_TAIL_START if want else SHAPE_MIX_TAIL_START.lstrip()
             min_tail = self._min_tail_tokens_for(start)
             variant = entry.index % REPLAY_FILLER_VARIANTS
-            if want and content - want < min_tail + 2:
-                if content - want >= self._trailer_tokens + 2:
-                    keys.add(("bare", "\n", content - want, variant))
-            else:
-                keys.add(("tail", start, max(content - want, min_tail), variant))
+            # Bare-tail windows aren't prebuilt: their lead (a per-row word at the cut) isn't known until layout
+            keys.add(("tail", start, max(content - want, min_tail), variant))
         missing = sorted(k for k in keys if k not in self._replay_windows)
         if missing:
             self._build_replay_windows(missing)
@@ -2106,15 +2104,51 @@ class ShapeMixDataset:
         # A newline, filler and the instruction; without an instruction a single one-token word will do
         return self._trailer_tokens + 2 if self.trailer else 1
 
-    def _bare_tail(self, n: int, left: tuple, variant: int) -> tuple:
-        """A tail of exactly n tokens after `left` with no nonce: a newline, filler and the instruction."""
+    def _bare_cut_word(self, origin: int, continuation: Optional[str]) -> str:
+        """A single-token word opening a bare tail, drawn per row (seeded by it) and chosen to differ from the
+        reused text's next words: without it a bare tail could continue the pool or session text past the row's
+        cut, or repeat another row's tail, and the engine would reuse more than the recorded cached length."""
+        words = self._nonce_words
+        if not words:
+            return ""
+        rng = random.Random(f"shape-mix:{self.request_seed}:bare-word:{origin}")
+        avoid = set(continuation.replace("\n", " ").split()[:3]) if continuation else set()
+        for _ in range(16):
+            word = words[rng.randrange(len(words))]
+            if word not in avoid:
+                return word
+        return words[(origin + 1) % len(words)]
+
+    def _source_continuation(self, segments: list, source: list) -> Optional[str]:
+        """The reused text's first characters past the cut (what the engine has cached beyond the row's reusable
+        length), so a bare tail can be opened with a word that differs from them."""
+        if not segments or not source:
+            return None
+        left = segments[-1]
+        idx = next((i for i, sg in enumerate(source) if sg is left), None)
+        if idx is not None:  # the cut landed on a segment boundary: the next source segment follows
+            return "".join(self._edges(sg)[0] for sg in source[idx + 1 : idx + 3]) or None
+        full, cut = self._render_segment(source[-1]), self._render_segment(left)
+        if full.startswith(cut) and len(full) > len(cut):  # a byte prefix of the last source segment
+            return full[len(cut) : len(cut) + 40]
+        return None
+
+    def _bare_tail(
+        self, n: int, left: tuple, variant: int, origin: int = 0, continuation: Optional[str] = None
+    ) -> tuple:
+        """A tail of exactly n tokens after `left`, with no room for the nonce: a per-row single-token word at the
+        cut (see _bare_cut_word), then a newline, filler and the instruction."""
         if n <= 1 and not self.trailer and self._nonce_words:
-            return ("word", self._nonce_words[variant % len(self._nonce_words)], 1)
+            return ("word", self._bare_cut_word(origin, continuation), 1)
         n = max(n, self._trailer_tokens + 2)
+        word = self._bare_cut_word(origin, continuation)
+        # The word opens the tail (space-separated, like a nonce's first token), so two rows diverge at the cut
+        # and neither continues the reused text: no shared separator token ahead of it
+        lead = f" {word} " if word else "\n"
         segment = None
         for _ in range(3):
-            offset, width = self._replay_window("bare", "\n", n, variant)
-            segment = ("bare", offset, width, True, n)
+            offset, width = self._replay_window("bare", lead, n, variant, origin)
+            segment = ("bare", word, offset, width, True, n)
             fixed = n - self._segment_junction(left, segment)
             if fixed == n or fixed < self._trailer_tokens + 2:
                 break
@@ -2213,7 +2247,7 @@ class ShapeMixDataset:
             fit = self._fit_width("", seg[1], tokens)
             return None if fit is None else ("resp", seg[1], fit[0], fit[1])
         if kind == "bare":
-            fit = self._fit_width("\n", seg[1], tokens)
+            fit = self._fit_width(f" {seg[1]} ", seg[2], tokens)
             return None if fit is None else ("bare", seg[1], fit[0], False, fit[1])
         return None
 
@@ -2238,8 +2272,8 @@ class ShapeMixDataset:
             )
         return best
 
-    def _replay_window(self, kind: str, tail_start: str, n: int, variant: int = 0) -> tuple[int, int]:
-        key = (kind, tail_start, n, variant)
+    def _replay_window(self, kind: str, tail_start: str, n: int, variant: int = 0, origin: int = 0) -> tuple[int, int]:
+        key = (kind, tail_start, n, variant, origin)
         if key not in self._replay_windows:
             self._build_replay_windows([key])
         return self._replay_windows[key]
@@ -2250,12 +2284,15 @@ class ShapeMixDataset:
 
     def _build_replay_windows(self, needed: list[tuple]) -> None:
         jobs = []
-        for kind, tail_start, n, variant in needed:
+        for key in needed:
+            kind, tail_start, n, variant = key[:4]
+            origin = key[4] if len(key) > 4 else 0
             if kind == "tail":
                 lead = self._nonce_text(tail_start, 0, 0) + " "
                 trailer, trailer_tokens = self.trailer, self._trailer_tokens
             elif kind == "bare":
-                lead, trailer, trailer_tokens = "\n", self.trailer, self._trailer_tokens
+                # tail_start is the lead itself (a per-row word at the cut, then a newline)
+                lead, trailer, trailer_tokens = tail_start, self.trailer, self._trailer_tokens
             else:
                 lead, trailer, trailer_tokens = "", "", 0
             jobs.append(
@@ -2267,7 +2304,9 @@ class ShapeMixDataset:
                     lead_tokens=len(self._encode(lead)) if lead else 0,
                     num_tokens=n,
                     rng=random.Random(
-                        f"shape-mix:{self.mix.seed}:replay:{kind}:{tail_start}:{n}" + (f":{variant}" if variant else "")
+                        f"shape-mix:{self.mix.seed}:replay:{kind}:{tail_start}:{n}"
+                        + (f":{variant}" if variant else "")
+                        + (f":{origin}" if origin else "")
                     ),
                     check_tail_start=False,
                     trailer=trailer,
@@ -2299,8 +2338,8 @@ class ShapeMixDataset:
         if kind == "sep":
             return "\n\n"
         if kind == "bare":
-            _, offset, width, with_trailer, _ = seg
-            return "\n" + self._corpus.slice(offset, width) + (self.trailer if with_trailer else "")
+            _, word, offset, width, with_trailer, _ = seg
+            return f" {word} " + self._corpus.slice(offset, width) + (self.trailer if with_trailer else "")
         if kind == "word":
             return " " + seg[1]
         return self._corpus.slice(seg[1], seg[2])

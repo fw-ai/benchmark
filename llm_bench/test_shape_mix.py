@@ -2715,6 +2715,60 @@ def test_rows_with_little_uncached_room_get_a_bare_tail(tmp_path) -> None:
     assert ds.replay_shortfall["rows"] == 0
 
 
+def test_bare_tails_never_reuse_more_than_the_recorded_cached_length(tmp_path) -> None:
+    """D-102 point 3: a bare tail opens with a per-row word, so it diverges at the cut like a nonce tail. An
+    engine's prefix cache is the longest common token prefix with an earlier prompt; simulating it over the whole
+    replay, no row may reuse more than its recorded cached_length (bare tails could once repeat another row's
+    tail, or continue the pool or session text past their cut)."""
+    from load_test import DEFAULT_TOKENIZER, chat_template_token_ids
+
+    from load_test import chat_template_head_tokens, empty_chat_template_token_ids
+
+    tokenizer, _, _ = _llama()
+    trailing = len(empty_chat_template_token_ids(tokenizer, DEFAULT_TOKENIZER)) - chat_template_head_tokens(
+        tokenizer, DEFAULT_TOKENIZER
+    )
+    rows = [
+        # a first row of each shape, caching the pool prefix plus a nonce tail
+        {"timestamp": 0, "class": "chat", "input_length": 1500, "cached_length": 400, "prefix_index": 0},
+        # four rows with the same class, prefix, cached and input length: identical bare tails once, now apart
+        *[
+            {
+                "timestamp": 10 + i,
+                "class": "chat",
+                "input_length": 404 + trailing,
+                "cached_length": 400,
+                "prefix_index": 0,
+            }
+            for i in range(4)
+        ],
+        # a session whose follow-up's bare tail cuts the first row's prompt past the pool prefix
+        {"timestamp": 30, "class": "chat", "session_id": "a", "input_length": 1500, "cached_length": 400},
+        {"timestamp": 40, "class": "chat", "session_id": "a", "input_length": 1400, "cached_length": 1396 - trailing},
+    ]
+    ds, entries, tokenizer = _replay_dataset(tmp_path, rows)
+    prompts = []
+    for entry in entries:
+        r = ds.replay_request(entry)
+        ids = chat_template_token_ids(tokenizer, DEFAULT_TOKENIZER, r.prompt)
+        assert len(ids) == r.prompt_tokens == entry.input_length
+        # a multi-token word straddling the cut can leave the reuse a token or two short (counted as shortfall)
+        assert entry.cached_length - 2 <= r.reusable_tokens <= entry.cached_length
+        # the engine's prefix cache: the longest common token prefix with any earlier prompt. Bare-tail rows
+        # reuse at most their recorded cached_length; nonce rows also share the tail-start header every unique
+        # tail begins with, past a pool-sourced prefix (a pre-existing, designed 2-token overshoot)
+        hit = max((_common_prefix(ids, seen) for seen in prompts), default=0)
+        bare = ds._replay[entry.index]["segments"][-1][0] in ("bare", "word")
+        limit = entry.cached_length if bare else entry.cached_length + ds._tail_start_tokens
+        assert hit <= limit, (entry.index, hit, limit)
+        if entry.index in (1, 2, 3, 4):  # the same-shape bare rows diverge at the cut, not later
+            assert hit == 400, (entry.index, hit)
+        prompts.append(ids)
+    # and their tails differ from one another (the per-row word)
+    tails = [ds._replay[e.index]["segments"][-1] for e in entries if e.index in (1, 2, 3, 4)]
+    assert len({t[1] for t in tails}) == 4
+
+
 def test_replay_fillers_vary_by_row(tmp_path) -> None:
     rows = [
         {"timestamp": i, "class": "cold", "input_length": 600, "cached_length": 0, "output_length": 5} for i in range(8)
