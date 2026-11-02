@@ -17,10 +17,12 @@ import traceback
 from typing import Any, Optional
 from locust import HttpUser, task, events, constant_pacing
 import copy
+import secrets
 import json
 import time
 import uuid
 import orjson
+import requests
 import base64
 import io
 import itertools
@@ -112,9 +114,22 @@ def resolve_model_type(tokenizer_path: str) -> str:
         return text_config.get("model_type") or config_json.get("model_type", "")
 
 
+# The DeepSeek V4 family's chat encoding module: encoding_dsv4.py on some checkpoints, plain encoding.py on
+# V4.1 ones (e.g. the vendored v41_13231c59 variant)
+_DSV4_ENCODING_FILES = ("encoding/encoding_dsv4.py", "encoding/encoding.py")
+
+
 @lru_cache(maxsize=None)
 def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
-    path = _tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
+    path = None
+    for name in _DSV4_ENCODING_FILES:
+        try:
+            path = _tokenizer_asset_path(tokenizer_path, name)
+            break
+        except (FileNotFoundError, OSError):
+            continue
+    if path is None:
+        raise FileNotFoundError(f"None of {' or '.join(_DSV4_ENCODING_FILES)} in the tokenizer at {tokenizer_path}")
     spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load DSV4 encoding module from {path}")
@@ -140,23 +155,243 @@ def _normalize_token_ids(obj: Any) -> list[int]:
     return [int(t) for t in obj]
 
 
+def _config_field(config: dict, field: str):
+    """A text-model field from a config, looking in its text_config first (multimodal configs, e.g. DeepSeek
+    V4.1, keep sliding_window there and not at the top level)."""
+    text = config.get("text_config") or {}
+    value = text.get(field)
+    return value if value is not None else config.get(field)
+
+
+def _is_dsv4_family(model_type: str) -> bool:
+    """DeepSeek V4 and its variants (deepseek_v41, deepseek_v41_text)."""
+    return (model_type or "").startswith("deepseek_v4")
+
+
+def resolve_served_model_config(options: argparse.Namespace) -> str:
+    """Where the SERVED model's reuse semantics come from: --served-model-config if given, else --tokenizer.
+
+    The counting tokenizer only sizes prompts; how the server reuses cached text (a sliding window's recompute,
+    KV restore blocks, the context) depends on the model being served. Counting with one tokenizer (the Llama
+    default, for speed) while serving another (DeepSeek V4) reads the wrong config unless this is passed."""
+    return getattr(options, "served_model_config", None) or getattr(options, "tokenizer", None) or DEFAULT_TOKENIZER
+
+
+# Model types whose servers recompute a sliding window of cached text at the divergence, so shared prefixes
+# are laid out longer by the window; read from the SERVED model's config (D-113)
+_REUSE_OVERHANG_FROM_SLIDING_WINDOW = {
+    "deepseek_v4",
+    "deepseek_v41",
+    "deepseek_v41_text",  # DeepSeek V4.1: the multimodal config's text_config (the dev pod's DSV4.1)
+}
+# Model types whose servers restore cached KV only in whole blocks (GLM 5.x: the config's index_topk, 2048)
+_RESTORE_BOUNDARY_FROM_INDEX_TOPK = {"glm_moe_dsa"}
+# Model types a run resolved outside the reuse tables while their config suggested reuse semantics (reported)
+_REUSE_TABLE_MISSES: set = set()
+
+
+def resolve_prefix_reuse_overhang(options: argparse.Namespace) -> int:
+    """--prefix-reuse-overhang if given (negative trims the shared prefix, for an engine that reuses MORE than
+    it was shared), else the served model's sliding window for model types that need it, else 0. See
+    resolve_served_model_config."""
+    if getattr(options, "prefix_reuse_overhang", None) is not None:
+        return options.prefix_reuse_overhang
+    served = resolve_served_model_config(options)
+    try:
+        model_type = resolve_model_type(served)
+        window = int(_config_field(_read_config_json(served), "sliding_window") or 0)
+        if model_type not in _REUSE_OVERHANG_FROM_SLIDING_WINDOW:
+            if window:
+                # D-113: a family outside the table never silently resolves to 0 when its config has a window
+                logger.warning(
+                    f"!!! --shape-mix: model type {model_type!r} ({served}) is not in the reuse-overhang table but "
+                    f"its config has sliding_window {window}; using 0. Measure it with --prefix-reuse-probe and "
+                    f"pass --prefix-reuse-overhang (the measured value is the authority)."
+                )
+                _REUSE_TABLE_MISSES.add(model_type)
+            return 0
+        return window
+    except Exception as e:
+        logger.warning(
+            f"--shape-mix: couldn't read the served model config for the prefix reuse overhang ({e!r}); using 0"
+        )
+        return 0
+
+
+def resolve_prefix_restore_boundary(options: argparse.Namespace) -> int:
+    """--prefix-restore-boundary if given, else the served model's KV restore block for model types that
+    restore in blocks (GLM 5.x: the config's index_topk, 2048), else 0 (token-exact reuse)."""
+    if getattr(options, "prefix_restore_boundary", None) is not None:
+        return options.prefix_restore_boundary
+    served = resolve_served_model_config(options)
+    try:
+        if resolve_model_type(served) not in _RESTORE_BOUNDARY_FROM_INDEX_TOPK:
+            return 0
+        return int(_config_field(_read_config_json(served), "index_topk") or 0)
+    except Exception as e:
+        logger.warning(
+            f"--shape-mix: couldn't read the served model config for the prefix restore boundary ({e!r}); using 0"
+        )
+        return 0
+
+
+def _render_chat(tokenizer, tokenizer_path: str, messages: list) -> list[int]:
+    """A chat conversation's token ids. The checkpoint's own chat_template is preferred (it is what the engine
+    renders; D-138), with the DeepSeek V4 family's encoding module as the fallback for checkpoints without one.
+    A tokenizer with neither raises, as before."""
+    if getattr(tokenizer, "chat_template", None):
+        return _normalize_token_ids(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True))
+    if _is_dsv4_family(resolve_model_type(tokenizer_path)):
+        encode_messages = load_dsv4_encode_messages(tokenizer_path)
+        prompt = encode_messages(messages, thinking_mode="chat")
+        return _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
+    return _normalize_token_ids(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True))
+
+
+# Restore-block candidates the probe distinguishes (0: token-exact reuse, no boundary)
+_REUSE_BOUNDARY_CANDIDATES = (0, 64, 128, 256, 512, 1024, 2048, 4096, 8192)
+
+
+def infer_reuse_semantics(points: list) -> tuple:
+    """(overhang, boundary, form, residual, table, under-4k, over-4k) from probe points
+    [(shared, engine cached)].
+
+    The engine reuses an S-token shared prefix as either floor(S / B) * B - W (the overhang outside the
+    blocks; measured on serverless DeepSeek V4) or floor((S - W) / B) * B (inside). B = 0 (or 1) means
+    token-exact reuse with a recompute of W at the divergence; W can be negative (an engine that reuses more
+    than was shared). The best (B, W, form) by absolute error wins; with the inner form the overhang is only
+    bounded (the smallest consistent value is returned). The overhang is also fitted separately below and
+    above 4K shared tokens: a difference means it is size-dependent."""
+    forms = {
+        "outer": lambda shared, w, b: max(0, (shared // b) * b - w) if b else max(0, shared - w),
+        "inner": lambda shared, w, b: max(0, (shared - w) // b) * b if b else max(0, shared - w),
+    }
+    best = None
+    for form, predicted in forms.items():
+        for b in _REUSE_BOUNDARY_CANDIDATES:
+            for w in range(-512, 1025):
+                error = sum(abs(cached - predicted(shared, w, b)) for shared, cached in points)
+                if best is None or error < best[3]:
+                    best = (w, b, form, error, predicted)
+    w, b, form, error, predicted = best
+    table = [(shared, cached, predicted(shared, w, b)) for shared, cached in points]
+
+    def fit_overhang(bucket):
+        if not bucket:
+            return None
+        return min(range(-512, 1025), key=lambda w2: sum(abs(c - predicted(sh, w2, b)) for sh, c in bucket))
+
+    under = fit_overhang([(sh, c) for sh, c, _ in table if sh < 4096])
+    over = fit_overhang([(sh, c) for sh, c, _ in table if sh >= 4096])
+    return w, b, form, error, table, under, over
+
+
+def _common_prefix_count(a, b) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+class PrefixReuseProbe:
+    """Results of a --prefix-reuse-probe run: what the engine reuses per shared-prefix length, and the
+    (overhang, restore boundary) inferred from it (D-111)."""
+
+    started = False
+    points: list = []  # (shared prompt tokens, engine cached tokens)
+    overhang = None
+    boundary = None
+    form = ""
+    residual = 0
+    under_4k = None
+    over_4k = None
+    prompt_overhead = None  # server prompt tokens minus client tokens (the engine's extra rendering)
+    first_misses = 0  # lengths whose first measurement read 0 cached (it landed on another cache)
+    misses: list = []  # lengths never hit in any measurement (kept out of the fit)
+    failed = 0
+    seconds = 0.0
+
+
+def prefix_reuse_probe_entries() -> dict:
+    if not PrefixReuseProbe.points:
+        return {}
+    w, b = PrefixReuseProbe.overhang, PrefixReuseProbe.boundary
+    suggested = f"--prefix-reuse-overhang {w}" + (f" --prefix-restore-boundary {b}" if b else "")
+    return {
+        "prefix_reuse_probe_points": "; ".join(f"{s}shared->{c}cached" for s, c in PrefixReuseProbe.points),
+        "prefix_reuse_probe_overhang": "" if w is None else w,
+        "prefix_reuse_probe_boundary": "" if b is None else b,
+        "prefix_reuse_probe_form": PrefixReuseProbe.form,
+        "prefix_reuse_probe_overhang_under_4k": "" if PrefixReuseProbe.under_4k is None else PrefixReuseProbe.under_4k,
+        "prefix_reuse_probe_overhang_over_4k": "" if PrefixReuseProbe.over_4k is None else PrefixReuseProbe.over_4k,
+        "prefix_reuse_probe_prompt_overhead": (
+            "" if PrefixReuseProbe.prompt_overhead is None else PrefixReuseProbe.prompt_overhead
+        ),
+        "prefix_reuse_probe_residual": PrefixReuseProbe.residual,
+        "prefix_reuse_probe_first_misses": PrefixReuseProbe.first_misses,
+        "prefix_reuse_probe_never_hit": ",".join(map(str, PrefixReuseProbe.misses)),
+        "prefix_reuse_probe_failed": PrefixReuseProbe.failed,
+        "prefix_reuse_probe_suggested": "" if w is None else suggested,
+    }
+
+
+_CHAT_HEAD_CALIBRATION: dict = {}  # (host, model, tokenizer path) -> measured chat-head tokens
+# The chat head measured for this run (set at setup, read by the dataset and the summary)
+MEASURED_CHAT_HEAD = None
+
+
+def measure_chat_head(environment, options: argparse.Namespace, tokenizer, tokenizer_path: str) -> Optional[int]:
+    """The chat head (D-134): how many more tokens the server renders a chat prompt with than the client
+    counts - its template's head or a default system prompt the client's model doesn't produce. Measured once
+    per process by sending one minimal chat prompt; None when it can't be measured, and the layout then runs
+    uncalibrated with a warning."""
+    host = getattr(environment, "host", None) if environment is not None else None
+    if not getattr(options, "provider", None) or not host:
+        return None
+    key = (host, options.model, tokenizer_path)
+    if key in _CHAT_HEAD_CALIBRATION:
+        return _CHAT_HEAD_CALIBRATION[key]
+    prompt = "Reply with OK."
+    try:
+        formatter = PROVIDER_CLASS_MAP[options.provider](options.model, options)
+        data = formatter.format_payload(prompt, 1, None)
+        data["max_tokens"] = 1
+        data["stream"] = False
+        for k in ("stream_options",):
+            data.pop(k, None)
+        headers = {"Content-Type": "application/json"}
+        if options.api_key:
+            headers["Authorization"] = "Bearer " + options.api_key
+        for header in options.header or []:
+            key_, val = header.split(":", 1)
+            headers[key_] = val
+        response = requests.Session().post(
+            host.rstrip("/") + formatter.get_url(),
+            data=json.dumps(data),
+            headers=headers,
+            timeout=60,
+        )
+        response.raise_for_status()
+        server_tokens = int(orjson.loads(response.content).get("usage", {}).get("prompt_tokens") or 0)
+        client_tokens = len(_render_chat(tokenizer, tokenizer_path, [{"role": "user", "content": prompt}]))
+        head = server_tokens - client_tokens
+    except Exception as e:
+        logger.warning(
+            f"llm_bench: couldn't measure the chat head ({e!r}); chat lengths run uncalibrated (the server "
+            f"will see prompts longer than designed by its head)"
+        )
+        return None
+    _CHAT_HEAD_CALIBRATION[key] = head
+    return head
+
+
 def empty_chat_template_token_ids(
     tokenizer: transformers.PreTrainedTokenizer,
     tokenizer_path: str,
 ) -> list[int]:
     """Token ids for chat template overhead (empty user message + generation prompt)."""
-    model_type = resolve_model_type(tokenizer_path)
-    if model_type == "deepseek_v4":
-        encode_messages = load_dsv4_encode_messages(tokenizer_path)
-        prompt = encode_messages([{"role": "user", "content": ""}], thinking_mode="chat")
-        return _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
-    return _normalize_token_ids(
-        tokenizer.apply_chat_template(
-            [{"role": "user", "content": ""}],
-            tokenize=True,
-            add_generation_prompt=True,
-        )
-    )
+    return _render_chat(tokenizer, tokenizer_path, [{"role": "user", "content": ""}])
 
 
 _PROMPT_TOKENS_RE = re.compile(rb'"prompt_tokens"\s*:\s*(\d+)')
@@ -231,7 +466,12 @@ class TranslationDataset:
         chat: bool,
         num_tokens: int,
         common_tokens: int,
+        reuse_overhang: int = 0,
+        chat_head: int = 0,
     ):
+        # What the layout intends the server to reuse per request: the shared prefix content (D-123)
+        self.designed_cached_tokens = common_tokens
+        self.chat_head = chat_head
         self._tokenizer = tokenizer
         self._tokenizer_path = tokenizer_path
         self._num_tokens = num_tokens
@@ -244,6 +484,15 @@ class TranslationDataset:
                 num_tokens = len(self._tokenizer.encode(lim, add_special_tokens=False))
                 self._all_limericks.append((lim, num_tokens))
 
+        # The server reuses the shared prefix minus its recompute at the divergence (the overhang, D-113):
+        # lay the prefix out longer by it, so the server reuses exactly common_tokens. A negative overhang
+        # trims, for an engine that reuses more than it was shared (D-120).
+        common_tokens = max(0, common_tokens + reuse_overhang)
+        # The server renders chat prompts with a head the client's template doesn't count (D-134): build fewer
+        # client tokens, so the server sees the designed length
+        if chat_head:
+            # self._num_tokens: the param, before the corpus loop's num_tokens shadows it
+            self._num_tokens = max(0, self._num_tokens - chat_head)
         self._prefix = ""
         self._suffix = prompt
         self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt, add_special_tokens=False))
@@ -461,14 +710,31 @@ class DatasetHolder:
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
             tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
+            chat = options.chat and not getattr(options, "rerank", False)
+            chat_head = 0
+            if chat:
+                head = getattr(options, "chat_head_tokens", None)
+                if head is None:
+                    measured = measure_chat_head(
+                        InitTracker.environment, options, InitTracker.load_tokenizer(options.tokenizer), tokenizer_path
+                    )
+                    head = 0 if measured is None else measured
+                chat_head = head
+                if chat_head:
+                    logger.info(
+                        f"llm_bench: chat head {chat_head} tokens (measured on the server; --chat-head-tokens "
+                        f"overrides): the layout subtracts it, so the server sees the designed lengths"
+                    )
             return TranslationDataset(
                 path=os.path.join(os.path.dirname(os.path.abspath(__file__)), dataset_file),
                 prompt="\n\n" + prompt,
                 tokenizer=InitTracker.load_tokenizer(options.tokenizer),
                 tokenizer_path=tokenizer_path,
-                chat=options.chat and not getattr(options, "rerank", False),
+                chat=chat,
                 num_tokens=options.prompt_tokens,
                 common_tokens=common_tokens,
+                reuse_overhang=resolve_prefix_reuse_overhang(options),
+                chat_head=chat_head,
             )
         else:
             raise ValueError(f"Unknown dataset: {options.dataset}")
@@ -1514,6 +1780,7 @@ class FireworksProvider(OpenAIProvider):
         Only records speculation hit rates for generations with >= 30 tokens to ensure
         meaningful statistics.
         """
+
         def get_perf_metric(name):
             value = (perf_metrics or {}).get(name)
             if value is None:
@@ -1869,8 +2136,19 @@ class LLMUser(HttpUser):
                 self.client.headers[key] = val
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
+        if self.environment.parsed_options.chat is None and not (
+            self.environment.parsed_options.systemone
+            or self.environment.parsed_options.embeddings
+            or self.environment.parsed_options.rerank
+        ):
+            raise ValueError(
+                "Pass --chat (/v1/chat/completions) or --no-chat (/v1/completions): the mode is required. "
+                "--chat used to default to on, which silently kept runs that omitted it in chat mode."
+            )
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
         self.lora_adapters = self.environment.parsed_options.lora_adapters
+        # The endpoint is logged so the chat/completions mode is visible in every run's output
+        logger.info(f"Endpoint: {self.provider_formatter.get_url()}")
 
         self.stream = self.environment.parsed_options.stream
         # Rerank, embeddings and systemone endpoints are non-streaming single-response APIs
@@ -1886,6 +2164,8 @@ class LLMUser(HttpUser):
             raise ValueError("--systemone is mutually exclusive with --rerank and --embeddings")
         self.ramping_pacer = None  # Will be set if --ramping-time is used
         self.qps_pacer = None  # Will be set if --qps is used
+        # The shared prefix this run's requests all start with (None until the dataset is built)
+        self._designed_cached_tokens = None
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         self.prompt_images = None
@@ -1955,6 +2235,8 @@ class LLMUser(HttpUser):
         if self.environment.parsed_options.qps is not None:
             if self.environment.parsed_options.burst:
                 raise ValueError("Burst and QPS modes are mutually exclusive")
+            if getattr(self.environment.parsed_options, "prefix_reuse_probe", False):
+                raise ValueError("--prefix-reuse-probe is a standalone step; drop --qps, --burst and --ramping-time")
             self.qps_pacer = FixedQPSPacer.instance(
                 self.environment.parsed_options.qps,
                 self.environment.parsed_options.qps_distribution,
@@ -2001,6 +2283,10 @@ class LLMUser(HttpUser):
 
         dataset = DatasetHolder.get_instance(self.environment.parsed_options)
         self.dataset = iter(dataset)
+        # The shared prefix this run's requests all start with (None: no shared prefix, no reuse record)
+        self._designed_cached_tokens = (
+            dataset.designed_cached_tokens if getattr(dataset, "designed_cached_tokens", 0) else None
+        )
 
         # Once per process, not per user: users start inside the run window, and tokenizing a long prompt for
         # each of them blocked the event loop there
@@ -2106,6 +2392,9 @@ class LLMUser(HttpUser):
 
     @task
     def generate_text(self):
+        if getattr(self.environment.parsed_options, "prefix_reuse_probe", False):
+            self._run_prefix_reuse_probe()
+            return
         if self.qps_pacer is not None:
             self._paced_request()
             return
@@ -2185,6 +2474,144 @@ class LLMUser(HttpUser):
         if request_model is not None:
             data["model"] = request_model  # --lora-adapters: the request goes to this adapter
         return data, max_tokens, prompt_tokens, json.dumps(data)
+
+    def _run_prefix_reuse_probe(self):
+        """Measure what the engine reuses (D-111). For each shared length S: a warm prompt with a prefix of
+        its own (so points can't hit each other's text), then up to --prefix-reuse-probe-attempts prompts
+        sharing its first S tokens with divergent tails, all with one session-affinity key. A replica can
+        hold several independent prefix caches and route each request to one, so a measurement can miss the
+        warm prompt's cache: a miss is retried, counted, and kept out of the fit. The overhang (either sign)
+        and restore boundary are inferred from the hits. Sequential, then quit."""
+        if PrefixReuseProbe.started:
+            gevent.sleep(1)
+            return
+        PrefixReuseProbe.started = True
+        InitTracker.spawned.wait()
+        options = self.environment.parsed_options
+        tokenizer = InitTracker.load_tokenizer(options.tokenizer)
+        tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
+        ladder = [int(x) for x in options.prefix_reuse_probe_lengths.split(",") if x.strip()]
+        attempts = max(1, options.prefix_reuse_probe_attempts)
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt"), "r") as f:
+            words = [w for w in f.read().split() if w]
+        # The corpus is cycled to cover the longest length; every point's prefix starts with its own header,
+        # so no two points' prompts share a leading token
+        base_ids = []
+        while len(base_ids) < max(ladder) + 512:
+            base_ids += tokenizer.encode(" ".join(words), add_special_tokens=False)
+        run = secrets.token_hex(4)
+
+        def exact_prefix_text(n):
+            """The first n tokens of the base text, as text that re-encodes to exactly them."""
+            while n > 0:
+                text = tokenizer.decode(base_ids[:n])
+                if tokenizer.encode(text, add_special_tokens=False) == base_ids[:n]:
+                    return text
+                n -= 1
+            raise ValueError("--prefix-reuse-probe: couldn't slice the corpus to exact tokens")
+
+        # The prompts are sent as the run sends them (chat through the template), so the shared count must be
+        # through the same rendering the server sees
+        def prompt_ids(text):
+            if options.chat:
+                return _render_chat(tokenizer, tokenizer_path, [{"role": "user", "content": text}])
+            return tokenizer.encode(text, add_special_tokens=False)
+
+        formatter = self.provider_formatter
+        http = requests.Session()
+        base_headers = {"Content-Type": "application/json"}
+        if options.api_key:
+            base_headers["Authorization"] = "Bearer " + options.api_key
+        for header in options.header or []:
+            key, val = header.split(":", 1)
+            base_headers[key] = val
+        url = self.environment.host.rstrip("/") + formatter.get_url()
+
+        def send(prompt, affinity):
+            data = formatter.format_payload(prompt, 1, None)
+            data["max_tokens"] = 1
+            data["stream"] = False
+            for k in ("stream_options",):
+                data.pop(k, None)
+            response = http.post(
+                url,
+                data=json.dumps(data),
+                headers={**base_headers, "x-session-affinity": affinity},
+                timeout=60,
+            )
+            response.raise_for_status()
+            usage = orjson.loads(response.content).get("usage") or {}
+            details = usage.get("prompt_tokens_details") or {}
+            cached = details.get("cached_tokens", usage.get("cached_input_tokens"))
+            if cached is None:
+                raise ValueError("the response reports no cached tokens (usage.prompt_tokens_details.cached_tokens)")
+            return int(cached), int(usage.get("prompt_tokens") or 0)
+
+        started = time.monotonic()
+        logger.info(
+            f"--prefix-reuse-probe: {len(ladder)} shared lengths, each with its own prefix, up to {attempts} "
+            f"measurement(s) per length"
+        )
+        tail = lambda: f"\n\n{secrets.token_hex(8)} " + " ".join(words[-200:])
+        overheads: list[int] = []
+        try:
+            for i, shared in enumerate(ladder):
+                ids = tokenizer.encode(f"Probe {run} {i}.\n", add_special_tokens=False) + base_ids
+                prefix = exact_prefix_text(shared)
+                affinity = f"reuse-probe-{run}-{i}"
+                warm = prefix + tail()
+                _, warm_server_prompt = send(warm, affinity)
+                warm_ids = prompt_ids(warm)
+                overheads.append(warm_server_prompt - len(warm_ids))
+                seen = [len(warm_ids)]
+                for attempt in range(attempts):
+                    measured = prefix + tail()
+                    measured_ids = prompt_ids(measured)
+                    cached, server_prompt = send(measured, affinity)
+                    # The engine can render the prompt with more tokens than the client counts (its chat
+                    # head): those tokens sit AHEAD of the divergence and are shared by every probe prompt,
+                    # so they pre-pay part of the window and the measured overhang is the value to pass for
+                    # THIS mode and tokenizer, not the engine's raw window
+                    overheads.append(server_prompt - len(measured_ids))
+                    if attempt == 0 and cached == 0:
+                        PrefixReuseProbe.first_misses += 1
+                    if cached > 0:
+                        shared_tokens = _common_prefix_count(warm_ids, measured_ids)
+                        PrefixReuseProbe.points.append((shared_tokens, cached))
+                        logger.info(
+                            f"--prefix-reuse-probe: {shared_tokens} shared tokens -> {cached} cached"
+                            + (f" (measurement {attempt + 1})" if attempt else "")
+                        )
+                        break
+                else:
+                    PrefixReuseProbe.misses.append(shared)
+                    logger.warning(
+                        f"--prefix-reuse-probe: {shared} shared tokens -> 0 cached in all {attempts} "
+                        f"measurement(s): each landed on a cache without the warm prompt (kept out of the fit)"
+                    )
+        except Exception as e:
+            PrefixReuseProbe.failed += 1
+            logger.error(f"--prefix-reuse-probe failed ({e!r}); inference from the points measured so far")
+        PrefixReuseProbe.prompt_overhead = int(round(sum(overheads) / len(overheads))) if overheads else None
+        PrefixReuseProbe.seconds = time.monotonic() - started
+        if PrefixReuseProbe.points:
+            w, b, form, error, table, under, over = infer_reuse_semantics(PrefixReuseProbe.points)
+            PrefixReuseProbe.overhang, PrefixReuseProbe.boundary, PrefixReuseProbe.residual = w, b, error
+            PrefixReuseProbe.form, PrefixReuseProbe.under_4k, PrefixReuseProbe.over_4k = form, under, over
+            size_note = (
+                ""
+                if under is None or over is None or abs(under - over) <= 8
+                else f"; !!! the overhang differs by size ({under} under 4K, {over} above): size-dependent"
+            )
+            logger.info(
+                f"--prefix-reuse-probe: overhang {w}, restore boundary {b} ({form} form, residual {error} over "
+                f"{len(PrefixReuseProbe.points)} points, overhang {under} under 4K and {over} above; first-"
+                f"measurement misses {PrefixReuseProbe.first_misses} of {len(ladder)}, lengths never hit "
+                f"{len(PrefixReuseProbe.misses)}) in {PrefixReuseProbe.seconds:.1f}s{size_note}; use "
+                f"--prefix-reuse-overhang {w}" + (f" --prefix-restore-boundary {b}" if b else "")
+            )
+        gevent.spawn(InitTracker._do_quit)
+        gevent.sleep(1)
 
     def _do_systemone_request(self, prompt=None, intended=None):
         if prompt is None:
@@ -2430,9 +2857,7 @@ class LLMUser(HttpUser):
             dur_generation = now - t_effective_first
             dur_first_token = t_effective_first - t_start
 
-            if not (
-                self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
-            ):
+            if not (self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank):
                 prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
 
             token_parts = []
@@ -2442,9 +2867,20 @@ class LLMUser(HttpUser):
                 token_parts.append(f"{cached_tokens} cached")
             token_parts.append(f"{num_tokens} completion")
             token_str = ", ".join(token_parts)
+            # D-123: the in-run reuse check's per-request record, parsed by the runner from generator logs and
+            # stdout. Emitted when the run sends a shared prefix (--prompt-cache-max-len): designed is what
+            # the layout intends the server to reuse (the shared prefix, compensations applied), delivered the
+            # server's cached count (none when it reports no cached count)
+            reuse_str = ""
+            if self._designed_cached_tokens is not None:
+                reuse_str = (
+                    f" | reuse class=default designed={self._designed_cached_tokens}"
+                    f" delivered={'none' if cached_tokens is None else int(cached_tokens)}"
+                )
 
             logger.info(
-                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
+                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, "
+                f"{num_chars} chars, {token_str}{reuse_str}"
             )
             if self.environment.parsed_options.show_response:
                 print("---")
@@ -2568,10 +3004,67 @@ def init_parser(parser):
         ),
     )
     parser.add_argument(
+        "--prefix-reuse-probe",
+        action="store_true",
+        default=False,
+        help="Standalone step (D-111): measure what the server reuses. Sends one prompt, then prompts sharing "
+        "its first S tokens with divergent tails (a comma list of S with --prefix-reuse-probe-lengths), reads "
+        "the engine's cached tokens, and infers the prefix reuse overhang (either sign) and restore boundary, "
+        "printed and in the summary (Prefix Reuse Probe ...), with the flags to pass. Quits when done.",
+    )
+    parser.add_argument(
+        "--prefix-reuse-probe-lengths",
+        type=str,
+        default="1097,1388,2649,4395,6238,7984,9730,11476,13219,15065,16811,20012,2079,8223,32803",
+        help="Shared-prefix lengths (tokens) the probe measures, comma-separated. The default is a dozen "
+        "off-round values (1000 + k*97) across 1K-20K, plus one value near 2K, 8K and 32K.",
+    )
+    parser.add_argument(
+        "--prefix-reuse-probe-attempts",
+        type=int,
+        default=4,
+        help="With --prefix-reuse-probe: measurements per shared length before it counts as a miss (a replica "
+        "can hold several prefix caches and route each request to one). Default 4.",
+    )
+    parser.add_argument(
+        "--chat-head-tokens",
+        type=int,
+        default=None,
+        help="Chat tokens the server renders beyond the client's template count. Measured once per process "
+        "with one minimal chat prompt; the layout subtracts it, so the server sees the designed lengths. "
+        "Pass a value to skip the measurement.",
+    )
+    parser.add_argument(
+        "--served-model-config",
+        type=str,
+        default=None,
+        help="HF id or local path of the SERVED model's config, for reuse semantics: the sliding-window recompute "
+        "(prefix reuse overhang) and KV restore blocks. Defaults to --tokenizer; pass it when counting tokens "
+        "with a different tokenizer than the model served, or the server will reuse less than designed.",
+    )
+    parser.add_argument(
+        "--prefix-reuse-overhang",
+        type=int,
+        default=None,
+        help="Tokens before a divergence point the server can't reuse from its prefix cache. Shared prefixes "
+        "are made this much longer, so the server reuses exactly the intended amount. Negative trims the shared "
+        "prefix instead, for an engine that reuses MORE than it was shared. Defaults to the served model's "
+        "sliding window for DeepSeek V4 family, else 0; the probe measures either sign.",
+    )
+    parser.add_argument(
+        "--prefix-restore-boundary",
+        "--prefix-reuse-boundary",
+        type=int,
+        default=None,
+        help="The block (tokens) the server restores cached KV in (GLM 5.x: 2048); a shared prefix of N tokens "
+        "reuses floor(N / block) * block. Default: derived from the served model's config, else 0 (token-exact).",
+    )
+    parser.add_argument(
         "--chat",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use /v1/chat/completions API",
+        default=None,
+        help="Use /v1/chat/completions (--no-chat for raw completions). The mode is REQUIRED: --chat used to "
+        "default to on, and drivers that omitted it silently stayed in chat (D-139).",
     )
     parser.add_argument(
         "--embeddings",
@@ -3136,11 +3629,11 @@ def _(environment, **kw):
     if fail_ratio > environment.parsed_options.max_fail_ratio:
         logger.error(f"Test failed: {total.num_failures}/{total.num_requests} requests failed ({fail_ratio:.2%})")
         environment.process_exit_code = 1
-        return
-    # Explicitly set exit code 0 so that locust's default policy does not force
-    # a non-zero exit when runner.exceptions is non-empty (e.g. unhandled
-    # exceptions from non-request paths like dataset loading).
-    environment.process_exit_code = 0
+    else:
+        # Explicitly set exit code 0 so that locust's default policy does not force
+        # a non-zero exit when runner.exceptions is non-empty (e.g. unhandled
+        # exceptions from non-request paths like dataset loading).
+        environment.process_exit_code = 0
 
     entries = copy.copy(InitTracker.logging_params)
     if environment.parsed_options.qps is not None:
@@ -3207,6 +3700,17 @@ def _(environment, **kw):
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
         entries["schedule_resyncs"] = len(pacer.shifts) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())
+    # The applied reuse semantics (D-108/D-113): a deficit or overshoot shows in the run's own output
+    entries["reuse_overhang_tokens"] = resolve_prefix_reuse_overhang(environment.parsed_options)
+    entries["reuse_restore_boundary"] = resolve_prefix_restore_boundary(environment.parsed_options)
+    entries["served_model_config"] = resolve_served_model_config(environment.parsed_options)
+    entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
+    ds = DatasetHolder._instance
+    if ds is not None and getattr(ds, "chat_head", None):
+        entries["chat_head_tokens"] = ds.chat_head
+    if getattr(environment.parsed_options, "prompt_cache_max_len", 0):
+        entries["designed_cached_tokens"] = getattr(ds, "designed_cached_tokens", "") if ds is not None else ""
+    entries.update(prefix_reuse_probe_entries())
 
     pretty_name = lambda s: " ".join([w.capitalize() for w in s.split("_")])
     entries = {pretty_name(k): v for k, v in entries.items()}
