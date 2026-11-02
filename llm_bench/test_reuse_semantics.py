@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 import pytest
 
@@ -98,52 +99,56 @@ def test_chat_template_preferred_over_the_encoding_module(tmp_path, monkeypatch)
 
 
 def test_the_chat_mode_is_required_and_the_endpoint_is_logged() -> None:
-    """D-139: --chat no longer defaults to on; omitting the mode raises, and the endpoint is logged."""
+    """D-139: --chat no longer defaults to on; omitting the mode raises before any request."""
+    from locust.argument_parser import get_empty_argument_parser, setup_parser_arguments
+
+    parser = get_empty_argument_parser()
+    setup_parser_arguments(parser)
+    lt.init_parser(parser)
+    opts = parser.parse_args(["--provider", "vllm", "-m", "m"])  # neither --chat nor --no-chat
+    assert opts.chat is None  # no implicit default
+    with pytest.raises(ValueError, match="the mode is required"):
+        lt.LLMUser._require_explicit_chat_mode(opts)
+    assert (
+        lt.LLMUser._require_explicit_chat_mode(parser.parse_args(["--provider", "vllm", "-m", "m", "--chat"])) is None
+    )
+    assert (
+        lt.LLMUser._require_explicit_chat_mode(parser.parse_args(["--provider", "vllm", "-m", "m", "--no-chat"]))
+        is None
+    )
 
 
-def test_overhang_and_head_shape_the_shared_prefix(tmp_path) -> None:
-    """D-113/D-120/D-134: the shared prefix is laid out longer by the overhang (shorter when negative), and
-    chat prompts are built shorter by the measured head, so the server sees the designed lengths."""
+def test_overhang_and_head_shape_the_shared_prefix() -> None:
+    """D-113/D-120/D-134: the shared prefix grows by about the overhang (shrinks when negative), the head is
+    subtracted from the total, and designed stays the requested share."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt")
 
     class WordTok:
         def encode(self, text, add_special_tokens=False):
             return text.split()
 
-    words = open("limericks.txt").read().split("\n\n")
-    plain = TranslationDataset(
-        "limericks.txt", "\n\nTranslate.", WordTok(), "x", chat=False, num_tokens=300, common_tokens=100
-    )
-    longer = TranslationDataset(
-        "limericks.txt",
-        "\n\nTranslate.",
-        WordTok(),
-        "x",
-        chat=False,
-        num_tokens=300,
-        common_tokens=100,
-        reuse_overhang=130,
-    )
-    trimmed = TranslationDataset(
-        "limericks.txt",
-        "\n\nTranslate.",
-        WordTok(),
-        "x",
-        chat=False,
-        num_tokens=300,
-        common_tokens=100,
-        reuse_overhang=-22,
-    )
-    headed = TranslationDataset(
-        "limericks.txt", "\n\nTranslate.", WordTok(), "x", chat=False, num_tokens=300, common_tokens=100, chat_head=26
-    )
-    p = plain._prefix_suffix_tokens - plain._prefix_suffix_tokens  # base for comparisons below
-    assert longer._prefix_suffix_tokens > plain._prefix_suffix_tokens  # extended by the window
-    assert trimmed._prefix_suffix_tokens <= plain._prefix_suffix_tokens  # trimmed
-    assert headed._num_tokens == 300 - 26  # the head is subtracted from the total
+    def dataset(**kw):
+        kw.setdefault("path", path)
+        kw.setdefault("prompt", "\n\nTranslate.")
+        kw.setdefault("tokenizer", WordTok())
+        kw.setdefault("tokenizer_path", "x")
+        kw.setdefault("chat", False)
+        kw.setdefault("num_tokens", 400)
+        kw.setdefault("common_tokens", 100)
+        return TranslationDataset(**kw)
+
+    plain = dataset()  # common_tokens 100: the -pcml share
+    longer = dataset(reuse_overhang=130)
+    trimmed = dataset(reuse_overhang=-22)
+    headed = dataset(chat_head=26)
+    assert plain._prefix  # the shared prefix exists (a -pcml run)
+    assert longer._prefix.startswith(plain._prefix)  # the same limericks, then more
+    assert (
+        abs((longer._prefix_suffix_tokens - plain._prefix_suffix_tokens) - 130) <= 45
+    )  # ~the overhang (whole-limerick granularity on both sides)
+    assert trimmed._prefix_suffix_tokens < plain._prefix_suffix_tokens  # actually trims
+    assert headed._num_tokens == 400 - 26  # the head is subtracted from the total
     assert plain.designed_cached_tokens == 100 == trimmed.designed_cached_tokens
-    prompt, tokens = next(longer)
-    assert tokens >= 300 or len(prompt.split()) >= 300
-    del words, p
 
 
 def test_probe_summary_fields_carry_the_fit() -> None:

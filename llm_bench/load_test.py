@@ -188,6 +188,9 @@ _REUSE_OVERHANG_FROM_SLIDING_WINDOW = {
 _RESTORE_BOUNDARY_FROM_INDEX_TOPK = {"glm_moe_dsa"}
 # Model types a run resolved outside the reuse tables while their config suggested reuse semantics (reported)
 _REUSE_TABLE_MISSES: set = set()
+# What the run applied, resolved once at setup (empty until then; the summary reads this, so a fresh resolve
+# at quit time can't disagree with the layout or repeat the table-miss warning)
+_APPLIED_REUSE: dict = {}
 
 
 def resolve_prefix_reuse_overhang(options: argparse.Namespace) -> int:
@@ -204,7 +207,7 @@ def resolve_prefix_reuse_overhang(options: argparse.Namespace) -> int:
             if window:
                 # D-113: a family outside the table never silently resolves to 0 when its config has a window
                 logger.warning(
-                    f"!!! --shape-mix: model type {model_type!r} ({served}) is not in the reuse-overhang table but "
+                    f"!!! llm_bench: model type {model_type!r} ({served}) is not in the reuse-overhang table but "
                     f"its config has sliding_window {window}; using 0. Measure it with --prefix-reuse-probe and "
                     f"pass --prefix-reuse-overhang (the measured value is the authority)."
                 )
@@ -213,7 +216,7 @@ def resolve_prefix_reuse_overhang(options: argparse.Namespace) -> int:
         return window
     except Exception as e:
         logger.warning(
-            f"--shape-mix: couldn't read the served model config for the prefix reuse overhang ({e!r}); using 0"
+            f"llm_bench: couldn't read the served model config for the prefix reuse overhang ({e!r}); using 0"
         )
         return 0
 
@@ -230,7 +233,7 @@ def resolve_prefix_restore_boundary(options: argparse.Namespace) -> int:
         return int(_config_field(_read_config_json(served), "index_topk") or 0)
     except Exception as e:
         logger.warning(
-            f"--shape-mix: couldn't read the served model config for the prefix restore boundary ({e!r}); using 0"
+            f"llm_bench: couldn't read the served model config for the prefix restore boundary ({e!r}); using 0"
         )
         return 0
 
@@ -1506,6 +1509,12 @@ def _setup_before_spawning(environment, **_kwargs):
         guessed = provider_from_host(environment.host, options.systemone)
         if guessed is not None:
             options.provider = guessed
+    # Resolve the reuse semantics once, here (the summary reports what the run applied, not a fresh resolve
+    # at quit time, and the table-miss warning fires once)
+    if not (options.systemone or options.embeddings or options.rerank):
+        _APPLIED_REUSE["overhang"] = resolve_prefix_reuse_overhang(options)
+        _APPLIED_REUSE["boundary"] = resolve_prefix_restore_boundary(options)
+        _APPLIED_REUSE["served_model_config"] = resolve_served_model_config(options)
     ClientCpu.start()
     if not (options.systemone or options.embeddings or options.rerank):
         try:
@@ -2167,6 +2176,15 @@ class LLMUser(HttpUser):
             else:
                 raise ValueError(f"Can't detect provider, specify it explicitly with --provider, owned_by={owned_by}")
 
+    @staticmethod
+    def _require_explicit_chat_mode(options: argparse.Namespace) -> None:
+        """D-139: --chat used to default to on, so a driver that omitted it silently stayed in chat mode."""
+        if options.chat is None and not (options.systemone or options.embeddings or options.rerank):
+            raise ValueError(
+                "Pass --chat (/v1/chat/completions) or --no-chat (/v1/completions): the mode is required. "
+                "--chat used to default to on, which silently kept runs that omitted it in chat mode."
+            )
+
     def _on_start(self):
         self.client.headers["Content-Type"] = "application/json"
         if self.environment.parsed_options.api_key:
@@ -2177,15 +2195,7 @@ class LLMUser(HttpUser):
                 self.client.headers[key] = val
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
-        if self.environment.parsed_options.chat is None and not (
-            self.environment.parsed_options.systemone
-            or self.environment.parsed_options.embeddings
-            or self.environment.parsed_options.rerank
-        ):
-            raise ValueError(
-                "Pass --chat (/v1/chat/completions) or --no-chat (/v1/completions): the mode is required. "
-                "--chat used to default to on, which silently kept runs that omitted it in chat mode."
-            )
+        self._require_explicit_chat_mode(self.environment.parsed_options)
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
         self.lora_adapters = self.environment.parsed_options.lora_adapters
         # The endpoint is logged so the chat/completions mode is visible in every run's output
@@ -3756,10 +3766,11 @@ def _(environment, **kw):
         or environment.parsed_options.embeddings
         or environment.parsed_options.rerank
     ):
-        # The applied reuse semantics (D-108/D-113): a deficit or overshoot shows in the run's own output
-        entries["reuse_overhang_tokens"] = resolve_prefix_reuse_overhang(environment.parsed_options)
-        entries["reuse_restore_boundary"] = resolve_prefix_restore_boundary(environment.parsed_options)
-        entries["served_model_config"] = resolve_served_model_config(environment.parsed_options)
+        # The applied reuse semantics (D-108/D-113), as resolved once at setup - what the layout used, not a
+        # fresh resolve here (a no-pcml run applied 0, whatever the served model's window is)
+        entries["reuse_overhang_tokens"] = _APPLIED_REUSE.get("overhang", 0)
+        entries["reuse_restore_boundary"] = _APPLIED_REUSE.get("boundary", 0)
+        entries["served_model_config"] = _APPLIED_REUSE.get("served_model_config", "")
         entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
     ds = DatasetHolder._instance
     if getattr(environment.parsed_options, "chat", False) and not (
