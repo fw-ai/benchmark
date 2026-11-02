@@ -3153,6 +3153,8 @@ class PrefixReuseProbe:
     residual = 0
     under_4k = None
     over_4k = None
+    first_misses = 0  # lengths whose first measurement read 0 cached (it landed on another cache)
+    misses: list = []  # lengths never hit in any measurement (kept out of the fit)
     failed = 0
     seconds = 0.0
 
@@ -3170,6 +3172,8 @@ def prefix_reuse_probe_entries() -> dict[str, Any]:
         "prefix_reuse_probe_overhang_under_4k": "" if PrefixReuseProbe.under_4k is None else PrefixReuseProbe.under_4k,
         "prefix_reuse_probe_overhang_over_4k": "" if PrefixReuseProbe.over_4k is None else PrefixReuseProbe.over_4k,
         "prefix_reuse_probe_residual": PrefixReuseProbe.residual,
+        "prefix_reuse_probe_first_misses": PrefixReuseProbe.first_misses,
+        "prefix_reuse_probe_never_hit": ",".join(map(str, PrefixReuseProbe.misses)),
         "prefix_reuse_probe_failed": PrefixReuseProbe.failed,
         "prefix_reuse_probe_suggested": "" if w is None else suggested,
     }
@@ -5533,9 +5537,12 @@ class LLMUser(HttpUser):
                 self.ramping_pacer.request_end()
 
     def _run_prefix_reuse_probe(self):
-        """Measure what the engine reuses (D-111): send one prompt, then prompts sharing its first S tokens with
-        divergent tails, read the engine's cached tokens, and infer the overhang and restore boundary. Sequential
-        (each read must follow its cache write), then quit: a standalone step for a family's first job."""
+        """Measure what the engine reuses (D-111). For each shared length S: a warm prompt with a prefix of its
+        own (so points can't hit each other's text), then up to --prefix-reuse-probe-attempts prompts sharing its
+        first S tokens with divergent tails, all with one session-affinity key. A replica can hold several
+        independent prefix caches (data-parallel ranks) and route each request to one, so a measurement can miss
+        the warm prompt's cache: a miss is retried, counted, and kept out of the fit. The overhang and restore
+        boundary are inferred from the hits. Sequential, then quit: a standalone step for a family's first job."""
         if PrefixReuseProbe.started:
             gevent.sleep(1)
             return
@@ -5545,18 +5552,19 @@ class LLMUser(HttpUser):
         tokenizer = InitTracker.load_tokenizer(options.tokenizer)
         tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
         ladder = [int(x) for x in options.prefix_reuse_probe_lengths.split(",") if x.strip()]
+        attempts = max(1, options.prefix_reuse_probe_attempts)
         with gzip.open(resolve_shape_mix_corpus(None), "rt", encoding="utf-8") as f:
-            words = [w for w in f.read().split() if w][:]
+            words = [w for w in f.read().split() if w]
         base_text = " ".join(words)
-        ids = tokenizer.encode(base_text, add_special_tokens=False)
+        run = secrets.token_hex(4)
         prompt_ids = lambda text: (
             chat_template_token_ids(tokenizer, tokenizer_path, text)
             if options.chat
             else tokenizer.encode(text, add_special_tokens=False)
         )
 
-        def exact_prefix_text(n):
-            """The first n tokens of the corpus, as text that re-encodes to exactly them."""
+        def exact_prefix_text(ids, n):
+            """The first n tokens of `ids`, as text that re-encodes to exactly them."""
             while n > 0:
                 text = tokenizer.decode(ids[:n])
                 if tokenizer.encode(text, add_special_tokens=False) == ids[:n]:
@@ -5564,27 +5572,27 @@ class LLMUser(HttpUser):
                 n -= 1
             raise ValueError("--prefix-reuse-probe: couldn't slice the corpus to exact tokens")
 
-        top = max(ladder)
-        tail_a = "\n\n" + " ".join(words[-200:])
-        prompt_a = exact_prefix_text(top) + tail_a
         formatter = self.provider_formatter
         http = requests.Session()
-        url_headers = {"Content-Type": "application/json"}
+        base_headers = {"Content-Type": "application/json"}
         if options.api_key:
-            url_headers["Authorization"] = "Bearer " + options.api_key
+            base_headers["Authorization"] = "Bearer " + options.api_key
         for header in options.header or []:
             key, val = header.split(":", 1)
-            url_headers[key] = val
+            base_headers[key] = val
         url = self.environment.host.rstrip("/") + formatter.get_url()
 
-        def send(prompt):
+        def send(prompt, affinity):
             data = formatter.format_payload(prompt, 1, None)
             data["max_tokens"] = 1
             data["stream"] = False
             for key in ("min_tokens", "ignore_eos", "stream_options"):
                 data.pop(key, None)
             response = http.post(
-                url, data=json.dumps(data), headers=url_headers, timeout=request_timeout(options) or 600
+                url,
+                data=json.dumps(data),
+                headers={**base_headers, "x-session-affinity": affinity},
+                timeout=request_timeout(options) or 600,
             )
             response.raise_for_status()
             # Parsed here, not through the formatter: its parser follows --stream, while the probe always
@@ -5597,20 +5605,44 @@ class LLMUser(HttpUser):
             return int(cached)
 
         started = time.monotonic()
-        logger.info(f"--prefix-reuse-probe: warming a {top}-token prompt, then {len(ladder)} shared prefixes")
+        logger.info(
+            f"--prefix-reuse-probe: {len(ladder)} shared lengths, each with its own prefix, up to {attempts} "
+            f"measurement(s) per length"
+        )
+        tail = lambda: f"\n\nRequest {secrets.token_hex(8)}: " + " ".join(words[-400:-200])
         try:
-            send(prompt_a)  # caches the prefix; its own cached tokens aren't a shared-prefix measurement
-            ids_a = prompt_ids(prompt_a)
-            for shared in ladder:
-                tail_b = f"\n\nRequest {secrets.token_hex(8)}: " + " ".join(words[-400:-200])
-                prompt_b = exact_prefix_text(shared) + tail_b
-                shared_tokens = _common_prefix_count(ids_a, prompt_ids(prompt_b))
-                cached = send(prompt_b)
-                PrefixReuseProbe.points.append((shared_tokens, cached))
-                logger.info(f"--prefix-reuse-probe: {shared_tokens} shared tokens -> {cached} cached")
+            for i, shared in enumerate(ladder):
+                # A per-point header makes every point's text distinct from token 0: no point can hit another's
+                ids = tokenizer.encode(f"Probe {run} {i}.\n" + base_text, add_special_tokens=False)
+                prefix = exact_prefix_text(ids, shared)
+                affinity = f"reuse-probe-{run}-{i}"
+                warm = prefix + tail()
+                send(warm, affinity)
+                seen = [prompt_ids(warm)]
+                for attempt in range(attempts):
+                    measured = prefix + tail()
+                    measured_ids = prompt_ids(measured)
+                    shared_tokens = max(_common_prefix_count(measured_ids, p) for p in seen)
+                    cached = send(measured, affinity)
+                    seen.append(measured_ids)
+                    if attempt == 0 and cached == 0:
+                        PrefixReuseProbe.first_misses += 1
+                    if cached > 0:
+                        PrefixReuseProbe.points.append((shared_tokens, cached))
+                        logger.info(
+                            f"--prefix-reuse-probe: {shared_tokens} shared tokens -> {cached} cached"
+                            + (f" (measurement {attempt + 1})" if attempt else "")
+                        )
+                        break
+                else:
+                    PrefixReuseProbe.misses.append(shared)
+                    logger.warning(
+                        f"--prefix-reuse-probe: {shared} shared tokens -> 0 cached in all {attempts} measurement(s): "
+                        f"each landed on a cache without the warm prompt (kept out of the fit)"
+                    )
         except Exception as e:
             PrefixReuseProbe.failed += 1
-            logger.error(f"--prefix-reuse-probe failed ({e!r}); no inference")
+            logger.error(f"--prefix-reuse-probe failed ({e!r}); inference from the points measured so far")
         PrefixReuseProbe.seconds = time.monotonic() - started
         if PrefixReuseProbe.points:
             w, b, form, error, table, under, over = infer_reuse_semantics(PrefixReuseProbe.points)
@@ -5623,9 +5655,10 @@ class LLMUser(HttpUser):
             )
             logger.info(
                 f"--prefix-reuse-probe: overhang {w}, restore boundary {b} ({form} form, residual {error} over "
-                f"{len(PrefixReuseProbe.points)} points, overhang {under} under 4K and {over} above) in "
-                f"{PrefixReuseProbe.seconds:.1f}s{size_note}; use --prefix-reuse-overhang {w}"
-                + (f" --prefix-restore-boundary {b}" if b else "")
+                f"{len(PrefixReuseProbe.points)} points, overhang {under} under 4K and {over} above; first-measurement "
+                f"misses {PrefixReuseProbe.first_misses} of {len(ladder)}, lengths never hit "
+                f"{len(PrefixReuseProbe.misses)}) in {PrefixReuseProbe.seconds:.1f}s{size_note}; use "
+                f"--prefix-reuse-overhang {w}" + (f" --prefix-restore-boundary {b}" if b else "")
             )
         gevent.spawn(InitTracker._do_quit)
         gevent.sleep(1)
@@ -6665,6 +6698,15 @@ def init_parser(parser):
         help="Shared-prefix lengths (content tokens) the probe measures, comma-separated. The default is a dozen "
         "off-round values (1000 + k*97) across 1K-20K, so cached lengths snap to a restore granularity instead of "
         "landing on it, plus one value near 2K, 8K and 32K to check the overhang is size-independent.",
+    )
+    parser.add_argument(
+        "--prefix-reuse-probe-attempts",
+        type=int,
+        default=4,
+        help="With --prefix-reuse-probe: measurements per shared length before it counts as a miss. A replica can "
+        "hold several prefix caches (data-parallel ranks) and route each request to one, so a measurement can land "
+        "on a cache without the warm prompt; misses are retried, counted (Prefix Reuse Probe First Misses / Never "
+        "Hit) and kept out of the fit. Default 4.",
     )
     parser.add_argument(
         "--prefix-fill",
