@@ -963,28 +963,39 @@ _RESTORE_BOUNDARY_FROM_INDEX_TOPK = {"glm_moe_dsa"}
 RESTORE_BOUNDARY_MARGIN_TOKENS = 16
 
 
+def resolve_served_model_config(options: argparse.Namespace) -> str:
+    """Where the SERVED model's reuse semantics come from: --served-model-config if given, else --tokenizer.
+
+    The counting tokenizer only sizes prompts; how the server reuses cached text (a sliding window's recompute,
+    KV restore blocks, the context) depends on the model being served. Counting with one tokenizer (the Llama
+    default, for speed) while serving another (DeepSeek V4) reads the wrong config unless this is passed."""
+    return getattr(options, "served_model_config", None) or getattr(options, "tokenizer", None) or DEFAULT_TOKENIZER
+
+
 def resolve_prefix_reuse_overhang(options: argparse.Namespace) -> int:
-    """--prefix-reuse-overhang if given, else the model's sliding window for model types that need it, else 0."""
+    """--prefix-reuse-overhang if given, else the served model's sliding window for model types that need it,
+    else 0 (see resolve_served_model_config)."""
     if getattr(options, "prefix_reuse_overhang", None) is not None:
         return options.prefix_reuse_overhang
-    tokenizer_path = getattr(options, "tokenizer", None) or DEFAULT_TOKENIZER
+    served = resolve_served_model_config(options)
     try:
-        if resolve_model_type(tokenizer_path) not in _REUSE_OVERHANG_FROM_SLIDING_WINDOW:
+        if resolve_model_type(served) not in _REUSE_OVERHANG_FROM_SLIDING_WINDOW:
             return 0
-        return int(_read_config_json(tokenizer_path).get("sliding_window") or 0)
+        return int(_read_config_json(served).get("sliding_window") or 0)
     except Exception as e:
-        logger.warning(f"--shape-mix: couldn't read the model config for the prefix reuse overhang ({e!r}); using 0")
+        logger.warning(
+            f"--shape-mix: couldn't read the served model config for the prefix reuse overhang ({e!r}); using 0"
+        )
         return 0
 
 
 def resolve_context_tokens(options: argparse.Namespace) -> Optional[int]:
-    """The model's context for --shape-mix-sample-lengths caps: the config's max_position_embeddings (its text
-    config's for multimodal models), or None when it can't be read (no context cap)."""
+    """The served model's context for --shape-mix-sample-lengths caps: the config's max_position_embeddings (its
+    text config's for multimodal models), or None when it can't be read (no context cap)."""
     if not getattr(options, "shape_mix_sample_lengths", False):
         return None
-    tokenizer_path = getattr(options, "tokenizer", None) or DEFAULT_TOKENIZER
     try:
-        config = _read_config_json(tokenizer_path)
+        config = _read_config_json(resolve_served_model_config(options))
         value = (config.get("text_config") or {}).get("max_position_embeddings") or config.get(
             "max_position_embeddings"
         )
@@ -995,17 +1006,19 @@ def resolve_context_tokens(options: argparse.Namespace) -> Optional[int]:
 
 
 def resolve_prefix_restore_boundary(options: argparse.Namespace) -> int:
-    """--prefix-restore-boundary if given, else the model's KV restore block for model types that restore in
-    blocks (GLM 5.x: the config's index_topk, 2048), else 0 (token-exact reuse)."""
+    """--prefix-restore-boundary if given, else the served model's KV restore block for model types that restore
+    in blocks (GLM 5.x: the config's index_topk, 2048), else 0 (token-exact reuse). See resolve_served_model_config."""
     if getattr(options, "prefix_restore_boundary", None) is not None:
         return options.prefix_restore_boundary
-    tokenizer_path = getattr(options, "tokenizer", None) or DEFAULT_TOKENIZER
+    served = resolve_served_model_config(options)
     try:
-        if resolve_model_type(tokenizer_path) not in _RESTORE_BOUNDARY_FROM_INDEX_TOPK:
+        if resolve_model_type(served) not in _RESTORE_BOUNDARY_FROM_INDEX_TOPK:
             return 0
-        return int(_read_config_json(tokenizer_path).get("index_topk") or 0)
+        return int(_read_config_json(served).get("index_topk") or 0)
     except Exception as e:
-        logger.warning(f"--shape-mix: couldn't read the model config for the prefix restore boundary ({e!r}); using 0")
+        logger.warning(
+            f"--shape-mix: couldn't read the served model config for the prefix restore boundary ({e!r}); using 0"
+        )
         return 0
 
 
@@ -4094,6 +4107,20 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 def validate_shape_mix_options(options: argparse.Namespace) -> None:
     """Parse --shape-mix against the chat template overhead; raises ValueError naming any class too short."""
     resolve_shape_mix_corpus(getattr(options, "shape_mix_corpus", None))
+    if (
+        getattr(options, "prefix_reuse_overhang", None) is None
+        and resolve_prefix_reuse_overhang(options) == 0
+        and any(c.cached_prompt_tokens > 0 for c in parse_shape_mix(options.shape_mix).classes)
+    ):
+        served = resolve_served_model_config(options)
+        logger.warning(
+            f"!!! --shape-mix: no prefix reuse overhang (model type {resolve_model_type(served)!r} from {served}), "
+            f"so shared prefixes are laid out at exactly the cached length. A served model that recomputes a "
+            f"sliding window at the divergence (DeepSeek V4: 128 tokens) will reuse LESS than designed - on P1 "
+            f"that cost ~127 cached tokens per class, +33% uncached on partial_lt_2k. If the model served differs "
+            f"from --tokenizer {getattr(options, 'tokenizer', None) or DEFAULT_TOKENIZER!r}, pass "
+            f"--served-model-config <its config>, or --prefix-reuse-overhang <tokens>."
+        )
     if getattr(options, "replay_schedule", None):
         pods, pod_index = getattr(options, "replay_pods", 1), getattr(options, "replay_pod_index", 0)
         if pods < 1 or not 0 <= pod_index < pods:
@@ -5962,6 +5989,15 @@ def init_parser(parser):
         type=parse_lora_adapters,
         default=(),
         help="Comma-separated exact model strings to select round-robin per request",
+    )
+    parser.add_argument(
+        "--served-model-config",
+        type=str,
+        default=None,
+        help="HF id or local path of the SERVED model's config, for reuse semantics: the sliding-window recompute "
+        "(prefix reuse overhang), KV restore blocks and the context. Defaults to --tokenizer; pass it when counting "
+        "tokens with a different tokenizer than the model served (e.g. --tokenizer llama while serving DeepSeek V4), "
+        "or the server will reuse less than designed.",
     )
     parser.add_argument(
         "--tokenizer",

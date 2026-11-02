@@ -2715,6 +2715,139 @@ def test_rows_with_little_uncached_room_get_a_bare_tail(tmp_path) -> None:
     assert ds.replay_shortfall["rows"] == 0
 
 
+def test_reuse_semantics_come_from_the_served_model_not_the_counting_tokenizer(monkeypatch, caplog) -> None:
+    """C-242: the P1 rungs counted tokens with the default Llama tokenizer while serving DeepSeek V4, so the
+    reuse overhang resolved from Llama's config (0) and every class delivered ~127 cached tokens less than
+    designed (the engine recomputes its 128-token sliding window at the divergence)."""
+    import load_test as lt
+
+    ns = lambda **kw: argparse.Namespace(
+        **{"prefix_reuse_overhang": None, "prefix_restore_boundary": None, "served_model_config": None, **kw}
+    )
+    llama = "NousResearch/Meta-Llama-3.1-8B-Instruct"
+    dsv4 = "deepseek-ai/DeepSeek-V4-Flash"
+    # counting with Llama: no overhang; saying what is served: DSV4's window
+    monkeypatch.setattr(lt, "DEFAULT_TOKENIZER", llama)
+    assert lt.resolve_prefix_reuse_overhang(ns(tokenizer=None)) == 0
+    assert lt.resolve_prefix_reuse_overhang(ns(tokenizer=None, served_model_config=dsv4)) == 128
+    assert lt.resolve_prefix_reuse_overhang(ns(tokenizer=llama, served_model_config=dsv4)) == 128
+    assert lt.resolve_prefix_reuse_overhang(ns(tokenizer=dsv4)) == 128
+    # the restore boundary follows the served model too (GLM), and the explicit flags still win
+    assert lt.resolve_prefix_restore_boundary(ns(tokenizer=llama, served_model_config="zai-org/GLM-5.2")) == 2048
+    assert (
+        lt.resolve_prefix_restore_boundary(
+            ns(tokenizer=llama, served_model_config="zai-org/GLM-5.2", prefix_restore_boundary=0)
+        )
+        == 0
+    )
+    assert (
+        lt.resolve_prefix_reuse_overhang(ns(tokenizer=llama, served_model_config=dsv4, prefix_reuse_overhang=64)) == 64
+    )
+
+
+def test_a_run_without_an_overhang_warns_loudly(caplog) -> None:
+    """C-242: laying prefixes out with no overhang while classes have cached tokens must not pass silently."""
+    from load_test import validate_shape_mix_options
+
+    mix = json.dumps(json.loads(json.dumps(MIX)))  # chat has cached_prompt_tokens 400
+    ns = lambda **kw: argparse.Namespace(
+        shape_mix=mix,
+        shape_mix_corpus=None,
+        replay_schedule=None,
+        replay_pods=1,
+        replay_pod_index=0,
+        chat=False,
+        **{"tokenizer": None, "prefix_reuse_overhang": None, **kw},
+    )
+    with caplog.at_level("WARNING", logger="load_test"):
+        validate_shape_mix_options(ns())  # the default Llama tokenizer: no overhang for a class with cached tokens
+    assert "no prefix reuse overhang" in caplog.text and "--served-model-config" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="load_test"):
+        validate_shape_mix_options(ns(prefix_reuse_overhang=128))  # an explicit overhang: no warning
+    assert "no prefix reuse overhang" not in caplog.text
+
+
+def test_partial_lt_2k_delivers_its_designed_cached_with_the_served_models_window(tmp_path) -> None:
+    """C-242 end to end, with the rung's class numbers (P1's partial_lt_2k: prompt 930, cached 539): simulating
+    the engine (it reuses the common token prefix with an earlier prompt minus its 128-token sliding window),
+    the delivered cached matches the designed 539 with the overhang, and falls ~127 short without it."""
+    from load_test import resolve_shape_mix_corpus
+
+    spec = {
+        "seed": 20261028,
+        "classes": [
+            {
+                "name": "partial_lt_2k",
+                "weight": 1,
+                "prompt_tokens": 930,
+                "cached_prompt_tokens": 539,
+                "generated_tokens": 132,
+                "prefix_pool_size": 8,
+            }
+        ],
+    }
+    for overhang, expect in ((128, 539), (0, 539 - 127)):
+        ds = _dataset(
+            spec,
+            tokenizer=_llama()[0],
+            corpus_path=resolve_shape_mix_corpus(None),
+            chat_overhead_tokens=0,
+            chat_head_tokens=0,
+            reuse_overhang_tokens=overhang,
+        )
+        ds.build_prefixes()
+        tok = _llama()[0]
+        # warm each prefix once, as the fill does, then measure
+        seen = [tok.encode(ds.scheduled_request(0, j).prompt, add_special_tokens=False) for j in range(8)]
+        delivered = []
+        for r in _take(ds, 60):
+            ids = tok.encode(r.prompt, add_special_tokens=False)  # completions: no template
+            assert len(ids) == r.prompt_tokens
+            hit = max(_common_prefix(ids, s) for s in seen)
+            delivered.append(max(0, hit - 128))  # the engine recomputes its window at the divergence
+            seen.append(ids)
+        import statistics as st
+
+        assert ds.reusable_tokens[0] == 539
+        assert st.mean(delivered) == pytest.approx(expect, abs=3), (overhang, st.mean(delivered))
+
+
+def test_sampled_lengths_keep_a_skewed_classs_mean_on_a_small_uncached_base() -> None:
+    """C-243 (reduced): the sampler keeps each class's mean by construction (fit_mean moves only what the
+    quantiles don't pin), on a skewed quantile set and a class whose uncached base is small, as partial_lt_2k's
+    is. Pins the invariant so a regression shows as a test, not as a D-63 failure."""
+    import statistics as st
+
+    spec = {
+        "seed": 11,
+        "classes": [
+            {
+                "name": "partial_lt_2k",
+                "weight": 1,
+                "prompt_tokens": 930,
+                "cached_prompt_tokens": 539,  # uncached base 391, as P1's partial_lt_2k
+                "generated_tokens": 132,
+                "prefix_pool_size": 4,
+                # implied mean 388 against the class's 391: fit_mean raises only the upper tail
+                "uncached_tokens_quantiles": {"p10": 100, "p50": 230, "p90": 750, "p99": 2600},
+            }
+        ],
+    }
+    ds = _dataset(spec, tokenizer=WordTokenizer(), sample_lengths=True)
+    assert ds._uncached_dist[0].tail_slope > ds._uncached_dist[0].base_slope  # fitted, not scaled
+    ds.build_prefixes()
+    unc = [r.prompt_tokens - ds.reusable_tokens[0] for r in _take(ds, 20000)]
+    assert st.mean(unc) == pytest.approx(391, rel=0.02)  # the class's mean, within 2%
+    q = lambda xs, p: xs[int(p * (len(xs) - 1))]
+    out = sorted(unc)
+    # p10 is left out: the bottom stratum spans levels 0 to 6.25% and the next 6.25 to 12.5%, so the mixture's
+    # 10th percentile is a whole stratum's average, well above the p10 point on a steep bottom
+    for level, value, tol in ((0.5, 230, 0.15), (0.9, 750, 0.25), (0.99, 2600, 0.25)):
+        # a stratum's draw is its average, above the point itself on a convex tail (strata are discrete)
+        assert q(out, level) == pytest.approx(value, rel=tol), level
+
+
 def test_bare_tails_never_reuse_more_than_the_recorded_cached_length(tmp_path) -> None:
     """D-102 point 3: a bare tail opens with a per-row word, so it diverges at the cut like a nonce tail. An
     engine's prefix cache is the longest common token prefix with an earlier prompt; simulating it over the whole
