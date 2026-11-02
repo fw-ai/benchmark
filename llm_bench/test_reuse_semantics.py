@@ -104,7 +104,6 @@ def test_the_chat_mode_is_required_and_the_endpoint_is_logged() -> None:
 def test_overhang_and_head_shape_the_shared_prefix(tmp_path) -> None:
     """D-113/D-120/D-134: the shared prefix is laid out longer by the overhang (shorter when negative), and
     chat prompts are built shorter by the measured head, so the server sees the designed lengths."""
-    import test_client_pacing  # noqa: F401  (the word tokenizer lives there)
 
     class WordTok:
         def encode(self, text, add_special_tokens=False):
@@ -184,3 +183,24 @@ def test_measure_chat_head_reads_the_server_count(monkeypatch) -> None:
     env = type("Env", (), {"host": "http://x"})()
     assert measure_chat_head(env, opts, None, "tok") == 26
     assert measure_chat_head(None, opts, None, "tok") is None  # no host: unmeasurable
+
+
+def test_chat_head_zero_is_distinguishable_from_unmeasured(caplog) -> None:
+    """N10-145-3: an unmeasured head is None (a loud warning, no calibration, a blank summary field); a
+    measured 0 is 0 (the server adds nothing, calibrated, 0 in the summary)."""
+    ds = TranslationDataset(
+        "limericks.txt", "\n\nTranslate.", _WordTok(), "x", chat=False, num_tokens=50, common_tokens=10, chat_head=None
+    )
+    assert ds.chat_head is None and ds._num_tokens == 50
+    ds = TranslationDataset(
+        "limericks.txt", "\n\nTranslate.", _WordTok(), "x", chat=False, num_tokens=50, common_tokens=10, chat_head=0
+    )
+    assert ds.chat_head == 0 and ds._num_tokens == 50  # measured 0: nothing subtracted, but calibrated
+    with caplog.at_level("WARNING", logger="load_test"):
+        assert measure_chat_head(None, argparse.Namespace(provider="vllm"), None, "t") is None
+    assert "chat head can't be measured" in caplog.text and "no registered host" in caplog.text
+
+
+class _WordTok:
+    def encode(self, text, add_special_tokens=False):
+        return text.split()

@@ -347,7 +347,13 @@ def measure_chat_head(environment, options: argparse.Namespace, tokenizer, token
     per process by sending one minimal chat prompt; None when it can't be measured, and the layout then runs
     uncalibrated with a warning."""
     host = getattr(environment, "host", None) if environment is not None else None
-    if not getattr(options, "provider", None) or not host:
+    if not host or not getattr(options, "provider", None):
+        logger.warning(
+            "llm_bench: the chat head can't be measured ("
+            + ("no --provider" if host else "no registered host")
+            + "); chat lengths run uncalibrated, and the server will see prompts longer than the client counts "
+            "by its head. Pass --provider (or --chat-head-tokens) to calibrate."
+        )
         return None
     key = (host, options.model, tokenizer_path)
     if key in _CHAT_HEAD_CALIBRATION:
@@ -467,10 +473,11 @@ class TranslationDataset:
         num_tokens: int,
         common_tokens: int,
         reuse_overhang: int = 0,
-        chat_head: int = 0,
+        chat_head: Optional[int] = None,
     ):
         # What the layout intends the server to reuse per request: the shared prefix content (D-123)
         self.designed_cached_tokens = common_tokens
+        # None: unmeasured (the layout runs uncalibrated); 0: measured, the server adds nothing
         self.chat_head = chat_head
         self._tokenizer = tokenizer
         self._tokenizer_path = tokenizer_path
@@ -493,6 +500,11 @@ class TranslationDataset:
         if chat_head:
             # self._num_tokens: the param, before the corpus loop's num_tokens shadows it
             self._num_tokens = max(0, self._num_tokens - chat_head)
+        elif chat_head is None:
+            logger.warning(
+                "llm_bench: the chat head is unmeasured for this run; prompts are built to the client's count "
+                "and the server will see them longer by its head"
+            )
         self._prefix = ""
         self._suffix = prompt
         self._prefix_suffix_tokens = len(self._tokenizer.encode(prompt, add_special_tokens=False))
@@ -720,7 +732,7 @@ class DatasetHolder:
                     )
                     head = 0 if measured is None else measured
                 chat_head = head
-                if chat_head:
+                if chat_head is not None:
                     logger.info(
                         f"llm_bench: chat head {chat_head} tokens (measured on the server; --chat-head-tokens "
                         f"overrides): the layout subtracts it, so the server sees the designed lengths"
@@ -3623,10 +3635,11 @@ def systemone_summary_entries(stats, num_questions: int) -> dict[str, Any]:
 
 @events.quitting.add_listener
 def _(environment, **kw):
-    total_latency = environment.stats.entries[("total_latency", "METRIC")]
+    total_latency = environment.stats.entries.get(("total_latency", "METRIC"))  # None: no scored request ran
     total = environment.stats.total
     fail_ratio = (total.num_failures / total.num_requests) if total.num_requests > 0 else 1.0
-    if fail_ratio > environment.parsed_options.max_fail_ratio:
+    failed = fail_ratio > environment.parsed_options.max_fail_ratio
+    if failed:
         logger.error(f"Test failed: {total.num_failures}/{total.num_requests} requests failed ({fail_ratio:.2%})")
         environment.process_exit_code = 1
     else:
@@ -3683,8 +3696,12 @@ def _(environment, **kw):
         text_entries, percentile_metrics = text_summary_entries(environment.stats, environment.parsed_options.stream)
         entries.update(text_entries)
 
-    entries["num_requests"] = total_latency.num_requests
-    entries["qps"] = total_latency.total_rps
+    entries["num_requests"] = total_latency.num_requests if total_latency is not None else 0
+    entries["qps"] = total_latency.total_rps if total_latency is not None else 0.0
+    # A row from a run that failed its --max-fail-ratio (or sent no scored request) must not read as a data
+    # point: mark it (N10-145-1)
+    entries["failed"] = int(failed)
+    entries["fail_ratio"] = fail_ratio
     percentile_to_report = [50, 90, 95, 99, 99.9]
     for percentile_metric in percentile_metrics:
         metric_entry = environment.stats.entries.get((percentile_metric, "METRIC"))
@@ -3706,8 +3723,14 @@ def _(environment, **kw):
     entries["served_model_config"] = resolve_served_model_config(environment.parsed_options)
     entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
     ds = DatasetHolder._instance
-    if ds is not None and getattr(ds, "chat_head", None):
-        entries["chat_head_tokens"] = ds.chat_head
+    if getattr(environment.parsed_options, "chat", False) and not (
+        environment.parsed_options.systemone
+        or environment.parsed_options.embeddings
+        or environment.parsed_options.rerank
+    ):
+        # 0 (measured, no extra rendering) and unmeasured are distinct: unmeasured is "none"
+        entries["chat_head_tokens"] = getattr(ds, "chat_head", None) if ds is not None else None
+        entries["chat_head_tokens"] = "" if entries["chat_head_tokens"] is None else entries["chat_head_tokens"]
     if getattr(environment.parsed_options, "prompt_cache_max_len", 0):
         entries["designed_cached_tokens"] = getattr(ds, "designed_cached_tokens", "") if ds is not None else ""
     entries.update(prefix_reuse_probe_entries())
