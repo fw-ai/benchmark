@@ -3528,3 +3528,34 @@ def test_chat_head_calibration_lays_out_server_seen_lengths() -> None:
         # the client renders 26 fewer content tokens, so the server (which adds its head) sees the same length
         assert len(b.prompt) < len(a.prompt)
         assert b.reusable_tokens == a.reusable_tokens
+
+
+def test_pool_cache_log_line_shows_the_first_keys(tmp_path, caplog) -> None:
+    """Design ask: the --prefix-pool-cache line carries the first 3 cache keys, so a step loading
+    another step's pool is visible in the scored log without opening the cache files."""
+    import logging
+
+    from load_test import logger
+
+    mix = json.loads(json.dumps(MIX))  # chat (pool 3), agent (pool 2), cold (no pool)
+    ds = _dataset(mix, tokenizer=WordTokenizer(), pool_cache=str(tmp_path))
+    ds.build_prefixes()
+    assert ds.cache_loaded_prefixes == 0  # fresh dir: nothing loaded, everything built
+    ds2 = _dataset(mix, tokenizer=WordTokenizer(), pool_cache=str(tmp_path))
+    with caplog.at_level(logging.INFO, logger="load_test"):
+        ds2.build_prefixes()
+        keys = []
+        shown = 0
+        for ci in range(len(ds2.mix.classes)):
+            if shown >= 3 or not ds2.pool_sizes[ci]:
+                continue
+            keys.append(ds2._prefix_cache_slot(ci)[1][:64])
+            shown += 1
+        logger.info(
+            f"--prefix-pool-cache {ds2.pool_cache}: loaded {ds2.cache_loaded_prefixes} of "
+            f"{sum(ds2.pool_sizes)} prefixes, built {sum(ds2.pool_sizes) - ds2.cache_loaded_prefixes}"
+            + (f"; keys[:3] {'; '.join(keys)}" if keys else "")
+        )
+    assert "--prefix-pool-cache" in caplog.text and "keys[:3]" in caplog.text
+    assert len(keys) == 2  # chat and agent have pools; cold doesn't
+    assert all(k.startswith(f"prefix:{mix['seed']}") for k in keys)

@@ -2764,9 +2764,20 @@ class DatasetHolder:
                 )
                 seconds = ds.build_seconds = ds.build_prefixes()
                 if ds.pool_cache:
+                    # The first few cache keys, so a step loading another step's pool is visible in the scored
+                    # log without opening the cache files (key: prefix:{seed}:{class index}:{laid-out
+                    # length}:{fingerprint})
+                    shown = 0
+                    keys = []
+                    for ci in range(len(ds.mix.classes)):
+                        if shown >= 3 or not ds.pool_sizes[ci]:
+                            continue
+                        keys.append(ds._prefix_cache_slot(ci)[1][:64])
+                        shown += 1
                     logger.info(
                         f"--prefix-pool-cache {ds.pool_cache}: loaded {ds.cache_loaded_prefixes} of "
                         f"{sum(ds.pool_sizes)} prefixes, built {sum(ds.pool_sizes) - ds.cache_loaded_prefixes}"
+                        + (f"; keys[:3] {'; '.join(keys)}" if keys else "")
                     )
                 _release_free_memory()
                 rss, peak = _process_rss_bytes(), _process_rss_bytes("VmHWM")
