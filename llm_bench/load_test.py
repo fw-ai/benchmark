@@ -3788,6 +3788,10 @@ class ReplayPacer:
             return cls._instance
 
 
+# Chat-head overhead values already explained in the log (D-131), so it logs once per value
+_HEAD_OVERHEAD_LOGGED: set = set()
+
+
 class SendTimeline:
     """Intended and actual send times of paced requests, for delivered-arrival stats in the summary."""
 
@@ -6172,10 +6176,21 @@ class LLMUser(HttpUser):
             token_str = ", ".join(token_parts)
             # D-123: the in-run reuse check's per-request record, parsed by the runner from generator logs and
             # stdout (designed is what the layout intends the server to reuse for this row; delivered=none when
-            # the server reports no cached count)
+            # the server reports no cached count). D-131: on chat runs the server renders the prompt with a
+            # longer head than the client counts (the measured +26 on DeepSeek V4.1); those tokens are reused
+            # ahead of the divergence, so they belong in designed, measured per request as the server's prompt
+            # count minus the client's
+            head_overhead = 0
+            if (
+                designed_cached is not None
+                and shape_request is not None
+                and prompt_tokens
+                and prompt_tokens > shape_request.prompt_tokens
+            ):
+                head_overhead = int(prompt_tokens) - shape_request.prompt_tokens
             reuse_str = (
                 (
-                    f" | reuse class={class_name} designed={designed_cached}"
+                    f" | reuse class={class_name} designed={designed_cached + head_overhead}"
                     f" delivered={'none' if cached_tokens is None else int(cached_tokens)}"
                 )
                 if class_name is not None
@@ -6225,6 +6240,13 @@ class LLMUser(HttpUser):
                 if cached_tokens is not None:
                     add_custom_metric("cached_tokens", cached_tokens)
 
+            if shape_request is not None and head_overhead and not _HEAD_OVERHEAD_LOGGED:
+                _HEAD_OVERHEAD_LOGGED.add(head_overhead)
+                logger.info(
+                    f"--shape-mix: the server renders chat prompts {head_overhead} tokens longer than designed "
+                    f"(its chat head, once per value); those tokens are counted in the reuse record's designed "
+                    f"value (D-131)"
+                )
             if shape_request is not None:
                 record_shape_class_metrics(
                     shape_request.class_name,
@@ -6236,7 +6258,11 @@ class LLMUser(HttpUser):
                     recorded_cached_tokens=shape_request.recorded_cached_tokens,
                     laid_out_cached_tokens=shape_request.reusable_tokens,
                     replay_role=shape_request.replay_role,
-                    designed_cached_tokens=shape_request.designed_cached_tokens,
+                    designed_cached_tokens=(
+                        (shape_request.designed_cached_tokens + head_overhead)
+                        if shape_request.designed_cached_tokens is not None
+                        else None
+                    ),
                 )
 
             # Allow provider to process response (e.g., for custom metrics)

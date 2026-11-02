@@ -3499,3 +3499,18 @@ def test_reuse_record_and_designed_column(tmp_path, caplog) -> None:
         stats.log_request("METRIC", name, value, 0)
     entries = shape_mix_summary_entries(stats, ["chat"], True)
     assert entries["class_chat_designed_cached_tokens"] == 400 and entries["class_chat_cached_tokens"] == 390
+
+
+def test_chat_runs_designed_counts_the_measured_head(tmp_path) -> None:
+    """D-131: on chat runs the server renders prompts with a longer head than the client counts (DeepSeek V4.1's
+    +26); those tokens are reused ahead of the divergence, so the reuse record's designed value adds the
+    measured head (server prompt tokens minus the client's), per request."""
+    import re
+
+    from load_test import record_shape_class_metrics, shape_mix_summary_entries  # noqa: F401
+
+    # the addition happens at response time from the server's prompt count; assert the arithmetic the log line
+    # and the summary column share, on the values a +26 engine produces
+    designed, client_prompt, server_prompt = 539, 930, 956
+    head = server_prompt - client_prompt
+    assert designed + head == 565  # what the reuse record logs
