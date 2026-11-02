@@ -3183,6 +3183,7 @@ class PrefixReuseProbe:
     residual = 0
     under_4k = None
     over_4k = None
+    prompt_overhead = None  # server prompt tokens minus client tokens (the engine's extra rendering)
     first_misses = 0  # lengths whose first measurement read 0 cached (it landed on another cache)
     misses: list = []  # lengths never hit in any measurement (kept out of the fit)
     failed = 0
@@ -3204,6 +3205,9 @@ def prefix_reuse_probe_entries() -> dict[str, Any]:
         "prefix_reuse_probe_residual": PrefixReuseProbe.residual,
         "prefix_reuse_probe_first_misses": PrefixReuseProbe.first_misses,
         "prefix_reuse_probe_never_hit": ",".join(map(str, PrefixReuseProbe.misses)),
+        "prefix_reuse_probe_prompt_overhead": (
+            "" if PrefixReuseProbe.prompt_overhead is None else PrefixReuseProbe.prompt_overhead
+        ),
         "prefix_reuse_probe_failed": PrefixReuseProbe.failed,
         "prefix_reuse_probe_suggested": "" if w is None else suggested,
     }
@@ -5633,7 +5637,7 @@ class LLMUser(HttpUser):
             cached = details.get("cached_tokens", usage.get("cached_input_tokens"))
             if cached is None:
                 raise ValueError("the response reports no cached tokens (usage.prompt_tokens_details.cached_tokens)")
-            return int(cached)
+            return int(cached), int(usage.get("prompt_tokens") or 0)
 
         started = time.monotonic()
         logger.info(
@@ -5643,6 +5647,7 @@ class LLMUser(HttpUser):
         # The unique hex comes right after the separator, so at most the separator's own token(s) are shared
         # between a warm prompt and a measurement: the tail can't inflate the measured reuse (D-120)
         tail = lambda: f"\n\n{secrets.token_hex(8)} " + " ".join(words[-400:-200])
+        overheads: list[int] = []
         try:
             for i, shared in enumerate(ladder):
                 # A per-point header makes every point's text distinct from token 0: no point can hit another's
@@ -5650,13 +5655,20 @@ class LLMUser(HttpUser):
                 prefix = exact_prefix_text(ids, shared)
                 affinity = f"reuse-probe-{run}-{i}"
                 warm = prefix + tail()
-                send(warm, affinity)
+                _, warm_server_prompt = send(warm, affinity)
+                warm_overhead = warm_server_prompt - len(prompt_ids(warm))
+                overheads.append(warm_overhead)
                 seen = [prompt_ids(warm)]
                 for attempt in range(attempts):
                     measured = prefix + tail()
                     measured_ids = prompt_ids(measured)
                     shared_tokens = max(_common_prefix_count(measured_ids, p) for p in seen)
-                    cached = send(measured, affinity)
+                    cached, server_prompt = send(measured, affinity)
+                    # The engine can render the prompt with more tokens than the client counts (its chat
+                    # template's head, a default system prompt): those tokens sit AHEAD of the divergence and
+                    # are shared by every probe prompt, so they pre-pay part of the window and the measured
+                    # overhang is the value to pass for THIS mode and tokenizer, not the engine's raw window
+                    overheads.append(server_prompt - len(measured_ids))
                     seen.append(measured_ids)
                     if attempt == 0 and cached == 0:
                         PrefixReuseProbe.first_misses += 1
@@ -5676,6 +5688,7 @@ class LLMUser(HttpUser):
         except Exception as e:
             PrefixReuseProbe.failed += 1
             logger.error(f"--prefix-reuse-probe failed ({e!r}); inference from the points measured so far")
+        PrefixReuseProbe.prompt_overhead = int(round(sum(overheads) / len(overheads))) if overheads else None
         PrefixReuseProbe.seconds = time.monotonic() - started
         if PrefixReuseProbe.points:
             w, b, form, error, table, under, over = infer_reuse_semantics(PrefixReuseProbe.points)
@@ -5686,6 +5699,13 @@ class LLMUser(HttpUser):
                 if under is None or over is None or abs(under - over) <= 8
                 else f"; !!! the overhang differs by size ({under} under 4K, {over} above): size-dependent"
             )
+            if PrefixReuseProbe.prompt_overhead:
+                logger.info(
+                    f"--prefix-reuse-probe: the server renders each prompt {PrefixReuseProbe.prompt_overhead} tokens "
+                    f"longer than the client counts (its chat rendering's head): those tokens are shared ahead of "
+                    f"the divergence, so the overhang to pass for this mode is the engine's window minus "
+                    f"{PrefixReuseProbe.prompt_overhead}"
+                )
             logger.info(
                 f"--prefix-reuse-probe: overhang {w}, restore boundary {b} ({form} form, residual {error} over "
                 f"{len(PrefixReuseProbe.points)} points, overhang {under} under 4K and {over} above; first-measurement "
