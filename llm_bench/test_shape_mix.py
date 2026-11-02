@@ -3623,3 +3623,25 @@ def test_startup_offset_reports_the_first_send_after_spawn() -> None:
     assert SendTimeline.first_send_offset == pytest.approx(0.1)
     SendTimeline.reset()
     del _time
+
+
+def test_unproven_switches_default_off(tmp_path) -> None:
+    """The unproven features ship behind switches that default to off, even when the profile carries the data
+    they would use: gamma arrivals, rate modulation, per-request length sampling, retimed replay and the
+    instruction suffix."""
+    from locust.argument_parser import get_empty_argument_parser, setup_parser_arguments
+
+    mix = json.loads(json.dumps(MIX))
+    mix["arrivals"] = {"cv2": 4.0, "dispersion_10s": 42.0}
+    path = tmp_path / "mix.json"
+    path.write_text(json.dumps(mix))
+    parser = get_empty_argument_parser()
+    setup_parser_arguments(parser)
+    load_test.init_parser(parser)
+    opts = parser.parse_args(["--provider", "vllm", "-m", "m", "--no-chat", "--shape-mix", f"@{path}"])
+    assert opts.qps_distribution == "constant"  # gamma arrivals: opt in with --qps-distribution gamma
+    assert opts.qps_modulation_window is None  # rate modulation: opt in with --qps-modulation-window
+    assert load_test.rate_block_windows(opts) is None
+    assert opts.shape_mix_sample_lengths is False  # per-request length sampling from the class quantiles
+    assert opts.replay_retime is None  # retimed replay
+    assert opts.shape_mix_instruction is None  # the instruction suffix
