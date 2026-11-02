@@ -3896,11 +3896,21 @@ class SendTimeline:
     # --qps: the time each committed send was claimed for, before any stall moved the schedule (so a stall isn't
     # hidden from the planned sends per minute)
     planned = array("d")
+    # The first send after "All users spawned" (D-154): setup and the first preparation can push it past the
+    # window's start, which is the run's start-up shift - separate from the in-load schedule shift (resyncs)
+    spawned_monotonic = None
+    first_send_offset = None
 
     @classmethod
     def record(cls, intended: float, actual: float) -> None:
+        if cls.first_send_offset is None and cls.spawned_monotonic is not None:
+            cls.first_send_offset = actual - cls.spawned_monotonic
         cls.intended.append(intended)
         cls.actual.append(actual)
+
+    @classmethod
+    def spawned(cls) -> None:
+        cls.spawned_monotonic = time.monotonic()
 
     @classmethod
     def reset(cls) -> None:
@@ -3908,6 +3918,8 @@ class SendTimeline:
         cls.actual = array("d")
         cls.planned = array("d")
         cls.skipped = 0
+        cls.spawned_monotonic = None
+        cls.first_send_offset = None
 
 
 def gap_cv2(times) -> Optional[float]:
@@ -4206,6 +4218,7 @@ class InitTracker:
         ClientCpu.reset()
         SendTimeline.reset()
         RequestOutcomes.reset()
+        SendTimeline.spawned()
         # Paced users start claiming send times only now, so the schedule doesn't begin with half the users
         cls.spawned.set()
         start_wait = cls._replay_start_wait()
@@ -4214,6 +4227,7 @@ class InitTracker:
             def _start_window():
                 cls.reset_stats()
                 SendTimeline.reset()
+                SendTimeline.spawned()  # the measured window starts here; count the first send from it
                 RequestOutcomes.reset()
                 ClientCpu.reset()
 
@@ -7653,6 +7667,8 @@ def _(environment, **kw):
         )
         entries["intended_sends_per_minute"] = sends_per_minute(planned)
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
+        # D-154: the first send after "All users spawned", before any in-load shift
+        entries["startup_offset_s"] = SendTimeline.first_send_offset if SendTimeline.first_send_offset else ""
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())

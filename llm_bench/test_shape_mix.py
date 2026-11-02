@@ -3599,3 +3599,27 @@ def test_per_class_reasoning_effort_reaches_the_payload() -> None:
     row_none = ds.replay_request(ScheduleEntry(0.0, 0, session="x"))
     assert build_shape_mix_request(provider, row_none)[0]["reasoning_effort"] == cls_effort
     del SimpleNamespace
+
+
+def test_startup_offset_reports_the_first_send_after_spawn() -> None:
+    """D-154: the summary reports the shift of the first send after "All users spawned" (setup + first
+    preparation), separately from the in-load schedule shift (resyncs). Resetting the window (as
+    --replay-start-at does) restarts the count, so the offset describes the measured window's start."""
+    import time as _time
+
+    from load_test import SendTimeline
+
+    SendTimeline.reset()
+    SendTimeline.spawned()
+    t0 = SendTimeline.spawned_monotonic
+    SendTimeline.record(0.0, t0 + 1.25)  # the first send, 1.25 s after spawn
+    SendTimeline.record(1.0, t0 + 2.0)
+    assert SendTimeline.first_send_offset == pytest.approx(1.25)
+    # re-marking the window (the --replay-start-at reset) restarts the count from the new start
+    SendTimeline.reset()
+    SendTimeline.spawned()
+    t1 = SendTimeline.spawned_monotonic
+    SendTimeline.record(0.0, t1 + 0.1)
+    assert SendTimeline.first_send_offset == pytest.approx(0.1)
+    SendTimeline.reset()
+    del _time
