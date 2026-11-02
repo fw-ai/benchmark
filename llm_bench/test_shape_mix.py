@@ -3645,3 +3645,23 @@ def test_unproven_switches_default_off(tmp_path) -> None:
     assert opts.shape_mix_sample_lengths is False  # per-request length sampling from the class quantiles
     assert opts.replay_retime is None  # retimed replay
     assert opts.shape_mix_instruction is None  # the instruction suffix
+
+
+def test_startup_drain_is_the_leading_run_of_late_sends() -> None:
+    """The drain is the contiguous run of late sends from the first; lateness after it is reported separately."""
+    from load_test import startup_drain_entries
+
+    # 1000 s of schedule: threshold min(1 s, 5 s) = 1 s. Sends 0-2 drain (3.0, 2.0, 1.5 s late), then on time,
+    # with one later 0.4 s stall that the drain must not absorb
+    intended = [0.0, 1.0, 2.0, 3.0, 4.0, 500.0, 1000.0]
+    late = [3.0, 2.0, 1.5, 0.01, 0.02, 0.4, 0.0]
+    e = startup_drain_entries(intended, [i + d for i, d in zip(intended, late)])
+    assert e["startup_drain_s"] == 3.0
+    assert e["startup_drain_peak_ms"] == 3000.0
+    assert abs(e["send_lateness_max_after_drain_ms"] - 400.0) < 1e-6
+    # An on-time first send: no drain
+    e = startup_drain_entries([0.0, 1.0, 1000.0], [0.0, 1.0, 1000.0])
+    assert e["startup_drain_s"] == 0.0 and e["startup_drain_peak_ms"] == 0.0
+    # A short schedule's threshold is 0.5% of its span: 0.05 s over 10 s, so 0.1 s late is still draining
+    e = startup_drain_entries([0.0, 5.0, 10.0], [0.1, 5.01, 10.0])
+    assert e["startup_drain_s"] == 5.0 and abs(e["startup_drain_peak_ms"] - 100.0) < 1e-6
