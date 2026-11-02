@@ -202,5 +202,33 @@ def test_chat_head_zero_is_distinguishable_from_unmeasured(caplog) -> None:
 
 
 class _WordTok:
+    chat_template = None
+
     def encode(self, text, add_special_tokens=False):
         return text.split()
+
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=True):
+        return [1, 2]
+
+
+def test_an_unmeasured_head_flows_through_datasetholder_as_none(caplog, monkeypatch) -> None:
+    """N10-145-5: without a measurable head (no --provider), DatasetHolder must keep None - not record 0 - so
+    the layout warns, the info line stays silent and the summary field is blank. Tested through the holder,
+    not by setting ds.chat_head directly."""
+    from locust.argument_parser import get_empty_argument_parser, setup_parser_arguments
+
+    parser = get_empty_argument_parser()
+    setup_parser_arguments(parser)
+    lt.init_parser(parser)
+    opts = parser.parse_args(["--chat", "-p", "120", "-pcml", "40", "--dataset", "limericks"])
+    monkeypatch.setattr(lt.DatasetHolder, "_instance", None)
+    monkeypatch.setattr(
+        lt, "InitTracker", type("IT", (), {"environment": None, "load_tokenizer": staticmethod(lambda p: _WordTok())})
+    )
+    with caplog.at_level("WARNING", logger="load_test"):
+        ds = lt.DatasetHolder.get_instance(opts)
+    assert ds.chat_head is None  # not 0
+    assert "chat head can't be measured" in caplog.text
+    assert "chat head is unmeasured" in caplog.text
+    assert "chat head 0 tokens" not in caplog.text and "chat head None" not in caplog.text
+    lt.DatasetHolder._instance = None

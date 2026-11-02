@@ -727,10 +727,11 @@ class DatasetHolder:
             if chat:
                 head = getattr(options, "chat_head_tokens", None)
                 if head is None:
-                    measured = measure_chat_head(
+                    # None stays None (unmeasured): the layout warns, and the summary's field is blank, so
+                    # unmeasured can't be read as a measured 0 (N10-145-5)
+                    head = measure_chat_head(
                         InitTracker.environment, options, InitTracker.load_tokenizer(options.tokenizer), tokenizer_path
                     )
-                    head = 0 if measured is None else measured
                 chat_head = head
                 if chat_head is not None:
                     logger.info(
