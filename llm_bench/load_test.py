@@ -4282,6 +4282,23 @@ def _parse_run_time_to_seconds(run_time_value):
 
 
 @events.init.add_listener
+def _require_explicit_chat_mode(environment, **_kwargs):
+    """D-139: --chat used to default to on, so a driver that omitted it silently stayed in chat mode (a whole
+    P8 probe read the chat-side overhang by accident). The mode is now required."""
+    options = getattr(environment, "parsed_options", None)
+    if (
+        options is not None
+        and getattr(options, "chat", True) is None
+        and not (options.systemone or options.embeddings or options.rerank)
+    ):
+        logger.error(
+            "Pass --chat (/v1/chat/completions) or --no-chat (/v1/completions): the mode is required. --chat "
+            "used to default to on, which silently kept runs that omitted it in chat mode."
+        )
+        sys.exit(1)
+
+
+@events.init.add_listener
 def _defer_run_time_to_after_spawn(environment, **_kwargs):
     """Capture -t/--run-time and --max-requests and defer them appropriately.
 
@@ -5305,6 +5322,8 @@ class LLMUser(HttpUser):
         self._guess_provider()
         logger.info(f" Provider {self.provider} using model {self.model} ".center(80, "*"))
         self.provider_formatter = PROVIDER_CLASS_MAP[self.provider](self.model, self.environment.parsed_options)
+        # The endpoint is logged so the chat/completions mode is visible in every run's output
+        logger.info(f"Endpoint: {self.provider_formatter.get_url()}")
         self.lora_adapters = self.environment.parsed_options.lora_adapters
 
         self.stream = self.environment.parsed_options.stream
@@ -6428,8 +6447,9 @@ def init_parser(parser):
     parser.add_argument(
         "--chat",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use /v1/chat/completions API",
+        default=None,
+        help="Use /v1/chat/completions (--no-chat for raw completions). The mode is REQUIRED: --chat used to "
+        "default to on, and drivers that omitted it silently stayed in chat (D-139).",
     )
     parser.add_argument(
         "--embeddings",

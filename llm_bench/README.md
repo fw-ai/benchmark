@@ -111,7 +111,7 @@ locust -t 10min -u 200 -r 200 --qps 4 --qps-distribution gamma --qps-cv2 4 \
 ```
 
 Generation options:
-- `--chat`: specify to call chat API instead of raw completions
+- `--chat` / `--no-chat`: chat API or raw completions. The mode is required (it used to default to chat, which silently kept runs that omitted the flag in chat mode).
 - `--stream`: stream the result back. Enabling this gives "time to first token" and "time per token" metrics
 - `--request-timeout S` (default 60): seconds to wait for a connection and, while streaming, between reads; 0 waits forever. Timed-out requests are failures. The summary counts `Requests Timeout` (including read timeouts mid-stream), `Requests Http 299` (a proxy answering for a cancelled request), `Requests Cancel Rate` (`--cancel-rate`) and `Requests Other Error`, the `Client Cancelled Fraction` (timeouts and 299s over requests sent) and, with `--shape-mix`, timeouts and 299s per class. `--max-fail-ratio` divides failed requests by requests sent (not by the custom metric rows, which used to dilute it about 15-fold); when a run fails it, the error line carries the same counts.
 - (optional) `--logprobs`: corresponds to `logprobs` API parameter. For some providers, it's needed for output token counting in streaming mode.
