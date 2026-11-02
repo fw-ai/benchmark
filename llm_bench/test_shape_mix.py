@@ -2883,6 +2883,28 @@ def test_deepseek_v41_resolves_its_overhang_from_text_config(tmp_path, caplog) -
     lt._REUSE_TABLE_MISSES.clear()
 
 
+def test_a_negative_overhang_trims_the_shared_prefix_for_an_overshooting_engine() -> None:
+    """D-120(1): an engine that reuses MORE than was shared (MiniMax M3.1's uniform +22) is compensated by a
+    negative overhang: the shared prefix is trimmed by that much, and the engine's overshoot then lands on the
+    designed cached length. The probe fits the signed value."""
+    from load_test import LengthQuantiles, infer_reuse_semantics
+
+    # the probe reads the overshoot as a negative overhang
+    ladder = [1097, 2649, 4400, 6238, 7984, 9730, 11476, 13219, 15065, 16811, 20012]
+    w, b, form, error, table, under, over = infer_reuse_semantics([(s2, s2 + 22) for s2 in ladder])
+    assert (w, b, error) == (-22, 0, 0) and under == over == -22
+    # the layout trims the prefix, and the reusable stays the designed cached length
+    mix = json.loads(json.dumps(MIX))
+    mix["classes"] = [dict(mix["classes"][0], prompt_tokens=1500, cached_prompt_tokens=1000, prefix_pool_size=2)]
+    trimmed = _dataset(mix, tokenizer=WordTokenizer(), reuse_overhang_tokens=-22)
+    plain = _dataset(mix, tokenizer=WordTokenizer(), reuse_overhang_tokens=0)
+    assert trimmed.prefix_tokens[0] == plain.prefix_tokens[0] - 22
+    assert trimmed.reusable_tokens[0] == plain.reusable_tokens[0] == 1000
+    # prompts still come out at the class length with room for the unique tail
+    for r in _take(trimmed, 30):
+        assert len(WordTokenizer().encode(r.prompt)) == r.prompt_tokens == 1500
+
+
 def test_infer_reuse_semantics_from_probe_points() -> None:
     """C-247 / D-111: the probe's points infer the overhang and restore boundary, in either form (the overhang
     outside the restore blocks, as measured on serverless DeepSeek V4, or inside), and report a size-dependent

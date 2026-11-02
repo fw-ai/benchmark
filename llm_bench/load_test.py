@@ -995,7 +995,7 @@ def infer_reuse_semantics(points: list) -> tuple:
     best = None
     for form, predicted in forms.items():
         for b in _REUSE_BOUNDARY_CANDIDATES:
-            for w in range(0, 1025):
+            for w in range(-512, 1025):  # negative: the engine reuses more than was shared (an overshoot)
                 error = sum(abs(cached - predicted(shared, w, b)) for shared, cached in points)
                 if best is None or error < best[3]:
                     best = (w, b, form, error, predicted)
@@ -1005,7 +1005,7 @@ def infer_reuse_semantics(points: list) -> tuple:
     def fit_overhang(bucket):
         if not bucket:
             return None
-        return min(range(0, 1025), key=lambda w2: sum(abs(c - predicted(sh, w2, b)) for sh, c in bucket))
+        return min(range(-512, 1025), key=lambda w2: sum(abs(c - predicted(sh, w2, b)) for sh, c in bucket))
 
     under = fit_overhang([(sh, c) for sh, c, _ in table if sh < 4096])
     over = fit_overhang([(sh, c) for sh, c, _ in table if sh >= 4096])
@@ -1475,12 +1475,14 @@ class ShapeMixDataset:
         return cached // boundary * boundary if boundary else cached
 
     def _shared_target(self, cached: int) -> int:
-        """Content tokens to share with earlier prompts so the server reuses `cached` (aligned) tokens."""
+        """Content tokens to share with earlier prompts so the server reuses `cached` (aligned) tokens. A negative
+        reuse overhang (an engine that reuses MORE than the shared prefix, as MiniMax M3.1's +22) shortens the
+        shared prefix by that much, so the overshoot lands on the designed cached length."""
         aligned = self._aligned_cached(cached)
         if aligned <= self._head:
             return 0
         margin = RESTORE_BOUNDARY_MARGIN_TOKENS if self.restore_boundary else 0
-        return aligned - self._head + self.reuse_overhang_tokens + margin
+        return max(0, aligned - self._head + self.reuse_overhang_tokens + margin)
 
     def _reusable_of(self, shared_content: int) -> int:
         """Tokens the server reuses from `shared_content` shared content tokens (after the template head)."""
@@ -5615,7 +5617,9 @@ class LLMUser(HttpUser):
             f"--prefix-reuse-probe: {len(ladder)} shared lengths, each with its own prefix, up to {attempts} "
             f"measurement(s) per length"
         )
-        tail = lambda: f"\n\nRequest {secrets.token_hex(8)}: " + " ".join(words[-400:-200])
+        # The unique hex comes right after the separator, so at most the separator's own token(s) are shared
+        # between a warm prompt and a measurement: the tail can't inflate the measured reuse (D-120)
+        tail = lambda: f"\n\n{secrets.token_hex(8)} " + " ".join(words[-400:-200])
         try:
             for i, shared in enumerate(ladder):
                 # A per-point header makes every point's text distinct from token 0: no point can hit another's
@@ -6757,8 +6761,9 @@ def init_parser(parser):
         default=None,
         help="For --shape-mix: tokens before a divergence point the server can't reuse from its prefix cache. "
         "Shared prefixes are made this much longer (the unique tail shorter), so the server reuses exactly "
-        "cached_prompt_tokens. Defaults to the model's sliding window for DeepSeek V4 (128, which recomputes it "
-        "at the divergence), else 0.",
+        "cached_prompt_tokens. Negative trims the shared prefix instead, for an engine that reuses MORE than it "
+        "was shared (MiniMax M3.1 measures +22: pass -22). Defaults to the model's sliding window for DeepSeek "
+        "V4 (128, which recomputes it at the divergence), else 0; the probe measures either sign.",
     )
     parser.add_argument(
         "--prefix-restore-boundary",
