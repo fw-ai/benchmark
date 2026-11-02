@@ -5563,7 +5563,7 @@ class LLMUser(HttpUser):
             response.raise_for_status()
             # Parsed here, not through the formatter: its parser follows --stream, while the probe always
             # reads a non-streaming body
-            usage = (orjson.loads(response.content).get("usage") or {})
+            usage = orjson.loads(response.content).get("usage") or {}
             details = usage.get("prompt_tokens_details") or {}
             cached = details.get("cached_tokens", usage.get("cached_input_tokens"))
             if cached is None:
