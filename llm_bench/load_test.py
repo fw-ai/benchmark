@@ -4849,6 +4849,7 @@ class FireworksProvider(OpenAIProvider):
         Only records speculation hit rates for generations with >= 30 tokens to ensure
         meaningful statistics.
         """
+
         def get_perf_metric(name):
             value = (perf_metrics or {}).get(name)
             if value is None:
@@ -6111,9 +6112,7 @@ class LLMUser(HttpUser):
             dur_generation = now - t_effective_first
             dur_first_token = t_effective_first - t_start
 
-            if not (
-                self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank
-            ):
+            if not (self.provider_formatter.parsed_options.embeddings or self.provider_formatter.parsed_options.rerank):
                 prompt_tokens = prompt_tokens or self.prompt_tokenizer_tokens
 
             token_parts = []
