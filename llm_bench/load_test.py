@@ -125,9 +125,22 @@ def resolve_model_type(tokenizer_path: str) -> str:
         return text_config.get("model_type") or config_json.get("model_type", "")
 
 
+# The DeepSeek V4 family's chat encoding module: encoding_dsv4.py on some checkpoints, plain encoding.py on
+# V4.1 ones (e.g. the vendored v41_13231c59 variant)
+_DSV4_ENCODING_FILES = ("encoding/encoding_dsv4.py", "encoding/encoding.py")
+
+
 @lru_cache(maxsize=None)
 def load_dsv4_encode_messages(tokenizer_path: str) -> Any:
-    path = _tokenizer_asset_path(tokenizer_path, "encoding/encoding_dsv4.py")
+    path = None
+    for name in _DSV4_ENCODING_FILES:
+        try:
+            path = _tokenizer_asset_path(tokenizer_path, name)
+            break
+        except (FileNotFoundError, OSError):
+            continue
+    if path is None:
+        raise FileNotFoundError(f"None of {' or '.join(_DSV4_ENCODING_FILES)} in the tokenizer at {tokenizer_path}")
     spec = importlib.util.spec_from_file_location("hf_dsv4_encoding", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load DSV4 encoding module from {path}")

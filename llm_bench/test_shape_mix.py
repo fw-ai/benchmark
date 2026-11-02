@@ -3413,3 +3413,25 @@ def test_a_session_lead_in_isnt_covered_by_another_keys_pool_send(tmp_path) -> N
     ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
     assert len(ds.lead_in_requests(entries)) == 2 and ds.lead_in_skipped == 0
     assert ds.replay_request(entries[2]).reusable_tokens == 1100
+
+
+def test_dsv4_encoding_loads_from_either_filename(tmp_path) -> None:
+    """V4.1 checkpoints ship the chat encoding as encoding/encoding.py, without the encoding_dsv4.py rename
+    (e.g. the vendored v41_13231c59 variant); the loader tries both, and the renamed copy still wins."""
+    from load_test import load_dsv4_encode_messages
+
+    v41 = tmp_path / "v41"
+    (v41 / "encoding").mkdir(parents=True)
+    (v41 / "encoding" / "encoding.py").write_text(
+        "def encode_messages(messages=None, thinking_mode=None):\n    return 'rendered'\n"
+    )
+    assert load_dsv4_encode_messages(str(v41))() == "rendered"  # the plain encoding.py fallback
+    (v41 / "encoding" / "encoding_dsv4.py").write_text(
+        "def encode_messages(messages=None, thinking_mode=None):\n    return 'renamed'\n"
+    )
+    load_dsv4_encode_messages.cache_clear()
+    assert load_dsv4_encode_messages(str(v41))() == "renamed"  # the renamed copy takes precedence
+    neither = tmp_path / "neither"
+    neither.mkdir()
+    with pytest.raises(FileNotFoundError):
+        load_dsv4_encode_messages(str(neither))

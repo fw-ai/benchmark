@@ -74,19 +74,29 @@ class _PrefixIndex:
 
 
 def _dsv4_encoder(tokenizer, tokenizer_path):
-    """The DeepSeek V4 family's encode_messages (encoding/encoding_dsv4.py) when the tokenizer has no chat
-    template, else None."""
+    """The DeepSeek V4 family's encode_messages (encoding_dsv4.py, or encoding.py on V4.1 checkpoints) when
+    the tokenizer has no chat template, else None."""
     if getattr(tokenizer, "chat_template", None) or not tokenizer_path:
         return None
     import importlib.util
     import os
 
-    path = os.path.join(tokenizer_path, "encoding", "encoding_dsv4.py")
-    if not os.path.exists(path):
+    for name in ("encoding/encoding_dsv4.py", "encoding/encoding.py"):  # V4.1 ships it as encoding.py
+        path = os.path.join(tokenizer_path, name)
+        if os.path.exists(path):
+            break
+    else:
         try:
             from huggingface_hub import hf_hub_download
 
-            path = hf_hub_download(repo_id=tokenizer_path, filename="encoding/encoding_dsv4.py")
+            for name in ("encoding/encoding_dsv4.py", "encoding/encoding.py"):
+                try:
+                    path = hf_hub_download(repo_id=tokenizer_path, filename=name)
+                    break
+                except Exception:
+                    continue
+            else:
+                return None
         except Exception:
             return None
     spec = importlib.util.spec_from_file_location("mock_dsv4_encoding", path)
