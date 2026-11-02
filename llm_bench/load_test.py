@@ -1288,8 +1288,10 @@ class ShapeMixDataset:
         default_popularity_zipf: Optional[float] = None,
         context_tokens: Optional[int] = None,
         split_restore_classes: bool = True,
+        server_chat_head: int = 0,
     ):
         self.mix = mix
+        self.server_chat_head = server_chat_head or 0
         # The model's context: sampled prompts plus outputs stay inside it
         self.context_tokens = context_tokens
         self.context_cut_requests = 0
@@ -2629,6 +2631,55 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
     return data, headers
 
 
+_CHAT_HEAD_CALIBRATION: dict = {}  # (host, model, tokenizer path) -> measured chat-head tokens
+
+
+def measure_chat_head(environment, options: argparse.Namespace, tokenizer, tokenizer_path: str) -> Optional[int]:
+    """The chat head (D-134): how many more tokens the server renders a chat prompt with than the client
+    counts - its template's head or a default system prompt the client's model doesn't produce (DeepSeek V4.1
+    measures +26). Measured once per process by sending one minimal chat prompt and comparing the server's
+    prompt count with the client's; None when it can't be measured (no provider, no host, an error), and the
+    layout then runs uncalibrated with a warning."""
+    host = getattr(environment, "host", None) if environment is not None else None
+    if not getattr(options, "provider", None) or not host:
+        return None
+    key = (host, options.model, tokenizer_path)
+    if key in _CHAT_HEAD_CALIBRATION:
+        return _CHAT_HEAD_CALIBRATION[key]
+    prompt = "Reply with OK."
+    try:
+        formatter = PROVIDER_CLASS_MAP[options.provider](options.model, options)
+        data = formatter.format_payload(prompt, 1, None)
+        data["max_tokens"] = 1
+        data["stream"] = False
+        for k in ("min_tokens", "ignore_eos", "stream_options"):
+            data.pop(k, None)
+        headers = {"Content-Type": "application/json"}
+        if options.api_key:
+            headers["Authorization"] = "Bearer " + options.api_key
+        for header in options.header or []:
+            key_, val = header.split(":", 1)
+            headers[key_] = val
+        response = requests.Session().post(
+            host.rstrip("/") + formatter.get_url(),
+            data=json.dumps(data),
+            headers=headers,
+            timeout=request_timeout(options) or 600,
+        )
+        response.raise_for_status()
+        server_tokens = int(orjson.loads(response.content).get("usage", {}).get("prompt_tokens") or 0)
+        client_tokens = len(chat_template_token_ids(tokenizer, tokenizer_path, prompt))
+        head = server_tokens - client_tokens
+    except Exception as e:
+        logger.warning(
+            f"--shape-mix: couldn't measure the chat head ({e!r}); chat lengths run uncalibrated (the server will "
+            f"see prompts longer than designed by its head)"
+        )
+        return None
+    _CHAT_HEAD_CALIBRATION[key] = head
+    return head
+
+
 class DatasetHolder:
     _instance = None
     _forced_generation_instance = None
@@ -2641,10 +2692,24 @@ class DatasetHolder:
             if cls._shape_mix_instance is None:
                 tokenizer = InitTracker.load_tokenizer(options.tokenizer)
                 tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
-                overhead = head = 0
+                overhead = head = server_chat_head = 0
                 if options.chat:
                     overhead = len(empty_chat_template_token_ids(tokenizer, tokenizer_path))
                     head = chat_template_head_tokens(tokenizer, tokenizer_path)
+                    # D-134: the server renders chat prompts with a head the client's template doesn't count
+                    # (measured +26 on DeepSeek V4.1). The layout subtracts it, so the server sees the designed
+                    # lengths - production's logged lengths already include it.
+                    server_chat_head = getattr(options, "chat_head_tokens", None)
+                    if server_chat_head is None:
+                        measured = measure_chat_head(InitTracker.environment, options, tokenizer, tokenizer_path)
+                        server_chat_head = 0 if measured is None else measured
+                    if server_chat_head:
+                        logger.info(
+                            f"--shape-mix: chat head {server_chat_head} tokens (measured on the server; "
+                            f"--chat-head-tokens overrides): the layout subtracts it, so the server sees the "
+                            f"designed lengths"
+                        )
+                    overhead += server_chat_head
                 mix = parse_shape_mix(options.shape_mix, chat_overhead_tokens=overhead)
                 pool_sizes = None
                 if getattr(options, "replay_schedule", None):
@@ -2667,6 +2732,7 @@ class DatasetHolder:
                     default_popularity_zipf=getattr(options, "prefix_popularity_zipf", None),
                     tail_variants=getattr(options, "shape_mix_tail_variants", SHAPE_MIX_TAIL_VARIANTS),
                     context_tokens=resolve_context_tokens(options),
+                    server_chat_head=server_chat_head,
                     # Replay rows carry their own cached lengths: its class pools stay at the floor
                     split_restore_classes=not getattr(options, "replay_schedule", None),
                 )
@@ -6332,6 +6398,14 @@ def init_parser(parser):
         help="Comma-separated exact model strings to select round-robin per request",
     )
     parser.add_argument(
+        "--chat-head-tokens",
+        type=int,
+        default=None,
+        help="Chat tokens the server renders beyond the client's template count (its head or a default system "
+        "prompt; DeepSeek V4.1 measures +26). Measured once per process with one minimal chat prompt; the layout "
+        "subtracts it, so the server sees the designed lengths. Pass a value to skip the measurement.",
+    )
+    parser.add_argument(
         "--served-model-config",
         type=str,
         default=None,
@@ -7561,6 +7635,8 @@ def _(environment, **kw):
             entries["prefix_pool_dropped_classes"] = len(dropped)
             if dropped:
                 entries["prefix_pool_dropped_class_names"] = ",".join(dropped)
+            if dataset.server_chat_head:
+                entries["chat_head_tokens"] = dataset.server_chat_head
             if dataset.context_tokens:
                 entries["shape_mix_context_tokens"] = dataset.context_tokens
                 entries["shape_mix_context_cut_requests"] = dataset.context_cut_requests

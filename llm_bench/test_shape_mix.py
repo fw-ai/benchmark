@@ -3514,3 +3514,17 @@ def test_chat_runs_designed_counts_the_measured_head(tmp_path) -> None:
     designed, client_prompt, server_prompt = 539, 930, 956
     head = server_prompt - client_prompt
     assert designed + head == 565  # what the reuse record logs
+
+
+def test_chat_head_calibration_lays_out_server_seen_lengths() -> None:
+    """D-134: the measured chat head is subtracted from the layout, so the server sees the designed lengths:
+    content shrinks by the head while prompt_tokens (the server-seen target) stays the class's own."""
+    tokenizer = WordTokenizer()
+    mix = json.loads(json.dumps(MIX))
+    plain = _dataset(mix, tokenizer=tokenizer, chat_overhead_tokens=4, chat_head_tokens=2)
+    calibrated = _dataset(mix, tokenizer=tokenizer, chat_overhead_tokens=4 + 26, chat_head_tokens=2)
+    for a, b in zip(_take(plain, 20), _take(calibrated, 20)):
+        assert b.prompt_tokens == a.prompt_tokens  # the server-seen target is unchanged
+        # the client renders 26 fewer content tokens, so the server (which adds its head) sees the same length
+        assert len(b.prompt) < len(a.prompt)
+        assert b.reusable_tokens == a.reusable_tokens
