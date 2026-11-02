@@ -95,3 +95,20 @@ def test_preflight_runner_reads_a_tier_plan_and_picks_the_scored_step() -> None:
     assert extra[:2] == ["--shape-mix", mix] and "--qps-cv2" in extra  # the plan's exact args, unquoted
     assert "--prefix-fill" in steps[0][4]
     assert scored_step(plan, steps, "probe-p1")[0] == "probe-p1"
+
+
+def test_preflight_requires_a_mode_and_checks_the_logged_paths(tmp_path) -> None:
+    """Every step must name --chat or --no-chat, and the requests the mock logged for it must hit that path."""
+    from preflight_run import path_mismatches, step_path
+
+    assert step_path(("s", 1, None, None, ["--shape-mix", "x", "--no-chat"])) == "/v1/completions"
+    assert step_path(("s", 1, None, None, ["--no-chat", "--chat"])) == "/v1/chat/completions"  # the last wins
+    assert step_path(("s", 1, None, None, ["--shape-mix", "x"])) is None
+    log = tmp_path / "mock.requests"
+    log.write_text("1.0 900 0 0 /v1/completions\n2.0 900 400 0 /v1/completions\n3.0 900 400 0 /v1/chat/completions\n")
+    assert path_mismatches(str(log), 0, "/v1/completions") == (3, {"/v1/chat/completions": 1})
+    assert path_mismatches(str(log), 0, "/v1/chat/completions") == (3, {"/v1/completions": 2})
+    assert path_mismatches(str(log), 2, "/v1/chat/completions") == (1, {})  # only this step's lines
+    # A log from before the path column counts as a mismatch, not a silent pass
+    log.write_text("1.0 900 0 0\n")
+    assert path_mismatches(str(log), 0, "/v1/completions") == (1, {"?": 1})

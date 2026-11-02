@@ -162,7 +162,8 @@ def make_handler(engine: PrefixCacheEngine, ttft: float, tpot: float, log=None):
             cached = engine.serve(ids, self.headers.get("x-session-affinity"))
             if log:
                 with log_lock:
-                    log.write(f"{arrived:.6f} {len(ids)} {cached} {engine.last_cache}\n")
+                    # The path last, so readers of the first four columns are unchanged
+                    log.write(f"{arrived:.6f} {len(ids)} {cached} {engine.last_cache} {self.path}\n")
                     log.flush()
             chat = "messages" in body
             n = max(1, int(body.get("max_tokens") or 16))
