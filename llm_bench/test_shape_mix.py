@@ -3576,7 +3576,8 @@ def test_per_class_reasoning_effort_reaches_the_payload() -> None:
     low = _dataset(same_mix, tokenizer=tokenizer)
     # pool identity across tiers: same key slot and same prefix text
     assert ds._prefix_cache_slot(1)[:2] == low._prefix_cache_slot(1)[:2]  # the tier is not in the cache key
-    ds.build_prefixes(); low.build_prefixes()
+    ds.build_prefixes()
+    low.build_prefixes()
     assert ds.prefix(1, 0) == low.prefix(1, 0)  # nor in the prefix text
     # the tier reaches the payload, per class, with a row's own tier winning in replay
     from types import SimpleNamespace
