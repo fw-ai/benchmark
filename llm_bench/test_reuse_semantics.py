@@ -174,6 +174,7 @@ def test_measure_chat_head_reads_the_server_count(monkeypatch) -> None:
 
     monkeypatch.setattr(lt.requests, "Session", lambda: Session())
     monkeypatch.setattr(lt, "_render_chat", lambda t, p, m: [0] * 4)
+    lt._CHAT_HEAD_CALIBRATION.clear()  # another test measured this key
     from locust.argument_parser import get_empty_argument_parser, setup_parser_arguments
 
     parser = get_empty_argument_parser()
@@ -232,3 +233,88 @@ def test_an_unmeasured_head_flows_through_datasetholder_as_none(caplog, monkeypa
     assert "chat head is unmeasured" in caplog.text
     assert "chat head 0 tokens" not in caplog.text and "chat head None" not in caplog.text
     lt.DatasetHolder._instance = None
+
+
+def test_no_pcml_run_gets_no_silent_shared_prefix() -> None:
+    """Review fix 2: without -pcml the overhang must not lay a shared prefix out (the server would serve
+    prefix-cache hits to a no-cache benchmark, with no reuse record to show it)."""
+    import random as _random
+
+    class _Tok:
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+    plain = TranslationDataset(
+        "limericks.txt", "\n\nT.", _Tok(), "x", chat=False, num_tokens=80, common_tokens=0, reuse_overhang=128
+    )
+    assert plain._prefix == "" and plain._prefix_suffix_tokens == len("\n\nT.".split())  # nothing shared
+    assert plain.designed_cached_tokens == 0
+
+
+def test_a_reply_without_usage_is_an_unmeasured_head(monkeypatch, caplog) -> None:
+    """Review fix 4: a 200 reply with no usable prompt-token count is unmeasured (None, warned), not a
+    negative head applied to the layout."""
+
+    class Resp:
+        status_code = 200
+        content = json.dumps({"choices": []}).encode()  # no usage
+
+        def raise_for_status(self):
+            pass
+
+    class Session:
+        def post(self, *a, **kw):
+            return Resp()
+
+    monkeypatch.setattr(lt.requests, "Session", lambda: Session())
+    monkeypatch.setattr(lt, "_render_chat", lambda t, p, m: [0] * 4)
+    lt._CHAT_HEAD_CALIBRATION.clear()  # an earlier test measured this (host, model, tokenizer) key
+    from locust.argument_parser import get_empty_argument_parser, setup_parser_arguments
+
+    parser = get_empty_argument_parser()
+    setup_parser_arguments(parser)
+    lt.init_parser(parser)
+    opts = parser.parse_args(["--provider", "vllm", "-m", "m", "--chat"])
+    env = type("Env", (), {"host": "http://x"})()
+    with caplog.at_level("WARNING", logger="load_test"):
+        assert measure_chat_head(env, opts, None, "tok") is None
+    assert "no prompt token count" in caplog.text
+    assert not lt._CHAT_HEAD_CALIBRATION  # never cached as a measurement
+
+
+def test_provider_from_host_writes_back_for_setup() -> None:
+    """Review fix 3: the host-based guess is available without --provider and -t, so the calibration runs for
+    the common invocation."""
+    from load_test import provider_from_host
+
+    assert provider_from_host("https://api.fireworks.ai/inference") == "fireworks"
+    assert provider_from_host("https://api.together.xyz") == "together"
+    assert provider_from_host("http://localhost:8000") is None
+    assert provider_from_host("http://localhost:8000", systemone=True) == "fireworks"
+
+
+def test_probe_point_prefixes_share_no_leading_text() -> None:
+    """Review fix 5: each probe point's prefix starts with its own header, so no point's text is a prefix of
+    another's."""
+
+    class Tok:
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+        def decode(self, ids):
+            return " ".join(ids)
+
+    tok = Tok()
+    headers = [tok.encode(f"Probe ab12 {i}.\n") for i in range(3)]
+    base = ["corpus"] * 50
+    points = [tuple(headers[i] + base) for i in range(3)]
+    from load_test import _common_prefix_count
+
+    for a in points:
+        for b in points:
+            if a is not b:
+                # they diverge inside the header (at the point index), long before either's corpus slice,
+                # so no point's prefix is a prefix of another's
+                assert _common_prefix_count(a, b) < min(len(a), len(b)) and _common_prefix_count(a, b) <= len(
+                    headers[0]
+                )

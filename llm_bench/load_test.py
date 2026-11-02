@@ -286,6 +286,23 @@ def infer_reuse_semantics(points: list) -> tuple:
     return w, b, form, error, table, under, over
 
 
+def provider_from_host(host: str, systemone: bool = False) -> Optional[str]:
+    """The provider implied by the gateway's URL; None when the URL names none (the /v1/models fallback in
+    _guess_provider covers that, but it needs a live client, so setup can't use it)."""
+    if "fireworks.ai" in host:
+        return "fireworks"
+    if "together" in host:
+        return "together"
+    if "openai" in host:
+        return "openai"
+    if "anyscale" in host:
+        return "anyscale"
+    if systemone:
+        # /v1/systemone only exists on the Fireworks gateway
+        return "fireworks"
+    return None
+
+
 def _common_prefix_count(a, b) -> int:
     n = min(len(a), len(b))
     i = 0
@@ -379,7 +396,14 @@ def measure_chat_head(environment, options: argparse.Namespace, tokenizer, token
             timeout=60,
         )
         response.raise_for_status()
-        server_tokens = int(orjson.loads(response.content).get("usage", {}).get("prompt_tokens") or 0)
+        server_tokens = orjson.loads(response.content).get("usage", {}).get("prompt_tokens")
+        if not isinstance(server_tokens, int) or server_tokens <= 0:
+            # No usable count (a reply without usage, or prompt_tokens 0): unmeasured, not a negative head
+            logger.warning(
+                "llm_bench: the chat head can't be measured (the reply reports no prompt token count); chat "
+                "lengths run uncalibrated. Pass --chat-head-tokens to calibrate."
+            )
+            return None
         client_tokens = len(_render_chat(tokenizer, tokenizer_path, [{"role": "user", "content": prompt}]))
         head = server_tokens - client_tokens
     except Exception as e:
@@ -494,13 +518,15 @@ class TranslationDataset:
         # The server reuses the shared prefix minus its recompute at the divergence (the overhang, D-113):
         # lay the prefix out longer by it, so the server reuses exactly common_tokens. A negative overhang
         # trims, for an engine that reuses more than it was shared (D-120).
-        common_tokens = max(0, common_tokens + reuse_overhang)
+        # The overhang applies only when a shared prefix was requested (the caller guards it too; the
+        # dataset guards again so a direct construction can't get a silent prefix)
+        common_tokens = max(0, common_tokens + reuse_overhang) if common_tokens > 0 else 0
         # The server renders chat prompts with a head the client's template doesn't count (D-134): build fewer
         # client tokens, so the server sees the designed length
         if chat_head:
             # self._num_tokens: the param, before the corpus loop's num_tokens shadows it
             self._num_tokens = max(0, self._num_tokens - chat_head)
-        elif chat_head is None:
+        elif chat and chat_head is None:
             logger.warning(
                 "llm_bench: the chat head is unmeasured for this run; prompts are built to the client's count "
                 "and the server will see them longer by its head"
@@ -721,9 +747,13 @@ class DatasetHolder:
             common_tokens = options.prompt_cache_max_len
             if common_tokens > options.prompt_tokens:
                 common_tokens = options.prompt_tokens
+            # The overhang only applies when a shared prefix was requested (-pcml): without one it would
+            # silently lay a prefix out (the server would then serve prefix-cache hits to a no-cache
+            # benchmark, with no reuse record to show it)
+            reuse_overhang = resolve_prefix_reuse_overhang(options) if common_tokens > 0 else 0
             tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
             chat = options.chat and not getattr(options, "rerank", False)
-            chat_head = 0
+            chat_head = None
             if chat:
                 head = getattr(options, "chat_head_tokens", None)
                 if head is None:
@@ -746,7 +776,7 @@ class DatasetHolder:
                 chat=chat,
                 num_tokens=options.prompt_tokens,
                 common_tokens=common_tokens,
-                reuse_overhang=resolve_prefix_reuse_overhang(options),
+                reuse_overhang=reuse_overhang,
                 chat_head=chat_head,
             )
         else:
@@ -1468,6 +1498,14 @@ def _setup_before_spawning(environment, **_kwargs):
     options = getattr(environment, "parsed_options", None)
     if options is None or isinstance(environment.runner, MasterRunner):
         return
+    # The chat-head calibration runs here: it needs the environment (this listener's own, before any
+    # -t/--max-requests listener may have set it) and a provider, so the host-based guess is written back
+    if InitTracker.environment is None:
+        InitTracker.environment = environment
+    if getattr(options, "provider", None) is None and getattr(environment, "host", None):
+        guessed = provider_from_host(environment.host, options.systemone)
+        if guessed is not None:
+            options.provider = guessed
     ClientCpu.start()
     if not (options.systemone or options.embeddings or options.rerank):
         try:
@@ -2089,17 +2127,7 @@ class LLMUser(HttpUser):
         self.provider = self.environment.parsed_options.provider
         # guess based on URL
         if self.provider is None:
-            if "fireworks.ai" in self.host:
-                self.provider = "fireworks"
-            elif "together" in self.host:
-                self.provider = "together"
-            elif "openai" in self.host:
-                self.provider = "openai"
-            elif "anyscale" in self.host:
-                self.provider = "anyscale"
-            elif self.environment.parsed_options.systemone:
-                # /v1/systemone only exists on the Fireworks gateway
-                self.provider = "fireworks"
+            self.provider = provider_from_host(self.host, self.environment.parsed_options.systemone)
 
         if self.environment.parsed_options.systemone and self.model is None:
             raise ValueError("--systemone requires --model (sent verbatim, e.g. accounts/<acct>/deployments/<id>)")
@@ -2514,11 +2542,11 @@ class LLMUser(HttpUser):
             base_ids += tokenizer.encode(" ".join(words), add_special_tokens=False)
         run = secrets.token_hex(4)
 
-        def exact_prefix_text(n):
-            """The first n tokens of the base text, as text that re-encodes to exactly them."""
+        def exact_prefix_text(ids, n):
+            """The first n tokens of `ids`, as text that re-encodes to exactly them."""
             while n > 0:
-                text = tokenizer.decode(base_ids[:n])
-                if tokenizer.encode(text, add_special_tokens=False) == base_ids[:n]:
+                text = tokenizer.decode(ids[:n])
+                if tokenizer.encode(text, add_special_tokens=False) == ids[:n]:
                     return text
                 n -= 1
             raise ValueError("--prefix-reuse-probe: couldn't slice the corpus to exact tokens")
@@ -2569,8 +2597,11 @@ class LLMUser(HttpUser):
         overheads: list[int] = []
         try:
             for i, shared in enumerate(ladder):
+                # The per-point header makes every point's text distinct from token 0, so a point's prefix is
+                # never a prefix of another point's and repeat probes share no text (the nonce is in the
+                # header, so the affinity key isn't the only thing separating them)
                 ids = tokenizer.encode(f"Probe {run} {i}.\n", add_special_tokens=False) + base_ids
-                prefix = exact_prefix_text(shared)
+                prefix = exact_prefix_text(ids, shared)
                 affinity = f"reuse-probe-{run}-{i}"
                 warm = prefix + tail()
                 _, warm_server_prompt = send(warm, affinity)
@@ -3649,7 +3680,9 @@ def _(environment, **kw):
         # exceptions from non-request paths like dataset loading).
         environment.process_exit_code = 0
 
-    entries = copy.copy(InitTracker.logging_params)
+    # logging_params is None whenever on_start failed before notify_init (a required-mode error, a bad
+    # --model): the row still lands, with the real error above it
+    entries = dict(copy.copy(InitTracker.logging_params) or {})
     if environment.parsed_options.qps is not None:
         pacer = FixedQPSPacer._instance
         entries["concurrency"] = (
@@ -3718,11 +3751,16 @@ def _(environment, **kw):
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
         entries["schedule_resyncs"] = len(pacer.shifts) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())
-    # The applied reuse semantics (D-108/D-113): a deficit or overshoot shows in the run's own output
-    entries["reuse_overhang_tokens"] = resolve_prefix_reuse_overhang(environment.parsed_options)
-    entries["reuse_restore_boundary"] = resolve_prefix_restore_boundary(environment.parsed_options)
-    entries["served_model_config"] = resolve_served_model_config(environment.parsed_options)
-    entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
+    if not (
+        environment.parsed_options.systemone
+        or environment.parsed_options.embeddings
+        or environment.parsed_options.rerank
+    ):
+        # The applied reuse semantics (D-108/D-113): a deficit or overshoot shows in the run's own output
+        entries["reuse_overhang_tokens"] = resolve_prefix_reuse_overhang(environment.parsed_options)
+        entries["reuse_restore_boundary"] = resolve_prefix_restore_boundary(environment.parsed_options)
+        entries["served_model_config"] = resolve_served_model_config(environment.parsed_options)
+        entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
     ds = DatasetHolder._instance
     if getattr(environment.parsed_options, "chat", False) and not (
         environment.parsed_options.systemone
