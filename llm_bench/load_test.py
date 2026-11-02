@@ -1272,8 +1272,12 @@ class ShapeMixDataset:
         default_popularity_zipf: Optional[float] = None,
         context_tokens: Optional[int] = None,
         split_restore_classes: bool = True,
+        routing_groups: int = 1,
     ):
         self.mix = mix
+        self.routing_groups = max(1, routing_groups or 1)
+        # Fresh routing keys (multi-group replicas) are salted per run, as replay's session salt is
+        self.affinity_salt = secrets.token_hex(4)
         # The model's context: sampled prompts plus outputs stay inside it
         self.context_tokens = context_tokens
         self.context_cut_requests = 0
@@ -2482,6 +2486,17 @@ class ShapeMixDataset:
             variant = self._draw_variant(class_index, self._fill_rng)
         return self._render(class_index, prefix_index, nonce, counter, variant, 1)
 
+    def _affinity_key(self, ci: int, prefix_index, counter: int, pool_size: int) -> Optional[str]:
+        """The x-session-affinity key. One group (or none given): a stable key per prefix, so requests of a
+        prefix meet in one cache. A multi-group replica (D-119(2)): a fresh synthetic key per request, so each
+        request routes like production's per-request least-loaded placement and shared prefixes gain a copy per
+        group as traffic reaches them; a fixed key would pin a whole class's share to one group."""
+        if self.routing_groups > 1:
+            return f"shape-{self.affinity_salt}-req-{counter}"
+        if pool_size > 1 and prefix_index is not None:
+            return f"shape-{self.mix.seed}-{self.classes[ci].name}-{prefix_index}"
+        return None
+
     def _render(self, ci, prefix_index, nonce, counter, variant, generated_tokens, tail_tokens=None) -> ShapeRequest:
         cls = self.classes[ci]
         pool_size = self.pool_sizes[ci]
@@ -2515,7 +2530,7 @@ class ShapeMixDataset:
             generated_tokens=generated_tokens,
             prefix_index=prefix_index,
             # A single key would pin the class's whole share to one replica, so only pools of 2+ get one
-            affinity_key=f"shape-{self.mix.seed}-{cls.name}-{prefix_index}" if pool_size > 1 else None,
+            affinity_key=self._affinity_key(ci, prefix_index, counter, pool_size),
             reusable_tokens=self.reusable_tokens[ci],
         )
 
@@ -2644,6 +2659,7 @@ class DatasetHolder:
                     context_tokens=resolve_context_tokens(options),
                     # Replay rows carry their own cached lengths: its class pools stay at the floor
                     split_restore_classes=not getattr(options, "replay_schedule", None),
+                    routing_groups=getattr(options, "routing_groups", 1) or 1,
                 )
                 ds = cls._shape_mix_instance
                 ds.served_model_config = resolve_served_model_config(options)
@@ -6246,6 +6262,15 @@ def init_parser(parser):
         help="Comma-separated exact model strings to select round-robin per request",
     )
     parser.add_argument(
+        "--routing-groups",
+        type=int,
+        default=1,
+        help="Engine groups (independent prefix caches) on the replica, from the tier plan. With more than one, "
+        "shape-mix sends a fresh synthetic routing key per request, so each request routes like production's "
+        "per-request least-loaded placement and shared prefixes gain a copy per group; with one (default), the "
+        "stable per-prefix key is kept. Replay follows production's own sticky rule and is unaffected.",
+    )
+    parser.add_argument(
         "--served-model-config",
         type=str,
         default=None,
@@ -7467,6 +7492,9 @@ def _(environment, **kw):
             entries["prefix_pool_dropped_classes"] = len(dropped)
             if dropped:
                 entries["prefix_pool_dropped_class_names"] = ",".join(dropped)
+            if dataset.routing_groups > 1:
+                entries["routing_groups"] = dataset.routing_groups
+                entries["routing_affinity"] = "per-request keys"
             if dataset.context_tokens:
                 entries["shape_mix_context_tokens"] = dataset.context_tokens
                 entries["shape_mix_context_cut_requests"] = dataset.context_cut_requests

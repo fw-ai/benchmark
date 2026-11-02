@@ -132,6 +132,7 @@ class PrefixCacheEngine:
             index = self.store.setdefault(cache, _PrefixIndex())
             common = index.longest(ids)
             index.add(ids)
+            self.last_cache = cache
         return max(0, (common // self.boundary) * self.boundary - self.window)
 
 
@@ -151,7 +152,7 @@ def make_handler(engine: PrefixCacheEngine, ttft: float, tpot: float, log=None):
             cached = engine.serve(ids, self.headers.get("x-session-affinity"))
             if log:
                 with log_lock:
-                    log.write(f"{arrived:.6f} {len(ids)} {cached}\n")
+                    log.write(f"{arrived:.6f} {len(ids)} {cached} {engine.last_cache}\n")
                     log.flush()
             chat = "messages" in body
             n = max(1, int(body.get("max_tokens") or 16))
