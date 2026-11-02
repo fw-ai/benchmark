@@ -4085,6 +4085,26 @@ def arrival_summary_entries(intended, actual) -> dict[str, Any]:
     return {k: ("" if v is None else v) for k, v in entries.items()}
 
 
+def startup_drain_entries(intended, actual) -> dict[str, Any]:
+    """The start-up drain: a pacer that doesn't resync catches up after spawn through a run of late sends, not
+    one. In schedule order, the drain is the contiguous run from the first send that is more than min(1 s,
+    0.5% of the schedule's span) late; it ends at the first send within that. Reported are its length (schedule
+    seconds from the first send to the first on-time one), its peak lateness, and the largest lateness after it,
+    which is what a step is checked on. A run with no late first send has a drain of 0."""
+    if not actual:
+        return {}
+    sends = sorted(zip(intended, actual))
+    lateness = [max(0.0, a - i) for i, a in sends]
+    threshold = min(1.0, 0.005 * (sends[-1][0] - sends[0][0]))
+    end = next((k for k, late in enumerate(lateness) if late <= threshold), len(sends))
+    drain_end = sends[end][0] if end < len(sends) else sends[-1][0]
+    return {
+        "startup_drain_s": drain_end - sends[0][0],
+        "startup_drain_peak_ms": max(lateness[:end]) * 1000 if end else 0.0,
+        "send_lateness_max_after_drain_ms": max(lateness[end:]) * 1000 if end < len(sends) else "",
+    }
+
+
 class RampingPacer:
     """
     A pacer that gradually increases concurrent requests from min_users to max_users.
@@ -7794,6 +7814,7 @@ def _(environment, **kw):
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
         # D-154: the first send after "All users spawned", before any in-load shift
         entries["startup_offset_s"] = SendTimeline.first_send_offset if SendTimeline.first_send_offset else ""
+        entries.update(startup_drain_entries(SendTimeline.intended, SendTimeline.actual))
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())
