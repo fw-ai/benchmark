@@ -1,7 +1,7 @@
 """D-117's pre-flight runner: run a tier plan's llm_bench steps against mock_server.py on CPU, and write the
 step summary that task 15's per-class D-63 check reads.
 
-    python preflight_run.py PLAN.json --out DIR [--step ramp-3] [--duration 180] [--mock-tokenizer ID]
+    python preflight_run.py PLAN.json --out DIR [--step ramp-3] [--duration S] [--mock-tokenizer ID] [--check]
 
 What it runs, from the plan as task 07 writes it (record + traffic_generator_create_args):
 - the mock engine, emulating the plan's measured reuse: record.reuse_probe's overhang as the recomputed window
@@ -12,9 +12,12 @@ What it runs, from the plan as task 07 writes it (record + traffic_generator_cre
   args, its concurrency and rate, and the duration capped at --duration;
 - the scored step's summary goes to DIR/<step>.summary.csv (the file task 15's check reads), its log beside it.
 
-It prints the applied reuse semantics and a per-class designed vs delivered table for a quick look; the verdict
-is task 15's check (D-117). Paths in the extra args that don't exist locally can be remapped with --path SRC=DST.
-Exit code: llm_bench's for the scored step (non-zero also when the mock or a step fails to start).
+It prints the applied reuse semantics and a per-class designed vs delivered table for a quick look, and the step
+summary's path as its last line. The verdict is task 15's check (D-117): --check runs it after the run, as
+`traffic_profile_logs preflight-check PLAN SUMMARY --step STEP`, and exits with its code (0 pass, 1 fail,
+2 insufficient rows). Paths in the extra args that don't exist locally can be remapped with --path SRC=DST.
+Exit code: the check's with --check, else llm_bench's for the scored step (non-zero also when the mock or a step
+fails to start).
 """
 
 import argparse
@@ -86,9 +89,12 @@ def _remap(extra: list, paths: dict) -> list:
     return out
 
 
-def _locust(port: int, step, duration_cap: float, summary: str, log: str) -> int:
+def _locust(port: int, step, duration_cap, summary: str, log: str) -> int:
     name, concurrency, rate, seconds, extra = step
-    run_for = min(seconds, duration_cap) if seconds else duration_cap
+    if duration_cap is None:
+        run_for = seconds or 180.0
+    else:
+        run_for = min(seconds, duration_cap) if seconds else duration_cap
     cmd = [sys.executable, "-m", "locust", "-f", os.path.join(HERE, "load_test.py"), "--headless"]
     cmd += ["-H", f"http://127.0.0.1:{port}", "--provider", "vllm", "-m", "mock", "--stream"]
     cmd += ["-u", str(concurrency), "-r", str(concurrency), "-t", f"{int(run_for)}s"]
@@ -135,12 +141,26 @@ def main(argv=None) -> int:
     parser.add_argument("plan")
     parser.add_argument("--out", required=True, help="Directory for the step summary and logs.")
     parser.add_argument("--step", default=None, help="The step to score (default: the one at the target rate).")
-    parser.add_argument("--duration", type=float, default=180.0, help="Cap on the scored step's seconds.")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="Cap on the scored step's seconds (default: the plan's own duration, so gated classes reach their rows).",
+    )
     parser.add_argument("--fill-duration", type=float, default=3600.0, help="Cap on the fill step's seconds.")
     parser.add_argument("--window", type=int, default=None, help="Engine recompute (default: the plan's probe).")
     parser.add_argument("--boundary", type=int, default=None, help="Restore block (default: the plan's probe).")
     parser.add_argument("--mock-tokenizer", default=None, help="The served model's tokenizer for the engine.")
     parser.add_argument("--path", action="append", default=[], help="SRC=DST remap for paths in the extra args.")
+    parser.add_argument(
+        "--check",
+        nargs="?",
+        const="python -m fireworks.perfagent.estimate.traffic_profile_logs preflight-check",
+        default=None,
+        help="After the run, invoke task 15's per-class check (D-117) as `<command> PLAN SUMMARY --step STEP` and "
+        "exit with its code (0 pass, 1 fail, 2 insufficient). Bare --check uses traffic_profile_logs "
+        "preflight-check; pass a different command to override.",
+    )
     args = parser.parse_args(argv)
 
     with open(args.plan) as f:
@@ -190,10 +210,20 @@ def main(argv=None) -> int:
                 print(f"preflight: fill step {fill[0]} exited {rc} (see its log)")
                 return rc
         summary = os.path.join(args.out, f"{step[0]}.summary.csv")
-        print(f"preflight: scored step {step[0]} (rate {step[2]}, concurrency {step[1]}, cap {args.duration:.0f} s)")
+        run_for = step[3] if args.duration is None else min(step[3] or args.duration, args.duration)
+        print(f"preflight: scored step {step[0]} (rate {step[2]}, concurrency {step[1]}, {run_for:.0f} s)")
         rc = _locust(port, step, args.duration, summary, os.path.join(args.out, f"{step[0]}.log"))
         print(f"preflight: step summary {summary} (llm_bench exit {rc})")
         quick_look(summary, step)
+        if args.check:
+            if not os.path.exists(summary):
+                print("preflight: no summary to check")
+                print(summary)
+                return rc or 1
+            cmd = shlex.split(args.check) + [args.plan, summary, "--step", step[0]]
+            print(f"preflight: check: {' '.join(cmd)}", flush=True)
+            rc = subprocess.run(cmd).returncode
+        print(summary)  # last line: the step summary's path (the check's input)
         return rc
     finally:
         server.terminate()
