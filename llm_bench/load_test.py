@@ -2616,6 +2616,7 @@ class DatasetHolder:
                     split_restore_classes=not getattr(options, "replay_schedule", None),
                 )
                 ds = cls._shape_mix_instance
+                ds.served_model_config = resolve_served_model_config(options)
                 ds.replay_pool_sizes = pool_sizes
                 ds.replay_pool_source = "meta" if pool_sizes else "class_mean" if pool_sizes is not None else ""
                 if pool_sizes:
@@ -7384,6 +7385,10 @@ def _(environment, **kw):
             entries["prefix_pool_tokens"] = dataset.pool_tokens
             entries["prefix_pool_loaded_from_cache"] = dataset.cache_loaded_prefixes
             entries["prefix_pool_build_s"] = dataset.build_seconds
+            # What was applied (D-108): the C-242 deficit was hidden because no summary recorded it
+            entries["reuse_overhang_tokens"] = dataset.reuse_overhang_tokens
+            entries["reuse_restore_boundary"] = dataset.restore_boundary
+            entries["served_model_config"] = getattr(dataset, "served_model_config", "")
             dropped = getattr(dataset, "pool_dropped", [])
             entries["prefix_pool_dropped_classes"] = len(dropped)
             if dropped:
