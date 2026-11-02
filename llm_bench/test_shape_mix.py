@@ -2848,6 +2848,41 @@ def test_sampled_lengths_keep_a_skewed_classs_mean_on_a_small_uncached_base() ->
         assert q(out, level) == pytest.approx(value, rel=tol), level
 
 
+# The dev pod's DeepSeek V4.1 config, reduced to the fields the reuse resolver reads (from the checkpoint's
+# config.json; no weights or request content): multimodal, with model_type and sliding_window in text_config
+_DSV41_CONFIG = {
+    "architectures": ["DeepseekV41ForCausalLM"],
+    "model_type": "deepseek_v41",
+    "text_config": {"model_type": "deepseek_v41_text", "sliding_window": 128},
+}
+
+
+def test_deepseek_v41_resolves_its_overhang_from_text_config(tmp_path, caplog) -> None:
+    """D-113: the dev pod's DSV4.1 reads model_type deepseek_v41_text with sliding_window inside text_config; the
+    exact-match table and a top-level read both gave 0 on any head. A family outside the table with a window
+    warns loudly and is listed in the summary."""
+    import load_test as lt
+
+    (tmp_path / "config.json").write_text(json.dumps(_DSV41_CONFIG))
+    ns = lambda **kw: argparse.Namespace(
+        **{"tokenizer": None, "prefix_reuse_overhang": None, "prefix_restore_boundary": None, **kw}
+    )
+    assert lt.resolve_model_type(str(tmp_path)) == "deepseek_v41_text"
+    assert lt.resolve_prefix_reuse_overhang(ns(served_model_config=str(tmp_path))) == 128
+    # an unknown family with a window: 0, but loudly, and recorded
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "config.json").write_text(json.dumps({"model_type": "minimax_m31", "sliding_window": 64}))
+    lt._REUSE_TABLE_MISSES.clear()
+    with caplog.at_level("WARNING", logger="load_test"):
+        assert lt.resolve_prefix_reuse_overhang(ns(served_model_config=str(other))) == 0
+    assert "not in the reuse-overhang table" in caplog.text and "--prefix-reuse-probe" in caplog.text
+    assert lt._REUSE_TABLE_MISSES == {"minimax_m31"}
+    # the explicit, probe-measured value is the authority (D-113)
+    assert lt.resolve_prefix_reuse_overhang(ns(served_model_config=str(other), prefix_reuse_overhang=133)) == 133
+    lt._REUSE_TABLE_MISSES.clear()
+
+
 def test_infer_reuse_semantics_from_probe_points() -> None:
     """C-247 / D-111: the probe's points infer the overhang and restore boundary, in either form (the overhang
     outside the restore blocks, as measured on serverless DeepSeek V4, or inside), and report a size-dependent

@@ -955,13 +955,20 @@ def resolve_qps_dispersion(options: argparse.Namespace) -> Optional[float]:
 
 # Prefix tokens a server can't reuse where a prompt diverges from a cached one, by model type: DeepSeek V4
 # keeps sliding-window KV only for a sequence's last tokens, so it recomputes the window before the divergence.
-_REUSE_OVERHANG_FROM_SLIDING_WINDOW = {"deepseek_v4"}
+_REUSE_OVERHANG_FROM_SLIDING_WINDOW = {
+    "deepseek_v4",
+    "deepseek_v41",
+    "deepseek_v41_text",  # DeepSeek V4.1: the multimodal config's text_config (the dev pod's DSV4.1, D-113)
+}
 # Model types whose servers restore cached KV only in whole blocks of the config's index_topk tokens
 # (GLM 5.x DSA: a shared prefix of N tokens reuses floor(N / 2048) * 2048)
 _RESTORE_BOUNDARY_FROM_INDEX_TOPK = {"glm_moe_dsa"}
 # Shared tokens laid out past a restore boundary, so a cut a few tokens short (a word straddling it) keeps the block
 RESTORE_BOUNDARY_MARGIN_TOKENS = 16
 
+
+# Model types a run resolved outside the reuse tables while their config suggested reuse semantics (reported)
+_REUSE_TABLE_MISSES: set = set()
 
 # Restore-block candidates the probe distinguishes (0: token-exact reuse, no boundary)
 _REUSE_BOUNDARY_CANDIDATES = (0, 64, 128, 256, 512, 1024, 2048, 4096, 8192)
@@ -1000,6 +1007,14 @@ def infer_reuse_semantics(points: list) -> tuple:
     return w, b, form, error, table, under, over
 
 
+def _config_field(config: dict, field: str):
+    """A text-model field from a config, looking in its text_config first (multimodal configs, e.g. DeepSeek
+    V4.1, keep sliding_window there and not at the top level)."""
+    text = config.get("text_config") or {}
+    value = text.get(field)
+    return value if value is not None else config.get(field)
+
+
 def resolve_served_model_config(options: argparse.Namespace) -> str:
     """Where the SERVED model's reuse semantics come from: --served-model-config if given, else --tokenizer.
 
@@ -1016,9 +1031,19 @@ def resolve_prefix_reuse_overhang(options: argparse.Namespace) -> int:
         return options.prefix_reuse_overhang
     served = resolve_served_model_config(options)
     try:
-        if resolve_model_type(served) not in _REUSE_OVERHANG_FROM_SLIDING_WINDOW:
+        model_type = resolve_model_type(served)
+        window = int(_config_field(_read_config_json(served), "sliding_window") or 0)
+        if model_type not in _REUSE_OVERHANG_FROM_SLIDING_WINDOW:
+            if window:
+                # D-113: a family outside the table never silently resolves to 0 when its config has a window
+                logger.warning(
+                    f"!!! --shape-mix: model type {model_type!r} ({served}) is not in the reuse-overhang table but its "
+                    f"config has sliding_window {window}; using 0. Measure it with --prefix-reuse-probe and pass "
+                    f"--prefix-reuse-overhang (the measured value is the authority, D-113)."
+                )
+                _REUSE_TABLE_MISSES.add(model_type)
             return 0
-        return int(_read_config_json(served).get("sliding_window") or 0)
+        return window
     except Exception as e:
         logger.warning(
             f"--shape-mix: couldn't read the served model config for the prefix reuse overhang ({e!r}); using 0"
@@ -1051,7 +1076,7 @@ def resolve_prefix_restore_boundary(options: argparse.Namespace) -> int:
     try:
         if resolve_model_type(served) not in _RESTORE_BOUNDARY_FROM_INDEX_TOPK:
             return 0
-        return int(_read_config_json(served).get("index_topk") or 0)
+        return int(_config_field(_read_config_json(served), "index_topk") or 0)
     except Exception as e:
         logger.warning(
             f"--shape-mix: couldn't read the served model config for the prefix restore boundary ({e!r}); using 0"
@@ -6691,6 +6716,7 @@ def init_parser(parser):
     )
     parser.add_argument(
         "--prefix-restore-boundary",
+        "--prefix-reuse-boundary",  # D-113's name for the same value
         type=int,
         default=None,
         help="For --shape-mix and --replay-schedule: the block (tokens) the server restores cached KV in; a shared "
@@ -7389,6 +7415,7 @@ def _(environment, **kw):
             entries["reuse_overhang_tokens"] = dataset.reuse_overhang_tokens
             entries["reuse_restore_boundary"] = dataset.restore_boundary
             entries["served_model_config"] = getattr(dataset, "served_model_config", "")
+            entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
             dropped = getattr(dataset, "pool_dropped", [])
             entries["prefix_pool_dropped_classes"] = len(dropped)
             if dropped:
