@@ -16,8 +16,10 @@ It prints the applied reuse semantics and a per-class designed vs delivered tabl
 summary's path as its last line. The verdict is task 15's check (D-117): --check runs it after the run, as
 `traffic_profile_logs preflight-check PLAN SUMMARY --step STEP`, and exits with its code (0 pass, 1 fail,
 2 insufficient rows). Paths in the extra args that don't exist locally can be remapped with --path SRC=DST.
+Every step it runs must name its wire mode (--chat or --no-chat; llm_bench requires one), and every request the
+mock logs for a step must hit that mode's path (/v1/chat/completions or /v1/completions), else the run fails.
 Exit code: the check's with --check, else llm_bench's for the scored step (non-zero also when the mock or a step
-fails to start).
+fails to start, 2 when a step names no mode, 1 on a path mismatch).
 """
 
 import argparse
@@ -40,6 +42,41 @@ def _flag(args: list, name: str):
         if isinstance(a, str) and a.startswith(name + "="):
             return a.split("=", 1)[1]
     return None
+
+
+MODE_PATHS = {"--chat": "/v1/chat/completions", "--no-chat": "/v1/completions"}
+
+
+def step_path(step):
+    """The path a step's requests must hit, from its explicit --chat/--no-chat (None: no mode named; the last
+    one named wins, as in argparse)."""
+    modes = [a for a in step[4] if a in MODE_PATHS]
+    return MODE_PATHS[modes[-1]] if modes else None
+
+
+def path_mismatches(request_log: str, start_line: int, expected: str) -> tuple:
+    """(requests logged since start_line, the paths among them that aren't `expected`, with counts)."""
+    seen, wrong = 0, {}
+    try:
+        with open(request_log) as f:
+            lines = f.read().splitlines()[start_line:]
+    except OSError:
+        return 0, {}
+    for line in lines:
+        fields = line.split()
+        path = fields[4] if len(fields) > 4 else "?"
+        seen += 1
+        if path.split("?", 1)[0] != expected:
+            wrong[path] = wrong.get(path, 0) + 1
+    return seen, wrong
+
+
+def _log_lines(request_log: str) -> int:
+    try:
+        with open(request_log) as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
 
 
 def plan_steps(plan: dict) -> list:
@@ -180,15 +217,22 @@ def main(argv=None) -> int:
         or _flag(step[4], "--tokenizer")
         or "NousResearch/Meta-Llama-3.1-8B-Instruct"
     )
+    unnamed = [s[0] for s in fills + [step] if step_path(s) is None]
+    if unnamed:
+        print(
+            f"preflight: !!! step(s) {', '.join(unnamed)} name no wire mode: pass --chat or --no-chat in their extra args"
+        )
+        return 2
     if not probe and args.window is None:
         print("preflight: !!! the plan records no reuse_probe; the mock engine reuses token-exact with no window")
     os.makedirs(args.out, exist_ok=True)
     port = _free_port()
     server_log = os.path.join(args.out, "mock_server.log")
+    request_log = os.path.join(args.out, "mock.requests")
     with open(server_log, "w") as f:
         server = subprocess.Popen(
             [sys.executable, os.path.join(HERE, "mock_server.py"), "--port", str(port), "--window", str(window)]
-            + ["--boundary", str(boundary), "--tokenizer", tokenizer, "--log", os.path.join(args.out, "mock.requests")],
+            + ["--boundary", str(boundary), "--tokenizer", tokenizer, "--log", request_log],
             stdout=f,
             stderr=subprocess.STDOUT,
         )
@@ -203,17 +247,35 @@ def main(argv=None) -> int:
                     return 2
                 time.sleep(1)
         print(f"preflight: mock engine window {window}, boundary {boundary}, tokenizer {tokenizer}, port {port}")
+
+        def paths_ok(s, start_line) -> bool:
+            seen, wrong = path_mismatches(request_log, start_line, step_path(s))
+            if wrong:
+                print(
+                    f"preflight: !!! step {s[0]} expects {step_path(s)} but {sum(wrong.values())} of {seen} requests hit {wrong}"
+                )
+                return False
+            print(f"preflight: step {s[0]}: {seen} requests, all on {step_path(s)}")
+            return True
+
         for fill in fills:
             print(f"preflight: fill step {fill[0]}")
+            start_line = _log_lines(request_log)
             rc = _locust(port, fill, args.fill_duration, "", os.path.join(args.out, f"{fill[0]}.log"))
             if rc:
                 print(f"preflight: fill step {fill[0]} exited {rc} (see its log)")
                 return rc
+            if not paths_ok(fill, start_line):
+                return 1
         summary = os.path.join(args.out, f"{step[0]}.summary.csv")
         run_for = step[3] if args.duration is None else min(step[3] or args.duration, args.duration)
         print(f"preflight: scored step {step[0]} (rate {step[2]}, concurrency {step[1]}, {run_for:.0f} s)")
+        start_line = _log_lines(request_log)
         rc = _locust(port, step, args.duration, summary, os.path.join(args.out, f"{step[0]}.log"))
         print(f"preflight: step summary {summary} (llm_bench exit {rc})")
+        if not paths_ok(step, start_line):
+            print(summary)
+            return 1
         quick_look(summary, step)
         if args.check:
             if not os.path.exists(summary):
