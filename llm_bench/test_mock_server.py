@@ -1,0 +1,97 @@
+import random
+
+from mock_server import PrefixCacheEngine, _PrefixIndex
+
+
+def _brute(ids, seen):
+    best = 0
+    for prev in seen:
+        n = min(len(ids), len(prev))
+        k = 0
+        while k < n and ids[k] == prev[k]:
+            k += 1
+        best = max(best, k)
+    return best
+
+
+def test_prefix_index_matches_brute_force() -> None:
+    """The block-hash index finds the same longest common prefix as scanning every stored prompt, on prompts that
+    share pool prefixes of many lengths and diverge anywhere (mid-block, at a block edge, at token 0)."""
+    rng = random.Random(3)
+    pools = [[rng.randrange(1000) for _ in range(rng.randrange(1, 900))] for _ in range(12)]
+    index, seen = _PrefixIndex(), []
+    for _ in range(400):
+        pool = rng.choice(pools)
+        cut = rng.randrange(len(pool) + 1)
+        ids = pool[:cut] + [rng.randrange(1000, 2000) for _ in range(rng.randrange(1, 200))]
+        assert index.longest(ids) == _brute(ids, seen)
+        index.add(ids)
+        seen.append(ids)
+
+
+class _Tok:
+    """A tokenizer stand-in: one id per word; the chat template wraps the last message in two marker ids, and
+    returns a dict as newer transformers do."""
+
+    def encode(self, text, add_special_tokens=False):
+        return [hash(w) % 50_000 for w in text.split()]
+
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=True):
+        return {"input_ids": [7, 8] + self.encode(messages[-1]["content"]) + [9], "attention_mask": []}
+
+
+def test_engine_reuse_rule_window_boundary_and_routing() -> None:
+    words = " ".join(f"w{i}" for i in range(3000))
+    tail = lambda k: f" tail{k} x y z"
+    # token-exact with a 130-token window
+    engine = PrefixCacheEngine(_Tok(), window=130)
+    engine.serve(engine.token_ids({"prompt": words + tail(0)}))
+    assert engine.serve(engine.token_ids({"prompt": words + tail(1)})) == 3000 - 130
+    # 2,048-token restore blocks
+    engine = PrefixCacheEngine(_Tok(), window=128, boundary=2048)
+    engine.serve(engine.token_ids({"prompt": words + tail(0)}))
+    assert engine.serve(engine.token_ids({"prompt": words + tail(1)})) == 2048 - 128
+    # chat: the template's dict return is unpacked (it used to yield its 2 keys as the prompt)
+    engine = PrefixCacheEngine(_Tok(), window=0)
+    chat = {"messages": [{"role": "user", "content": words}]}
+    assert len(engine.token_ids(chat)) == 3003
+    # several caches: affinity keeps a key on one cache; without it a request can miss the warm prompt
+    engine = PrefixCacheEngine(_Tok(), window=0, caches=8, affinity=True)
+    engine.serve(engine.token_ids({"prompt": words + tail(0)}), "k1")
+    assert all(engine.serve(engine.token_ids({"prompt": words + tail(i)}), "k1") == 3000 for i in range(1, 6))
+    engine = PrefixCacheEngine(_Tok(), window=0, caches=8, affinity=False, seed=1)
+    engine.serve(engine.token_ids({"prompt": words + tail(0)}))
+    hits = [engine.serve(engine.token_ids({"prompt": words + tail(i)})) for i in range(1, 9)]
+    assert 0 in hits  # landed on a cache that hadn't seen it
+
+
+def test_preflight_runner_reads_a_tier_plan_and_picks_the_scored_step() -> None:
+    """D-117: the runner takes task 07's plan as written (traffic_generator_create_args) and scores the step at
+    the plan's target rate, after the fill; the measured probe comes from record.reuse_probe."""
+    from preflight_run import plan_steps, scored_step
+
+    mix = '{"seed":1,"classes":[{"name":"c","weight":1,"prompt_tokens":900,"cached_prompt_tokens":500}]}'
+
+    def create(gid, conc, dur, extra, qps=None):
+        args = ["traffic-generator", "create", "--target", "dev-pod/x", "--traffic-generator-id", gid]
+        args += ["--concurrency", str(conc), "--spawn-rate", str(conc), "--duration", dur]
+        if qps is not None:
+            args += ["--qps", str(qps)]
+        return args + ["--image-tag", "in-pod", "--extra-args", extra]
+
+    plan = {
+        "record": {"target_qps": 3.63164, "reuse_probe": {"overhang": 130, "boundary": 0}},
+        "traffic_generator_create_args": {
+            "fill-fill": create("f", 1, "3600s", f"--shape-mix '{mix}' --prefix-fill --prefix-reuse-overhang 130"),
+            "warm-warm": create("w", 599, "600s", f"--shape-mix '{mix}' --qps-distribution gamma", 3.63164),
+            "probe-p1": create("p1", 300, "180s", f"--shape-mix '{mix}'", 1.81582),
+            "ramp-3": create("r3", 599, "900s", f"--shape-mix '{mix}' --qps-cv2 2.75", 3.63164),
+        },
+    }
+    steps = plan_steps(plan)
+    assert [s[0] for s in steps] == ["fill-fill", "warm-warm", "probe-p1", "ramp-3"]
+    name, conc, rate, seconds, extra = scored_step(plan, steps)
+    assert (name, conc, rate, seconds) == ("ramp-3", 599, 3.63164, 900.0)  # the LAST step at the target rate
+    assert extra[:2] == ["--shape-mix", mix] and "--qps-cv2" in extra  # the plan's exact args, unquoted
+    assert "--prefix-fill" in steps[0][4]
+    assert scored_step(plan, steps, "probe-p1")[0] == "probe-p1"

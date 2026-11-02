@@ -153,6 +153,11 @@ def _normalize_token_ids(obj: Any) -> list[int]:
     return [int(t) for t in obj]
 
 
+def _is_dsv4_family(model_type: str) -> bool:
+    """DeepSeek V4 and its variants (deepseek_v41, deepseek_v41_text) render chat with their own encoding module."""
+    return (model_type or "").startswith("deepseek_v4")
+
+
 def chat_template_token_ids(
     tokenizer: transformers.PreTrainedTokenizer,
     tokenizer_path: str,
@@ -160,7 +165,7 @@ def chat_template_token_ids(
 ) -> list[int]:
     """Token ids for a single user message rendered with the chat template + generation prompt."""
     model_type = resolve_model_type(tokenizer_path)
-    if model_type == "deepseek_v4":
+    if _is_dsv4_family(model_type):
         encode_messages = load_dsv4_encode_messages(tokenizer_path)
         prompt = encode_messages([{"role": "user", "content": content}], thinking_mode="chat")
         return _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
@@ -175,7 +180,7 @@ def chat_template_token_ids(
 
 def chat_messages_token_ids(tokenizer, tokenizer_path: str, messages: list[dict]) -> list[int]:
     """Token ids for a whole conversation rendered with the chat template + generation prompt."""
-    if resolve_model_type(tokenizer_path) == "deepseek_v4":
+    if _is_dsv4_family(resolve_model_type(tokenizer_path)):
         prompt = load_dsv4_encode_messages(tokenizer_path)(messages, thinking_mode="chat")
         return _normalize_token_ids(tokenizer.encode(prompt, add_special_tokens=False))
     return _normalize_token_ids(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True))
