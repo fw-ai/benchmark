@@ -507,6 +507,7 @@ SHAPE_CLASS_FIELDS = {
     "uncached_tokens_quantiles",
     "generated_tokens_quantiles",
     "prefix_popularity",
+    "reasoning_effort",
 }
 _SHAPE_CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SHAPE_NAME_INVALID_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -538,6 +539,9 @@ class ShapeClass:
     generated_tokens_quantiles: Optional[tuple] = None
     # How often each prefix of the pool is used: ("zipf", s) or ("weights", (w0, w1, ...)); None is uniform
     prefix_popularity: Optional[tuple] = None
+    # The reasoning-effort tier the class's requests send (none, low, medium, high); None: --reasoning-effort.
+    # The tier shapes the server's thinking-mode preamble (ahead of the prompt content), never the pool
+    reasoning_effort: Optional[str] = None
     # Largest prompt (tokens) the class's prompt_band allows, widened by bands merged into it; None: no ceiling
     prompt_tokens_max: Optional[int] = None
 
@@ -940,6 +944,7 @@ def _parse_shape_mix(text: str) -> ShapeMix:
                 prefix_popularity=_parse_popularity(
                     raw, where, _shape_int(raw, "prefix_pool_size", where, 1, default=1)
                 ),
+                reasoning_effort=_replay_effort(raw, where),
                 prompt_tokens_max=_prompt_tokens_max(raw, spec),
             )
         )
@@ -1135,6 +1140,7 @@ class ShapeRequest:
     # A multi-turn conversation; `prompt` is then the last user message
     messages: Optional[list] = None
     # --replay-schedule rows: the recorded cached length, payload overrides, and whether it was cancelled
+    reasoning_effort: Optional[str] = None  # --shape-mix: the class's tier; replay rows use overrides
     recorded_cached_tokens: Optional[int] = None
     overrides: Optional[dict] = None
     cancelled: bool = False
@@ -2453,7 +2459,13 @@ class ShapeMixDataset:
         """The request for a --replay-schedule row (see prepare_replay)."""
         plan = getattr(self, "_replay", {}).get(entry.index)
         if plan is None:
-            return self.scheduled_request(entry.class_index, entry.prefix_index, entry.output_length)
+            request = self.scheduled_request(entry.class_index, entry.prefix_index, entry.output_length)
+            if entry.reasoning_effort is not None:
+                request = dataclasses.replace(
+                    request,
+                    overrides={**(request.overrides or {}), "reasoning_effort": entry.reasoning_effort},
+                )
+            return request
         ci = plan["class"]
         cls = self.classes[ci]
         prefix_index = plan["prefix_index"]
@@ -2472,6 +2484,8 @@ class ShapeMixDataset:
             )
             if v is not None
         }
+        # a replay row's own tier wins; else the class's (the row carries overrides already when set)
+        overrides.setdefault("reasoning_effort", self.mix.classes[ci].reasoning_effort)
         return ShapeRequest(
             prompt="".join(self._render_segment(seg) for seg in plan["segments"]),
             prompt_tokens=plan["prompt_tokens"],
@@ -2544,6 +2558,7 @@ class ShapeMixDataset:
             affinity_key=f"shape-{self.mix.seed}-{cls.name}-{prefix_index}" if pool_size > 1 else None,
             reusable_tokens=self.reusable_tokens[ci],
             designed_cached_tokens=self.reusable_tokens[ci],
+            reasoning_effort=cls.reasoning_effort,
         )
 
     def __iter__(self):
@@ -2619,6 +2634,9 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
     data = provider.format_payload(request.prompt, request.generated_tokens, None)
     if request.messages is not None:
         data["messages"] = request.messages
+    if request.reasoning_effort is not None:
+        # a class's reasoning-effort tier (before overrides, so a replay row's own tier wins)
+        data["reasoning_effort"] = request.reasoning_effort
     if request.overrides:
         data.update(request.overrides)
     if output_mode == "max":

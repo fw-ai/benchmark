@@ -3559,3 +3559,42 @@ def test_pool_cache_log_line_shows_the_first_keys(tmp_path, caplog) -> None:
     assert "--prefix-pool-cache" in caplog.text and "keys[:3]" in caplog.text
     assert len(keys) == 2  # chat and agent have pools; cold doesn't
     assert all(k.startswith(f"prefix:{mix['seed']}") for k in keys)
+
+
+def test_per_class_reasoning_effort_reaches_the_payload() -> None:
+    """D-152: a class's reasoning-effort tier is sent per request (the row's own tier still wins in replay),
+    and it never changes the pool: the same cache key and prefix text for low and high (the tier only shapes
+    the server's thinking-mode preamble, ahead of the prompt content)."""
+    mix = json.loads(json.dumps(MIX))
+    mix["classes"][0]["reasoning_effort"] = "high"
+    mix["classes"][1]["reasoning_effort"] = "low"
+    tokenizer = WordTokenizer()
+    ds = _dataset(mix, tokenizer=tokenizer)
+    ds.build_prefixes()
+    same_mix = json.loads(json.dumps(mix))
+    same_mix["classes"][1]["reasoning_effort"] = "high"  # only the tier changes, same class at index 1
+    low = _dataset(same_mix, tokenizer=tokenizer)
+    # pool identity across tiers: same key slot and same prefix text
+    assert ds._prefix_cache_slot(1)[:2] == low._prefix_cache_slot(1)[:2]  # the tier is not in the cache key
+    ds.build_prefixes(); low.build_prefixes()
+    assert ds.prefix(1, 0) == low.prefix(1, 0)  # nor in the prefix text
+    # the tier reaches the payload, per class, with a row's own tier winning in replay
+    from types import SimpleNamespace
+
+    from load_test import build_shape_mix_request, OpenAIProvider
+
+    provider = OpenAIProvider(MODEL, _options(chat=True))
+    drawn = {r.class_name: r for r in _take(ds, 60)}
+    for name, tier in (("chat", "high"), ("agent", "low")):
+        data, _ = build_shape_mix_request(provider, drawn[name])
+        assert data["reasoning_effort"] == tier, name
+    assert "reasoning_effort" not in build_shape_mix_request(provider, drawn["cold"])[0]
+    # replay: the row's tier wins; the class's tier is the fallback
+    from load_test import ScheduleEntry
+
+    cls_effort = ds.mix.classes[0].reasoning_effort
+    row_tier = ds.replay_request(ScheduleEntry(0.0, 0, session="x", reasoning_effort="low"))
+    assert build_shape_mix_request(provider, row_tier)[0]["reasoning_effort"] == "low"
+    row_none = ds.replay_request(ScheduleEntry(0.0, 0, session="x"))
+    assert build_shape_mix_request(provider, row_none)[0]["reasoning_effort"] == cls_effort
+    del SimpleNamespace
