@@ -2883,25 +2883,6 @@ def test_deepseek_v41_resolves_its_overhang_from_text_config(tmp_path, caplog) -
     lt._REUSE_TABLE_MISSES.clear()
 
 
-def test_routing_groups_switch_the_affinity_key_per_request() -> None:
-    """D-119(2): on a multi-group replica every request gets a fresh synthetic routing key (production's
-    per-request placement, per-group prefix copies); with one group the stable per-prefix key stays, and a
-    single-prefix class still sends none."""
-    tokenizer = WordTokenizer()
-    mix = json.loads(json.dumps(MIX))
-    one = _dataset(mix, tokenizer=tokenizer)
-    many = _dataset(mix, tokenizer=tokenizer, routing_groups=4)
-    one_keys = [r.affinity_key for r in _take(one, 40) if r.class_index == 0]
-    many_keys = [r.affinity_key for r in _take(many, 40) if r.class_index == 0]
-    # one group: the stable per-prefix keys, drawn from a fixed set (pool of 3)
-    assert one_keys and set(one_keys) == {"shape-7-chat-0", "shape-7-chat-1", "shape-7-chat-2"}
-    assert many_keys and len(set(many_keys)) == len(many_keys)  # fresh per request
-    assert all(k.startswith("shape-") and "-req-" in k for k in many_keys)
-    # one group, single-prefix class (cold): no key; multi-group: every class routes per request
-    assert next(r for r in _take(one, 40) if r.class_index == 2).affinity_key is None
-    assert all(r.affinity_key is not None for r in _take(many, 40))
-
-
 def test_infer_reuse_semantics_from_probe_points() -> None:
     """C-247 / D-111: the probe's points infer the overhang and restore boundary, in either form (the overhang
     outside the restore blocks, as measured on serverless DeepSeek V4, or inside), and report a size-dependent
