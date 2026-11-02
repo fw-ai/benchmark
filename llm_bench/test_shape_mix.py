@@ -3459,3 +3459,42 @@ def test_a_bare_tail_cut_by_a_later_row_keeps_its_shape(tmp_path) -> None:
         r = ds.replay_request(entry)  # used to raise on the follow-ups
         assert len(tokenizer.encode(r.prompt)) == r.prompt_tokens == entry.input_length
         assert entry.cached_length - 2 <= r.reusable_tokens <= entry.cached_length
+
+
+def test_reuse_record_and_designed_column(tmp_path, caplog) -> None:
+    """D-123: every scored request's log line carries `| reuse class=... designed=... delivered=...`, designed
+    being what the layout intends the server to reuse (the aligned cached length, compensations applied), and
+    the summary gains `Class <name> Designed Cached Tokens` beside the delivered mean."""
+    import logging
+    import re
+
+    from load_test import record_shape_class_metrics, shape_mix_summary_entries
+
+    # shape-mix: designed is the class's reusable tokens
+    mix = json.loads(json.dumps(MIX))
+    ds = _dataset(mix, tokenizer=WordTokenizer())
+    ds.build_prefixes()
+    with caplog.at_level(logging.INFO, logger="load_test"):
+        for r in _take(ds, 8):
+            if r.class_index == 0:
+                assert r.designed_cached_tokens == 400  # chat: prompt 600, cached 400
+                break
+    # replay: designed is the row's aligned cached length; lead-ins carry none
+    rows = [
+        {"time_s": 0, "class": "chat", "session_id": "a", "input_length": 900, "cached_length": 400},
+        {"time_s": 5, "class": "chat", "session_id": "a", "input_length": 1400, "cached_length": 900},
+        {"time_s": 6, "class": "cold", "input_length": 400, "cached_length": 0},
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    wants = {0: 400, 1: 900, 2: 0}
+    for e in entries:
+        r = ds.replay_request(e)
+        assert r.designed_cached_tokens == wants[e.index]
+    # the log line and the summary column
+    record_shape_class_metrics("chat", 10, 100, 900, 400, 5, designed_cached_tokens=400)
+    record_shape_class_metrics("chat", 10, 100, 950, 380, 5, designed_cached_tokens=400)
+    stats = RequestStats()
+    for name, value in (("class_chat_designed_cached_tokens", 400), ("class_chat_cached_tokens", 390)):
+        stats.log_request("METRIC", name, value, 0)
+    entries = shape_mix_summary_entries(stats, ["chat"], True)
+    assert entries["class_chat_designed_cached_tokens"] == 400 and entries["class_chat_cached_tokens"] == 390

@@ -1140,6 +1140,9 @@ class ShapeRequest:
     cancelled: bool = False
     # "first" for a session's first scored row (or a row without a session), "followup" for its later rows
     replay_role: Optional[str] = None
+    # What the layout intends the server to reuse for this row, after every compensation (the runner's
+    # in-run reuse check compares it with the server's cached count, D-123)
+    designed_cached_tokens: Optional[int] = None
 
 
 class _CyclicText:
@@ -2123,6 +2126,9 @@ class ShapeMixDataset:
             "recorded_cached": recorded,
             "output": output,
             "role": role,
+            # What the layout intends the server to reuse for this row, after every compensation (the aligned
+            # reusable length; lead-ins aren't scored and carry no designed value)
+            "designed": None if entry.lead_in else max(0, self._aligned_cached(recorded or 0)),
         }
 
     def _lead_in_covered(self, entry: "ScheduleEntry", plan: dict, prompts: Optional[list], pool_sent: dict) -> bool:
@@ -2473,6 +2479,7 @@ class ShapeMixDataset:
             affinity_key=affinity,
             reusable_tokens=plan["reusable"],
             recorded_cached_tokens=plan["recorded_cached"],
+            designed_cached_tokens=plan.get("designed"),
             overrides=overrides or None,
             cancelled=entry.cancelled,
             replay_role=plan.get("role"),
@@ -2533,6 +2540,7 @@ class ShapeMixDataset:
             # A single key would pin the class's whole share to one replica, so only pools of 2+ get one
             affinity_key=f"shape-{self.mix.seed}-{cls.name}-{prefix_index}" if pool_size > 1 else None,
             reusable_tokens=self.reusable_tokens[ci],
+            designed_cached_tokens=self.reusable_tokens[ci],
         )
 
     def __iter__(self):
@@ -5957,6 +5965,7 @@ class LLMUser(HttpUser):
             timeout=request_timeout(self.environment.parsed_options),
         ) as response:
             class_name = shape_request.class_name if shape_request is not None else None
+            designed_cached = shape_request.designed_cached_tokens if shape_request is not None else None
             combined_text = ""
             done = False
             completion_tokens = None
@@ -6140,9 +6149,21 @@ class LLMUser(HttpUser):
                 token_parts.append(f"{cached_tokens} cached")
             token_parts.append(f"{num_tokens} completion")
             token_str = ", ".join(token_parts)
+            # D-123: the in-run reuse check's per-request record, parsed by the runner from generator logs and
+            # stdout (designed is what the layout intends the server to reuse for this row; delivered=none when
+            # the server reports no cached count)
+            reuse_str = (
+                (
+                    f" | reuse class={class_name} designed={designed_cached}"
+                    f" delivered={'none' if cached_tokens is None else int(cached_tokens)}"
+                )
+                if class_name is not None
+                else ""
+            )
 
             logger.info(
-                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {token_str}"
+                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, "
+                f"{num_chars} chars, {token_str}{reuse_str}"
             )
             if self.environment.parsed_options.show_response:
                 print("---")
@@ -6194,6 +6215,7 @@ class LLMUser(HttpUser):
                     recorded_cached_tokens=shape_request.recorded_cached_tokens,
                     laid_out_cached_tokens=shape_request.reusable_tokens,
                     replay_role=shape_request.replay_role,
+                    designed_cached_tokens=shape_request.designed_cached_tokens,
                 )
 
             # Allow provider to process response (e.g., for custom metrics)
@@ -7115,6 +7137,7 @@ def record_shape_class_metrics(
     recorded_cached_tokens: Optional[int] = None,
     laid_out_cached_tokens: Optional[int] = None,
     replay_role: Optional[str] = None,
+    designed_cached_tokens: Optional[int] = None,
 ) -> None:
     prefix = f"class_{class_name}_"
     add_custom_metric(prefix + "total_latency", total_latency_ms)
@@ -7134,6 +7157,9 @@ def record_shape_class_metrics(
         add_custom_metric(prefix + "prompt_tokens", prompt_tokens)
     if cached_tokens is not None:
         add_custom_metric(prefix + "cached_tokens", cached_tokens)
+        if designed_cached_tokens is not None:
+            # D-123: what the layout intended, over the same rows as the delivered mean
+            add_custom_metric(prefix + "designed_cached_tokens", designed_cached_tokens)
     if completion_tokens:
         add_custom_metric(prefix + "completion_tokens", completion_tokens)
 
@@ -7288,6 +7314,9 @@ def shape_mix_summary_entries(
         for metric in ["time_to_first_token", "total_latency", "prompt_tokens", "cached_tokens", "completion_tokens"]:
             entry = stats.entries.get((prefix + metric, "METRIC"))
             entries[prefix + metric] = entry.avg_response_time if entry else ""
+        designed = stats.entries.get((prefix + "designed_cached_tokens", "METRIC"))
+        if designed is not None:
+            entries[prefix + "designed_cached_tokens"] = designed.avg_response_time
         recorded = stats.entries.get((prefix + "recorded_cached_tokens", "METRIC"))
         if recorded is not None:
             laid_out = stats.entries.get((prefix + "laid_out_cached_tokens", "METRIC"))
