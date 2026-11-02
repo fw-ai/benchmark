@@ -2342,8 +2342,9 @@ class ShapeMixDataset:
             fit = self._fit_width("", seg[1], tokens)
             return None if fit is None else ("resp", seg[1], fit[0], fit[1])
         if kind == "bare":
+            # ("bare", word, offset, width, with_trailer, tokens): keep the word and the corpus offset
             fit = self._fit_width(f" {seg[1]} ", seg[2], tokens)
-            return None if fit is None else ("bare", seg[1], fit[0], False, fit[1])
+            return None if fit is None else ("bare", seg[1], seg[2], fit[0], False, fit[1])
         return None
 
     def _fit_width(self, lead: str, offset: int, tokens: int) -> Optional[tuple[int, int]]:

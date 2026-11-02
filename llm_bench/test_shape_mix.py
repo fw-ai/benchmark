@@ -3435,3 +3435,27 @@ def test_dsv4_encoding_loads_from_either_filename(tmp_path) -> None:
     neither.mkdir()
     with pytest.raises(FileNotFoundError):
         load_dsv4_encode_messages(str(neither))
+
+
+def test_a_bare_tail_cut_by_a_later_row_keeps_its_shape(tmp_path) -> None:
+    """Task 16's T1 crash: a row reusing a session prompt that ended in a bare tail, cut inside that tail,
+    truncated the bare segment to a 5-tuple (its corpus offset dropped), and rendering it raised "not enough
+    values to unpack (expected 6, got 5)". Merged replays hit it often (many sessions, many tight rows)."""
+    from load_test import load_replay_schedule
+
+    rows = []
+    t = 0.0
+    for s in range(6):
+        sid = f"s{s}"
+        # a tight first turn: a bare tail (input barely above its cached length)
+        rows.append({"time_s": t, "class": "chat", "session_id": sid, "input_length": 404, "cached_length": 400})
+        # the follow-up reuses that prompt and cuts INSIDE its bare tail (402 of the 404)
+        rows.append({"time_s": t + 1, "class": "chat", "session_id": sid, "input_length": 900, "cached_length": 402})
+        t += 2
+    ds, entries, tokenizer = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    bare = [e for e in entries if ds._replay[e.index]["segments"][-1][0] == "bare"]
+    assert bare, "the tight rows must get bare tails for this test to mean anything"
+    for entry in entries:
+        r = ds.replay_request(entry)  # used to raise on the follow-ups
+        assert len(tokenizer.encode(r.prompt)) == r.prompt_tokens == entry.input_length
+        assert entry.cached_length - 2 <= r.reusable_tokens <= entry.cached_length
