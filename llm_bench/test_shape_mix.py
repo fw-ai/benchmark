@@ -3486,10 +3486,11 @@ def test_reuse_record_and_designed_column(tmp_path, caplog) -> None:
         {"time_s": 6, "class": "cold", "input_length": 400, "cached_length": 0},
     ]
     ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
-    wants = {0: 400, 1: 900, 2: 0}
     for e in entries:
         r = ds.replay_request(e)
-        assert r.designed_cached_tokens == wants[e.index]
+        # the laid-out value after assembly (D-123's clarification), never the recorded length
+        assert r.designed_cached_tokens == ds._replay[e.index]["reusable"]
+        assert e.cached_length is None or r.designed_cached_tokens <= e.cached_length
     # the log line and the summary column
     record_shape_class_metrics("chat", 10, 100, 900, 400, 5, designed_cached_tokens=400)
     record_shape_class_metrics("chat", 10, 100, 950, 380, 5, designed_cached_tokens=400)

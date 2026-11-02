@@ -2126,9 +2126,10 @@ class ShapeMixDataset:
             "recorded_cached": recorded,
             "output": output,
             "role": role,
-            # What the layout intends the server to reuse for this row, after every compensation (the aligned
-            # reusable length; lead-ins aren't scored and carry no designed value)
-            "designed": None if entry.lead_in else max(0, self._aligned_cached(recorded or 0)),
+            # What the layout intends the server to reuse for this row, after every compensation: the ASSEMBLED
+            # row's laid-out reusable (not the recorded length - the few tokens a word straddling the cut costs
+            # are the layout's, and must not trip the reuse check); lead-ins aren't scored and carry none
+            "designed": None if entry.lead_in else max(0, reusable),
         }
 
     def _lead_in_covered(self, entry: "ScheduleEntry", plan: dict, prompts: Optional[list], pool_sent: dict) -> bool:
