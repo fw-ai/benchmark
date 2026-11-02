@@ -753,7 +753,11 @@ class DatasetHolder:
             # The overhang only applies when a shared prefix was requested (-pcml): without one it would
             # silently lay a prefix out (the server would then serve prefix-cache hits to a no-cache
             # benchmark, with no reuse record to show it)
-            reuse_overhang = resolve_prefix_reuse_overhang(options) if common_tokens > 0 else 0
+            # Setup resolved it once (N10-145-7): read that, so the table-miss warning can't fire a second
+            # time here; resolve only when setup didn't run (a failed setup lets users build the dataset)
+            reuse_overhang = _APPLIED_REUSE.get("overhang") if common_tokens > 0 else None
+            if reuse_overhang is None:
+                reuse_overhang = resolve_prefix_reuse_overhang(options) if common_tokens > 0 else 0
             tokenizer_path = options.tokenizer or DEFAULT_TOKENIZER
             chat = options.chat and not getattr(options, "rerank", False)
             chat_head = None
@@ -1512,7 +1516,11 @@ def _setup_before_spawning(environment, **_kwargs):
     # Resolve the reuse semantics once, here (the summary reports what the run applied, not a fresh resolve
     # at quit time, and the table-miss warning fires once)
     if not (options.systemone or options.embeddings or options.rerank):
-        _APPLIED_REUSE["overhang"] = resolve_prefix_reuse_overhang(options)
+        # The overhang only applies with a shared prefix (-pcml): store 0 without one, so the summary
+        # reports what the run applied (and the table-miss warning fires only where the overhang is used)
+        _APPLIED_REUSE["overhang"] = (
+            resolve_prefix_reuse_overhang(options) if getattr(options, "prompt_cache_max_len", 0) > 0 else 0
+        )
         _APPLIED_REUSE["boundary"] = resolve_prefix_restore_boundary(options)
         _APPLIED_REUSE["served_model_config"] = resolve_served_model_config(options)
     ClientCpu.start()
