@@ -3665,3 +3665,87 @@ def test_startup_drain_is_the_leading_run_of_late_sends() -> None:
     # A short schedule's threshold is 0.5% of its span: 0.05 s over 10 s, so 0.1 s late is still draining
     e = startup_drain_entries([0.0, 5.0, 10.0], [0.1, 5.01, 10.0])
     assert e["startup_drain_s"] == 5.0 and abs(e["startup_drain_peak_ms"] - 100.0) < 1e-6
+
+
+# sha256 of the first 64 prompts per mode, computed with main's llm_bench (origin/main bea62a4) by the same code
+_MAIN_PROMPT_SHA = {
+    "completions": "7b5f8f7fa293082420b40330dc01acbbf6725d549ba4e7793666c41cdb8ba2cf",
+    "completions-pcml": "ed9c32590467fe23cdf79aba9c6ca11bb76a953d77c475b974cc2074f1f27b28",
+    "chat": "782de1808c362add1b38d8e7e7a7319cdb1e8f1d6f2ed90f8b3b73afc958b310",
+    "chat-pcml": "48bb49024ddf45e119c3a31410d2b388d9ab0436426059d11005cec0f143eb3b",
+}
+
+
+@pytest.mark.parametrize("mode", sorted(_MAIN_PROMPT_SHA))
+def test_existing_modes_prompts_are_byte_identical_to_main(mode) -> None:
+    """The shape-mix corpus (prose) and the rest of this stack apply only to --shape-mix / --replay-schedule: the
+    existing -p / -pcml modes build exactly main's prompts (default tokenizer, no measured chat head, no overhang:
+    the #145 compensations apply only when the served model or a measurement calls for them)."""
+    import hashlib
+    import random as _random
+
+    from locust.argument_parser import get_empty_argument_parser, setup_parser_arguments
+
+    args = {
+        "completions": ["--no-chat", "-p", "600"],
+        "completions-pcml": ["--no-chat", "-p", "600", "-pcml", "300"],
+        "chat": ["--chat", "-p", "600"],
+        "chat-pcml": ["--chat", "-p", "600", "-pcml", "300"],
+    }[mode]
+    parser = get_empty_argument_parser()
+    setup_parser_arguments(parser)
+    load_test.init_parser(parser)
+    opts = parser.parse_args(["--provider", "vllm", "-m", "m", "--dataset", "limericks"] + args)
+    load_test.DatasetHolder._instance = None
+    try:
+        _random.seed(7)
+        ds = iter(load_test.DatasetHolder.get_instance(opts))
+    except OSError as e:
+        pytest.skip(f"default tokenizer unavailable: {e}")
+    items = [list(next(ds)) for _ in range(64)]
+    load_test.DatasetHolder._instance = None
+    assert hashlib.sha256(json.dumps(items).encode()).hexdigest() == _MAIN_PROMPT_SHA[mode]
+
+
+# sha256 of the payloads below, computed with the code before reasoning-effort tiers existed (418fd53)
+_PRE_TIER_PAYLOAD_SHA = {
+    "mix-openai-chatTrue": "b2a0331821344ee7f55947e2bc06ef6aeb9efddc5f56c1a49f61fe8fc9106b3a",
+    "replay-openai-chatTrue": "1b0ba00887bd219f1dde443dec25ce8fa6c8443cd26865aa9ee3bfb2ec33b15d",
+    "mix-fireworks-chatTrue": "d1932403f774675ac391f3f627c9efbb2ad38784d2dda2e0f1534fd55bba7577",
+    "replay-fireworks-chatTrue": "f4762f06026001feccd46c16f925f65b0f73281df767c504394ce5436a258c4b",
+    "mix-openai-chatFalse": "1ac1e94cc2904cd37ea6d260630546aac36b04283cb960aaeb9a7bfddf585e68",
+    "replay-openai-chatFalse": "d6a9ac677dfc4843971f80f767e5c4f25bd84d21b5806d061d88a3da33d755dd",
+    "mix-fireworks-chatFalse": "9f5e898590de5fdb06fd3aaf419979e3a02cc5d6626deb4df8f192de4a31fa0f",
+    "replay-fireworks-chatFalse": "0bceb50108810ff9759f99ce4fb4b89e67c9054131fe6e249cccb8fc26c7ba40",
+}
+
+
+@pytest.mark.parametrize("chat", [True, False])
+@pytest.mark.parametrize("provider_name", ["openai", "fireworks"])
+def test_no_tier_payloads_are_byte_identical_to_before_tiers(tmp_path, chat, provider_name) -> None:
+    """With no reasoning_effort on any class or row (and no flag), shape-mix and replay payloads are exactly what
+    they were before tiers existed: no "reasoning_effort" key, not even null."""
+    import hashlib
+
+    from load_test import PROVIDER_CLASS_MAP, OpenAIProvider, build_shape_mix_request
+
+    sha = lambda x: hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()
+    provider_class = OpenAIProvider if provider_name == "openai" else PROVIDER_CLASS_MAP["fireworks"]
+    provider = provider_class(MODEL, _options(chat=chat))
+    mix = [build_shape_mix_request(provider, r) for r in _take(_dataset(tokenizer=WordTokenizer()), 200)]
+    assert sha(mix) == _PRE_TIER_PAYLOAD_SHA[f"mix-{provider_name}-chat{chat}"]
+    rows = [
+        {
+            "timestamp": 1000 * i,
+            "class": ("chat", "agent", "cold")[i % 3],
+            "input_length": 700 + 37 * i,
+            "cached_length": 300 if i % 3 != 2 else 0,
+            "output_length": 5 + i,
+            "session": f"s{i % 4}",
+        }
+        for i in range(24)
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=None if chat else WordTokenizer(), chat=chat)
+    replay = [build_shape_mix_request(provider, ds.replay_request(e)) for e in entries]
+    assert all("reasoning_effort" not in data for data, _ in replay)
+    assert sha(replay) == _PRE_TIER_PAYLOAD_SHA[f"replay-{provider_name}-chat{chat}"]
