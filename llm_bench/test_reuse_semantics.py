@@ -356,7 +356,10 @@ def test_pcml_prompt_field_is_the_designed_server_length() -> None:
     client = first_count(chat_head=head)  # what the client builds and counts
     limerick = 60  # whole limericks: the count lands at or a little past its target
     assert 500 - head <= client < 500 - head + limerick
-    designed = client + head  # prompt= on the -pcml reuse line (self._pcml_chat_head = the dataset's chat_head)
-    assert 500 <= designed < 500 + limerick
+    # the record the response path logs for this row (LLMUser calls pcml_reuse_record with the dataset's chat_head)
+    record = lt.pcml_reuse_record(250, 252, client, head)
+    designed = int(record.split("prompt=")[1].split()[0])
+    assert designed == client + head and 500 <= designed < 500 + limerick
+    assert lt.pcml_reuse_record(250, None, client, 0).endswith(f" delivered=none prompt={client}")  # completions
     assert abs(client / designed - 1) > 0.04  # the client count alone would read the server's length ~5% long
     assert first_count(chat_head=None) == first_count()  # completions / unmeasured: no head, prompt= = client count
