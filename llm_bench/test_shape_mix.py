@@ -1344,7 +1344,9 @@ def test_sampled_lengths_keep_the_quantiles_and_the_class_mean(caplog) -> None:
     assert st.mean(out) == pytest.approx(420, rel=0.04)
     assert out[-1] > 2600  # draws go past the top quantile (the tail is extrapolated)
     unc = sorted(r.prompt_tokens - ds.reusable_tokens[0] for r in requests)
-    for level, value in ((0.5, 1400), (0.9, 4200), (0.99, 9000)):
+    # Probed just inside each stratum: a given quantile level is a boundary between uncached strata, where the
+    # empirical quantile takes either side (stratified draws take one side deterministically)
+    for level, value in ((0.499, 1400), (0.899, 4200), (0.989, 9000)):
         assert q(unc, level) == pytest.approx(value, rel=0.12), level  # strata are discrete
     assert st.mean(unc) == pytest.approx(2000, rel=0.02)
     assert unc[-1] > 9000
@@ -1448,7 +1450,9 @@ def test_sampled_prompts_stay_in_their_band_and_the_context(caplog) -> None:
         # the class mean still holds under the cap
         assert st.mean(prompts) == pytest.approx(spec["classes"][ci]["prompt_tokens"], rel=0.03)
     assert max(r.prompt_tokens + r.generated_tokens for r in requests) <= 32768
-    assert 0 < ds.context_cut_requests < len(requests) / 1000  # a long output drawn for a long prompt is cut
+    # a long output drawn for a long prompt is rare (expected well under one per 60k here, so not asserted present);
+    # the cut itself is exercised with a tight context in test_tier_output_keeps_the_sampled_spread_and_the_context_cap
+    assert ds.context_cut_requests < len(requests) / 1000
     # a cap never moves a given quantile below its value
     dist = LengthQuantiles(((0.5, 400.0), (0.99, 1600.0)), cap=1000)
     assert dist.high == 1600 and dist.value(0.999999) <= 1600
@@ -2851,7 +2855,9 @@ def test_sampled_lengths_keep_a_skewed_classs_mean_on_a_small_uncached_base() ->
     out = sorted(unc)
     # p10 is left out: the bottom stratum spans levels 0 to 6.25% and the next 6.25 to 12.5%, so the mixture's
     # 10th percentile is a whole stratum's average, well above the p10 point on a steep bottom
-    for level, value, tol in ((0.5, 230, 0.15), (0.9, 750, 0.25), (0.99, 2600, 0.25)):
+    # p99 is probed just inside its stratum (0.989): 0.99 sits exactly on the boundary between the 2470- and 3316-token
+    # strata, where the empirical quantile takes either side (stratified draws take the upper one deterministically)
+    for level, value, tol in ((0.5, 230, 0.15), (0.9, 750, 0.25), (0.989, 2600, 0.25)):
         # a stratum's draw is its average, above the point itself on a convex tail (strata are discrete)
         assert q(out, level) == pytest.approx(value, rel=tol), level
 
@@ -4062,3 +4068,68 @@ def test_served_config_identity_hashes_the_config_it_read(tmp_path) -> None:
     assert entries["served_model_config_fields"] == "model_type=deepseek_v41_text;sliding_window=128;index_topk="
     assert served_config_identity(None) == {"served_model_config_sha256": "", "served_model_config_fields": ""}
     assert served_config_identity(str(tmp_path / "missing"))["served_model_config_sha256"] == ""
+
+
+def _p9_partial_lt_2k(request_seed=7):
+    """P9 15Z's partial_lt_2k (heavy-tailed: p99 1067 on a mean uncached of 218), alone."""
+    return {
+        "seed": 20261028,
+        "request_seed": request_seed,
+        "classes": [
+            {
+                "name": "partial_lt_2k",
+                "weight": 1,
+                "prompt_tokens": 773,
+                "cached_prompt_tokens": 555,
+                "generated_tokens": 167,
+                "prefix_pool_size": 8,
+                "uncached_tokens_quantiles": {"p10": 129.0, "p50": 130.0, "p90": 374.5, "p99": 1066.85},
+                "generated_tokens_quantiles": {"p10": 46.0, "p50": 54.0, "p90": 312.0, "p99": 1877.65},
+            }
+        ],
+    }
+
+
+def test_stratified_sampled_lengths_track_the_class_mean_at_small_n() -> None:
+    """D-183: with --shape-mix-sample-lengths a class's lengths come from a stratified quantile stream, so the
+    realized class mean tracks the design: an i.i.d. draw of 187 from this class ranges +-11% (P9's seed drew
+    -12.2%); stratified, about +-4.5%, and the spread is 2.5-3x smaller at every n, while the marginal quantiles and
+    the independence between consecutive requests are kept."""
+    import statistics as st
+
+    # The spread of the realized mean over seeds, against i.i.d. draws' (sd 0.132, 0.063, 0.039 at these n): a class
+    # whose top 0.3% carries much of its mean still varies at n < 1/0.003 (whether that stratum is drawn yet)
+    for n, bound in ((50, 0.10), (187, 0.035), (500, 0.018)):
+        devs = []
+        for seed in range(1, 41):
+            ds = _dataset(_p9_partial_lt_2k(seed), tokenizer=WordTokenizer(), sample_lengths=True)
+            ds.build_prefixes()
+            devs.append(st.mean(r.prompt_tokens - ds.reusable_tokens[0] for r in _take(ds, n)) / 218 - 1)
+        assert st.pstdev(devs) < bound and abs(st.mean(devs)) < bound / 2, (n, st.pstdev(devs), st.mean(devs))
+    ds = _dataset(_p9_partial_lt_2k(), tokenizer=WordTokenizer(), sample_lengths=True)
+    ds.build_prefixes()
+    rs = _take(ds, 20000)
+    unc = [r.prompt_tokens - ds.reusable_tokens[0] for r in rs]
+    out = [r.generated_tokens for r in rs]
+    assert st.mean(unc) == pytest.approx(218, rel=0.005) and st.mean(out) == pytest.approx(167, rel=0.02)
+    q = sorted(unc)
+    assert q[int(0.499 * len(q))] < 160 and q[int(0.899 * len(q))] < 400 < q[int(0.995 * len(q))]  # the shape is kept
+    for xs in (unc, out):  # no order pattern between consecutive requests
+        m, v = st.mean(xs), st.pvariance(xs)
+        lag1 = sum((a - m) * (b - m) for a, b in zip(xs, xs[1:])) / (len(xs) - 1) / v
+        assert abs(lag1) < 0.05, lag1
+    assert abs(st.correlation(unc, out)) < 0.05  # uncached and output streams are independent
+
+
+def test_stratified_uniform_covers_every_stratum_per_block() -> None:
+    from load_test import StratifiedUniform
+
+    stream = StratifiedUniform(random.Random(3))
+    strata, sub = StratifiedUniform.STRATA, StratifiedUniform.SUBSTRATA
+    blocks = [[stream.next() for _ in range(strata)] for _ in range(sub)]
+    for block in blocks:
+        assert sorted(int(u * strata) for u in block) == list(range(strata))  # every stratum once per block
+        assert block != sorted(block)  # shuffled, not in quantile order
+    for s in range(strata):  # each stratum's visits over SUBSTRATA blocks take each of its sub-strata once
+        visits = sorted(int((u * strata - s) * sub) for block in blocks for u in block if int(u * strata) == s)
+        assert visits == list(range(sub))

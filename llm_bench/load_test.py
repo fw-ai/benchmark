@@ -1319,6 +1319,36 @@ def resolve_qps_cv2(options: argparse.Namespace) -> float:
     return 1.0
 
 
+class StratifiedUniform:
+    """Quantiles in [0, 1) for one class's sampled lengths, stratified on two levels: every block of STRATA draws
+    takes each of STRATA equal-probability strata once, in a shuffled order, and each stratum's successive visits
+    take its SUBSTRATA sub-strata once each, also shuffled. So a class's realized mean tracks its design at any n,
+    heavy tail included (an i.i.d. draw of 187 from P9's partial_lt_2k ranges +-11%), while each request's length
+    is still a random draw with no order pattern between consecutive requests."""
+
+    STRATA = 64
+    SUBSTRATA = 16
+
+    def __init__(self, rng: random.Random) -> None:
+        self._rng = rng
+        self._block: list[int] = []
+        self._sub: dict[int, list[int]] = {}
+
+    def _shuffled(self, n: int) -> list[int]:
+        order = list(range(n))
+        self._rng.shuffle(order)
+        return order
+
+    def next(self) -> float:
+        if not self._block:
+            self._block = self._shuffled(self.STRATA)
+        stratum = self._block.pop()
+        sub = self._sub.get(stratum)
+        if not sub:
+            sub = self._sub[stratum] = self._shuffled(self.SUBSTRATA)
+        return (stratum + (sub.pop() + self._rng.random()) / self.SUBSTRATA) / self.STRATA
+
+
 @dataclass(frozen=True)
 class ShapeRequest:
     prompt: str
@@ -1599,6 +1629,7 @@ class ShapeMixDataset:
         # prefix's draws, so the request stream is the same as without shares
         self._tier_split = [self._class_tier_split(ci) for ci in range(len(self.classes))]
         self._tier_rng = random.Random(f"shape-mix:{self.request_seed}:tiers:{self._worker_index}")
+        self._strata: dict = {}
         self._filler_offsets = [array("I", bytes(4 * len(t))) for t in self._filler_tokens]
         self._filler_widths = [array("I", [_UNBUILT]) * len(t) for t in self._filler_tokens]
         if self.tail_variants:
@@ -2122,7 +2153,9 @@ class ShapeMixDataset:
                 prefix_index = self._draw_prefix_index(ci)
             tier = self._draw_tier(ci, prefix_index)
             nonce = self._rng.getrandbits(64)
-            variant = self._draw_variant(ci, self._rng)
+            # With sampled lengths (G8), each class's length quantiles come from its own stratified stream, so the
+            # realized class mean tracks the design at any n; without, the draws are as before
+            variant = self._draw_variant(ci, self._rng, self._stratum(ci, "uncached") if self.sample_lengths else None)
             cls = self.classes[ci]
             tail_tokens = None
             if generated is None:
@@ -2131,25 +2164,35 @@ class ShapeMixDataset:
                 tier_output = dict(cls.generated_tokens_by_tier or ()).get(tier)
                 generated = tier_output or cls.generated_tokens
                 if self.sample_lengths and cls.generated_tokens_quantiles:
-                    drawn = self._generated_dist[ci].value(self._rng.random())
+                    drawn = self._generated_dist[ci].value(self._stratum(ci, "generated").next())
                     if tier_output:
                         drawn *= tier_output / cls.generated_tokens
                     generated = max(1, round(drawn))
             if self.sample_lengths and cls.uncached_tokens_quantiles and variant is None:
-                drawn = self._uncached_dist[ci].value(self._rng.random())
+                drawn = self._uncached_dist[ci].value(self._stratum(ci, "uncached").next())
                 tail_tokens = self._tail_for_uncached(ci, drawn)
         request = self._render(ci, prefix_index, nonce, counter, variant, generated, tail_tokens)
         # The output (and its context cap) is settled in _render; the tier only adds its field
         return request if tier is None else dataclasses.replace(request, reasoning_effort=tier)
 
-    def _draw_variant(self, ci: int, rng: random.Random) -> Optional[int]:
+    def _draw_variant(self, ci: int, rng: random.Random, stratum=None) -> Optional[int]:
         count = len(self._filler_tokens[ci])
         if not count:
             return None
         cumulative = self._variant_cumulative[ci]
         if cumulative is None:
             return rng.randrange(count)
-        return min(bisect.bisect_right(cumulative, rng.random() * cumulative[-1]), count - 1)
+        u = stratum.next() if stratum is not None else rng.random()
+        return min(bisect.bisect_right(cumulative, u * cumulative[-1]), count - 1)
+
+    def _stratum(self, ci: int, kind: str) -> "StratifiedUniform":
+        """The class's stratified quantile stream for one length (uncached or generated), seeded by the request seed."""
+        key = (ci, kind)
+        stream = self._strata.get(key)
+        if stream is None:
+            seed = f"shape-mix:{self.request_seed}:strata:{kind}:{self._worker_index}:{ci}"
+            stream = self._strata[key] = StratifiedUniform(random.Random(seed))
+        return stream
 
     def _draw_prefix_index(self, ci: int) -> int:
         cumulative = self._prefix_cumulative[ci]
