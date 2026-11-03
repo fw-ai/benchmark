@@ -20,11 +20,14 @@ The layout must match the mock: every step's overhang (an explicit --prefix-reus
 resolves from the served model's config) must equal the mock's window, less its chat head (--mock-chat-head) in chat
 mode, or the run is refused (exit 2) before it starts, and the verdict is refused if the step's summary reports
 otherwise. A mismatch would make the verdict measure the mock, not the plan; --allow-mismatch runs it anyway for
-deliberate experiments, labelled in the output and in DIR/MISMATCH_EXPERIMENT.
+deliberate experiments, labelled in the output and in DIR/MISMATCH_EXPERIMENT, and exits 3 whatever the verdict
+(an experiment is never a plan result). With --mock-chat-head and the plan's probe as the window, a chat probe's
+overhang (already net of the engine's head) gets the head added back for the mock's raw window.
 Every step it runs must name its wire mode (--chat or --no-chat; llm_bench requires one), and every request the
 mock logs for a step must hit that mode's path (/v1/chat/completions or /v1/completions), else the run fails.
 Exit code: the check's with --check, else llm_bench's for the scored step (non-zero also when the mock or a step
-fails to start, 2 when a step names no mode, 1 on a path mismatch).
+fails to start, 2 when a step names no mode or the layout doesn't match the mock, 1 on a path mismatch, 3 for a
+--allow-mismatch experiment).
 """
 
 import argparse
@@ -101,14 +104,49 @@ def applied_overhang(step) -> int:
     return int(lines[-1])
 
 
+def probe_mode(probe: dict):
+    """The wire mode a recorded reuse probe ran in ("chat" or "completions"), from its mode or source label."""
+    mode = probe.get("mode")
+    if mode in ("chat", "completions"):
+        return mode
+    source = str(probe.get("source") or "")
+    return "chat" if "chat" in source else "completions" if "completions" in source else None
+
+
+def mock_window(probe: dict, window_arg, mock_chat_head: int):
+    """The mock's raw recompute window: --window, else the plan's probe overhang. A chat probe's overhang is already
+    net of the engine's head, so with --mock-chat-head the head is added back; None when the probe's mode is
+    unknown and a head is given (ambiguous)."""
+    if window_arg is not None:
+        return window_arg
+    window = int(probe.get("overhang") or 0)
+    if probe and mock_chat_head:
+        mode = probe_mode(probe)
+        if mode is None:
+            return None
+        if mode == "chat":
+            window += mock_chat_head
+    return window
+
+
 def mismatch_message(step, applied: int, expected: int, window: int, mock_chat_head: int) -> str:
-    head = f" less its chat head {mock_chat_head}" if expected != window else ""
+    chat = expected != window
+    head = f" less its chat head {mock_chat_head}" if chat else ""
+    # The step's overhang is the engine-measured value (the probe's): fit the mock to it, not the plan to the mock
+    fix_window = applied + (mock_chat_head if chat else 0)
     return (
         f"step {step[0]} lays prefixes out with overhang {applied}, but the mock recomputes {window}{head}, so it "
-        f"needs {expected}: the delivered cached share would be off by {applied - expected} tokens per hit, a mock "
-        f"artifact, not a plan result. Pass --prefix-reuse-overhang {expected} in the step (or run the mock with "
-        f"--window/--mock-chat-head matching the layout); --allow-mismatch runs it anyway, labelled"
+        f"matches only {expected}: the delivered cached share would be off by {applied - expected} tokens per hit, a "
+        f"mock artifact, not a plan result. Run the mock to match the layout: --window {fix_window}"
+        + (f" --mock-chat-head {mock_chat_head}" if chat else "")
+        + f" (or, only if the step's overhang is itself wrong, pass --prefix-reuse-overhang {expected} in the step); "
+        f"--allow-mismatch runs it anyway, labelled"
     )
+
+
+def _mark_experiment(out: str, messages: list) -> None:
+    with open(os.path.join(out, "MISMATCH_EXPERIMENT"), "w") as f:
+        f.write("\n".join(messages) + "\n")
 
 
 def _log_lines(request_log: str) -> int:
@@ -279,7 +317,13 @@ def main(argv=None) -> int:
     step = scored_step(plan, steps, args.step)
     fills = [s for s in steps if "--prefix-fill" in s[4]]
     probe = record.get("reuse_probe") or {}
-    window = args.window if args.window is not None else int(probe.get("overhang") or 0)
+    window = mock_window(probe, args.window, args.mock_chat_head)
+    if window is None:
+        print(
+            "preflight: !!! --mock-chat-head with a reuse_probe of unknown mode: pass --window (the engine's raw "
+            "window; a chat probe's overhang is net of the head)"
+        )
+        return 2
     boundary = args.boundary if args.boundary is not None else int(probe.get("boundary") or 0) or 1
     tokenizer = (
         args.mock_tokenizer
@@ -310,8 +354,7 @@ def main(argv=None) -> int:
     for m in mismatched:
         print(f"preflight: !!! MISMATCH EXPERIMENT (--allow-mismatch): {m}")
     if mismatched:
-        with open(os.path.join(args.out, "MISMATCH_EXPERIMENT"), "w") as f:
-            f.write("\n".join(mismatched) + "\n")
+        _mark_experiment(args.out, mismatched)
     port = _free_port()
     server_log = os.path.join(args.out, "mock_server.log")
     request_log = os.path.join(args.out, "mock.requests")
@@ -379,6 +422,8 @@ def main(argv=None) -> int:
             if not args.allow_mismatch:
                 print(summary)
                 return 2
+            mismatched.append(verdict)
+            _mark_experiment(args.out, mismatched)
         if args.check:
             if not os.path.exists(summary):
                 print("preflight: no summary to check")
@@ -387,6 +432,10 @@ def main(argv=None) -> int:
             cmd = shlex.split(args.check) + [args.plan, summary, "--step", step[0]]
             print(f"preflight: check: {' '.join(cmd)}", flush=True)
             rc = subprocess.run(cmd).returncode
+        if mismatched:
+            # Never a plan verdict: a driver reading only the exit code mustn't take an experiment for a pass
+            print(f"preflight: !!! MISMATCH EXPERIMENT: verdict exit {rc} is not a plan result; exiting 3")
+            rc = 3
         print(summary)  # last line: the step summary's path (the check's input)
         return rc
     finally:

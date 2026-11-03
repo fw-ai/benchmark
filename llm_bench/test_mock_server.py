@@ -168,3 +168,21 @@ def test_preflight_refuses_a_layout_that_doesnt_match_the_mock(tmp_path, capsys)
     summary.write_text("Reuse Overhang Tokens,Chat Head Tokens\n102,20\n")
     assert "chat head of 20" in summary_mismatch(str(summary), headed, 128, 26, "tok")
     assert summary_mismatch(str(summary), headed, 128, 26, "another-tok") is None  # a counting-tokenizer head
+
+
+def test_preflight_mock_window_nets_a_chat_probe_and_leads_with_the_mock_fix(tmp_path) -> None:
+    """N10-146-5: a chat probe's overhang (102) is net of the engine's head, so with --mock-chat-head 26 the mock's raw
+    window is 128 and the probe's own 102 is accepted, not refused for 76. N10-146-6: the advice fits the mock to
+    the layout first. N10-146-7: an --allow-mismatch run is marked and never exits as a plan verdict."""
+    from preflight_run import expected_overhang, mismatch_message, mock_window, probe_mode
+
+    chat = ("s", 1, None, None, ["--chat", "--prefix-reuse-overhang", "102"])
+    probe = {"overhang": 102, "boundary": 0, "source": "probe-chat-fresh-102"}
+    assert probe_mode(probe) == "chat" and probe_mode({"source": "probe-completions-fresh-129"}) == "completions"
+    window = mock_window(probe, None, 26)
+    assert window == 128 and expected_overhang(chat, window, 26) == 102  # the correct 102 passes
+    assert mock_window({"overhang": 129, "source": "probe-completions-x"}, None, 26) == 129
+    assert mock_window({"overhang": 102}, None, 26) is None  # mode unknown with a head: ambiguous, refused
+    assert mock_window({"overhang": 102}, None, 0) == 102 and mock_window(probe, 120, 26) == 120
+    message = mismatch_message(chat, 102, 76, 102, 26)
+    assert message.index("--window 128 --mock-chat-head 26") < message.index("--prefix-reuse-overhang")
