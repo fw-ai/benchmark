@@ -809,7 +809,9 @@ class ShapeClass:
     # How often each prefix of the pool is used: ("zipf", s) or ("weights", (w0, w1, ...)); None is uniform
     prefix_popularity: Optional[tuple] = None
     # The reasoning-effort tier the class's requests send (none, low, medium, high); None: --reasoning-effort.
-    # The tier shapes the server's thinking-mode preamble (ahead of the prompt content), never the pool
+    # The tier shapes the server's thinking-mode preamble (ahead of the prompt content), never llm_bench's text pool
+    # or its --prefix-pool-cache file. The server's KV cache does depend on it: the preamble sits ahead of the shared
+    # prefix, so the server caches a prefix once per tier it's requested with
     reasoning_effort: Optional[str] = None
     # Largest prompt (tokens) the class's prompt_band allows, widened by bands merged into it; None: no ceiling
     prompt_tokens_max: Optional[int] = None
@@ -1249,10 +1251,6 @@ def resolve_qps_dispersion(options: argparse.Namespace) -> Optional[float]:
 RESTORE_BOUNDARY_MARGIN_TOKENS = 16
 
 
-# Model types a run resolved outside the reuse tables while their config suggested reuse semantics (reported)
-_REUSE_TABLE_MISSES: set = set()
-
-
 def resolve_context_tokens(options: argparse.Namespace) -> Optional[int]:
     """The served model's context for --shape-mix-sample-lengths caps: the config's max_position_embeddings (its
     text config's for multimodal models), or None when it can't be read (no context cap)."""
@@ -1279,10 +1277,12 @@ def resolve_request_seed(options: argparse.Namespace) -> Optional[int]:
 
 
 def resolve_qps_cv2(options: argparse.Namespace) -> float:
-    """--qps-cv2 if given, else the profile's arrivals.cv2 from --shape-mix, else 1 (Poisson)."""
+    """--qps-cv2 if given, else (for gamma arrivals, the only ones that take it) the profile's arrivals.cv2 from
+    --shape-mix, else 1 (Poisson). A profile's value isn't applied to other distributions, so it doesn't trip the
+    pacer's "--qps-cv2 is ignored" warning the user never asked for."""
     if getattr(options, "qps_cv2", None) is not None:
         return options.qps_cv2
-    if getattr(options, "shape_mix", None):
+    if getattr(options, "shape_mix", None) and getattr(options, "qps_distribution", "gamma") == "gamma":
         cv2 = parse_shape_mix(options.shape_mix).arrivals_cv2
         if cv2 is not None:
             return cv2
@@ -2813,9 +2813,6 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
     return data, headers
 
 
-_CHAT_HEAD_CALIBRATION: dict = {}  # (host, model, tokenizer path) -> measured chat-head tokens
-
-
 class DatasetHolder:
     _instance = None
     _forced_generation_instance = None
@@ -4092,7 +4089,9 @@ def startup_drain_entries(intended, actual) -> dict[str, Any]:
     one. In schedule order, the drain is the contiguous run from the first send that is more than min(1 s,
     0.5% of the schedule's span) late; it ends at the first send within that. Reported are its length (schedule
     seconds from the first send to the first on-time one), its peak lateness, and the largest lateness after it,
-    which is what a step is checked on. A run with no late first send has a drain of 0."""
+    which is what a step is checked on. A run with no late first send has a drain of 0. A run that never catches up
+    has an incomplete drain (startup_drain_complete 0), and its after-drain lateness is the drain's peak, so the
+    worst case reads as failing rather than unmeasured."""
     if not actual:
         return {}
     sends = sorted(zip(intended, actual))
@@ -4100,10 +4099,12 @@ def startup_drain_entries(intended, actual) -> dict[str, Any]:
     threshold = min(1.0, 0.005 * (sends[-1][0] - sends[0][0]))
     end = next((k for k, late in enumerate(lateness) if late <= threshold), len(sends))
     drain_end = sends[end][0] if end < len(sends) else sends[-1][0]
+    peak_ms = max(lateness[:end]) * 1000 if end else 0.0
     return {
         "startup_drain_s": drain_end - sends[0][0],
-        "startup_drain_peak_ms": max(lateness[:end]) * 1000 if end else 0.0,
-        "send_lateness_max_after_drain_ms": max(lateness[end:]) * 1000 if end < len(sends) else "",
+        "startup_drain_peak_ms": peak_ms,
+        "startup_drain_complete": int(end < len(sends)),
+        "send_lateness_max_after_drain_ms": max(lateness[end:]) * 1000 if end < len(sends) else peak_ms,
     }
 
 
