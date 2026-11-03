@@ -116,6 +116,26 @@ def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
         return json.load(f)
 
 
+def served_config_identity(served: Optional[str]) -> dict[str, str]:
+    """What a run applied from the served model's config, for comparing with a replica's launch config: the sha256 of
+    the config.json bytes read, and the fields that set reuse semantics (from text_config first). Blank when the
+    config can't be read."""
+    if not served:
+        return {"served_model_config_sha256": "", "served_model_config_fields": ""}
+    try:
+        with open(_tokenizer_asset_path(served, "config.json"), "rb") as f:
+            raw = f.read()
+        config = json.loads(raw)
+    except Exception as e:
+        logger.warning(f"llm_bench: couldn't read {served}'s config.json for its content hash ({e!r})")
+        return {"served_model_config_sha256": "", "served_model_config_fields": ""}
+    fields = {k: _config_field(config, k) for k in ("model_type", "sliding_window", "index_topk")}
+    return {
+        "served_model_config_sha256": hashlib.sha256(raw).hexdigest(),
+        "served_model_config_fields": ";".join(f"{k}={'' if v is None else v}" for k, v in fields.items()),
+    }
+
+
 @lru_cache(maxsize=None)
 def resolve_model_type(tokenizer_path: str) -> str:
     try:
@@ -8058,6 +8078,7 @@ def _(environment, **kw):
         entries["reuse_overhang_tokens"] = _APPLIED_REUSE.get("overhang", 0)
         entries["reuse_restore_boundary"] = _APPLIED_REUSE.get("boundary", 0)
         entries["served_model_config"] = _APPLIED_REUSE.get("served_model_config", "")
+        entries.update(served_config_identity(entries["served_model_config"]))
         entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
     ds = DatasetHolder._instance
     if getattr(environment.parsed_options, "chat", False) and not (
@@ -8092,6 +8113,7 @@ def _(environment, **kw):
             entries["reuse_overhang_tokens"] = dataset.reuse_overhang_tokens
             entries["reuse_restore_boundary"] = dataset.restore_boundary
             entries["served_model_config"] = getattr(dataset, "served_model_config", "")
+            entries.update(served_config_identity(entries["served_model_config"]))
             entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
             dropped = getattr(dataset, "pool_dropped", [])
             entries["prefix_pool_dropped_classes"] = len(dropped)
