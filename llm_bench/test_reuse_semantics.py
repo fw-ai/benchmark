@@ -50,6 +50,7 @@ def test_served_model_config_and_text_config_resolution(tmp_path, caplog) -> Non
     assert lt.resolve_model_type(str(tmp_path)) == "deepseek_v41_text"
     assert resolve_prefix_reuse_overhang(_ns(tokenizer=str(tmp_path))) == 128
     assert resolve_prefix_reuse_overhang(_ns(tokenizer=None, served_model_config=str(tmp_path))) == 128
+    # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
     assert resolve_prefix_reuse_overhang(_ns(tokenizer=str(tmp_path), prefix_reuse_overhang=-22)) == -22
     other = tmp_path / "other"
     other.mkdir()
@@ -70,6 +71,7 @@ def test_infer_reuse_semantics_signed_and_both_forms() -> None:
     ladder = [1097, 2649, 4400, 6238, 7984, 11476, 15065, 20012]
     w, b, form, error, table, under, over = infer_reuse_semantics([(s2, s2 - 128) for s2 in ladder])
     assert (w, b, error) == (128, 0, 0) and under == over == 128
+    # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
     w, b, form, error, table, under, over = infer_reuse_semantics([(s2, s2 + 22) for s2 in ladder])
     assert (w, b, error) == (-22, 0, 0)  # an overshooting engine reads negative
     outer = [(2067, 1920), (3321, 1920), (4722, 3968), (10916, 10112), (15000, 14208), (500, 0)]
@@ -141,6 +143,7 @@ def test_overhang_and_head_shape_the_shared_prefix() -> None:
 
     plain = dataset()  # common_tokens 100: the -pcml share
     longer = dataset(reuse_overhang=130)
+    # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
     trimmed = dataset(reuse_overhang=-22)
     headed = dataset(chat_head=26)
     assert plain._prefix  # the shared prefix exists (a -pcml run)
@@ -158,6 +161,7 @@ def test_probe_summary_fields_carry_the_fit() -> None:
     PrefixReuseProbe.overhang, PrefixReuseProbe.boundary = 128, 0
     PrefixReuseProbe.form, PrefixReuseProbe.residual = "outer", 0
     PrefixReuseProbe.under_4k = PrefixReuseProbe.over_4k = 128
+    # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
     PrefixReuseProbe.prompt_overhead = 26
     PrefixReuseProbe.first_misses, PrefixReuseProbe.misses = 1, []
     entries = prefix_reuse_probe_entries()
@@ -170,6 +174,7 @@ def test_probe_summary_fields_carry_the_fit() -> None:
 def test_measure_chat_head_reads_the_server_count(monkeypatch) -> None:
     class Resp:
         status_code = 200
+        # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
         content = json.dumps({"usage": {"prompt_tokens": 30}}).encode()
 
         def raise_for_status(self):
