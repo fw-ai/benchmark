@@ -3772,3 +3772,44 @@ def test_no_tier_payloads_are_byte_identical_to_before_tiers(tmp_path, chat, pro
     replay = [build_shape_mix_request(provider, ds.replay_request(e)) for e in entries]
     assert all("reasoning_effort" not in data for data, _ in replay)
     assert sha(replay) == _PRE_TIER_PAYLOAD_SHA[f"replay-{provider_name}-chat{chat}"]
+
+
+def test_chat_replay_rows_subtract_the_calibrated_head(tmp_path) -> None:
+    """N10-148-4: replay sizes chat rows like the shape-mix layout, the client template AND the run's calibrated server
+    head out of the recorded input_length, so the server (which renders that head) sees exactly input_length; before,
+    a chat replay sent input_length + head (26 on DeepSeek V4.1). Completions replays have no head."""
+    from load_test import DEFAULT_TOKENIZER, DatasetHolder, chat_messages_token_ids
+
+    tokenizer, head, overhead = _llama()
+    rows = [
+        {"timestamp": 1000 * i, "class": "chat", "input_length": 700 + 40 * i, "cached_length": 300, "output_length": 4}
+        for i in range(6)
+    ]
+    path = _write_schedule(tmp_path / "s.jsonl", rows)
+    for server_head in (26, 0):
+        ds = _dataset(
+            tokenizer=tokenizer,
+            chat_overhead_tokens=overhead + server_head,
+            chat_head_tokens=head,
+            server_chat_head=server_head,
+            split_restore_classes=False,
+        )
+        ds.build_prefixes()
+        options = argparse.Namespace(
+            replay_schedule=path,
+            chat=True,
+            replay_template_subtraction=True,
+            request_seed=1,
+            replay_session_salt=None,
+            replay_pods=1,
+            replay_pod_index=0,
+        )
+        DatasetHolder._prepare_replay(ds, options, tokenizer, DEFAULT_TOKENIZER)
+        from load_test import replay_entries
+
+        for entry, row in zip(replay_entries(options, ("chat", "agent", "cold")), rows):
+            r = ds.replay_request(entry)
+            # a replay row is sent as one user message (the chat provider wraps the prompt)
+            client = len(chat_messages_token_ids(tokenizer, DEFAULT_TOKENIZER, [{"role": "user", "content": r.prompt}]))
+            assert client + server_head == row["input_length"], (server_head, client, row["input_length"])
+            assert r.prompt_tokens == row["input_length"]  # prompt= on the reuse line is the recorded length

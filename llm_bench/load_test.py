@@ -2932,8 +2932,10 @@ class DatasetHolder:
         overheads: dict[int, int] = {}
 
         def message_overhead(n: int) -> int:
+            # The client's template for n messages, plus the run's one calibrated server head (rendered once, ahead
+            # of the conversation), as the shape-mix layout subtracts it: the server then sees the recorded length
             if n not in overheads:
-                overheads[n] = chat_messages_overhead(tokenizer, tokenizer_path, n)
+                overheads[n] = chat_messages_overhead(tokenizer, tokenizer_path, n) + ds.server_chat_head
             return overheads[n]
 
         ds.prepare_replay(
