@@ -249,6 +249,9 @@ def test_qps_cv2_defaults_to_profile_arrivals() -> None:
     assert resolve_qps_cv2(argparse.Namespace(qps_cv2=2.0, shape_mix=profile)) == 2.0
     assert resolve_qps_cv2(argparse.Namespace(qps_cv2=None, shape_mix=no_arrivals)) == 1.0
     assert resolve_qps_cv2(argparse.Namespace(qps_cv2=None, shape_mix=None)) == 1.0
+    # The profile's cv2 is for gamma arrivals only: another distribution gets 1, so no "is ignored" warning
+    assert resolve_qps_cv2(argparse.Namespace(qps_cv2=None, shape_mix=profile, qps_distribution="exponential")) == 1.0
+    assert resolve_qps_cv2(argparse.Namespace(qps_cv2=None, shape_mix=profile, qps_distribution="gamma")) == 4.5
 
 
 def test_class_sampling_follows_weights() -> None:
@@ -2715,17 +2718,25 @@ def test_rows_with_little_uncached_room_get_a_bare_tail(tmp_path) -> None:
     assert ds.replay_shortfall["rows"] == 0
 
 
-def test_reuse_semantics_come_from_the_served_model_not_the_counting_tokenizer(monkeypatch, caplog) -> None:
+def test_reuse_semantics_come_from_the_served_model_not_the_counting_tokenizer(monkeypatch, caplog, tmp_path) -> None:
     """C-242: the P1 rungs counted tokens with the default Llama tokenizer while serving DeepSeek V4, so the
     reuse overhang resolved from Llama's config (0) and every class delivered ~127 cached tokens less than
-    designed (the engine recomputes its 128-token sliding window at the divergence)."""
+    designed (the engine recomputes its 128-token sliding window at the divergence). Local config fixtures, so
+    the test doesn't depend on the hub (or on gevent's patching of it when run after the pacing tests)."""
     import load_test as lt
+
+    def config(name, **fields):
+        path = tmp_path / name
+        path.mkdir()
+        (path / "config.json").write_text(json.dumps(fields))
+        return str(path)
 
     ns = lambda **kw: argparse.Namespace(
         **{"prefix_reuse_overhang": None, "prefix_restore_boundary": None, "served_model_config": None, **kw}
     )
-    llama = "NousResearch/Meta-Llama-3.1-8B-Instruct"
-    dsv4 = "deepseek-ai/DeepSeek-V4-Flash"
+    llama = config("llama", model_type="llama", rope_theta=500000.0)
+    dsv4 = config("dsv4", model_type="deepseek_v4", sliding_window=128)
+    glm = config("glm", model_type="glm_moe_dsa", index_topk=2048)
     # counting with Llama: no overhang; saying what is served: DSV4's window
     monkeypatch.setattr(lt, "DEFAULT_TOKENIZER", llama)
     assert lt.resolve_prefix_reuse_overhang(ns(tokenizer=None)) == 0
@@ -2733,12 +2744,9 @@ def test_reuse_semantics_come_from_the_served_model_not_the_counting_tokenizer(m
     assert lt.resolve_prefix_reuse_overhang(ns(tokenizer=llama, served_model_config=dsv4)) == 128
     assert lt.resolve_prefix_reuse_overhang(ns(tokenizer=dsv4)) == 128
     # the restore boundary follows the served model too (GLM), and the explicit flags still win
-    assert lt.resolve_prefix_restore_boundary(ns(tokenizer=llama, served_model_config="zai-org/GLM-5.2")) == 2048
+    assert lt.resolve_prefix_restore_boundary(ns(tokenizer=llama, served_model_config=glm)) == 2048
     assert (
-        lt.resolve_prefix_restore_boundary(
-            ns(tokenizer=llama, served_model_config="zai-org/GLM-5.2", prefix_restore_boundary=0)
-        )
-        == 0
+        lt.resolve_prefix_restore_boundary(ns(tokenizer=llama, served_model_config=glm, prefix_restore_boundary=0)) == 0
     )
     assert (
         lt.resolve_prefix_reuse_overhang(ns(tokenizer=llama, served_model_config=dsv4, prefix_reuse_overhang=64)) == 64
@@ -3202,7 +3210,7 @@ def test_glm_tokenizer_prefixes_restore_whole_blocks() -> None:
     ds = ShapeMixDataset(
         parse_shape_mix(json.dumps(spec), chat_overhead_tokens=overhead),
         tokenizer,
-        "limericks.txt",
+        LIMERICKS,
         overhead,
         head,
         request_seed=3,
@@ -3563,8 +3571,9 @@ def test_pool_cache_log_line_shows_the_first_keys(tmp_path, caplog) -> None:
 
 def test_per_class_reasoning_effort_reaches_the_payload() -> None:
     """D-152: a class's reasoning-effort tier is sent per request (the row's own tier still wins in replay),
-    and it never changes the pool: the same cache key and prefix text for low and high (the tier only shapes
-    the server's thinking-mode preamble, ahead of the prompt content)."""
+    and it never changes llm_bench's text pool or its local cache file: the same cache key and prefix text for low
+    and high. (The server's KV cache is a different matter: the tier's preamble sits ahead of the shared prefix,
+    so the server caches a prefix once per tier it's requested with.)"""
     mix = json.loads(json.dumps(MIX))
     mix["classes"][0]["reasoning_effort"] = "high"
     mix["classes"][1]["reasoning_effort"] = "low"
@@ -3665,6 +3674,11 @@ def test_startup_drain_is_the_leading_run_of_late_sends() -> None:
     # A short schedule's threshold is 0.5% of its span: 0.05 s over 10 s, so 0.1 s late is still draining
     e = startup_drain_entries([0.0, 5.0, 10.0], [0.1, 5.01, 10.0])
     assert e["startup_drain_s"] == 5.0 and abs(e["startup_drain_peak_ms"] - 100.0) < 1e-6
+    assert e["startup_drain_complete"] == 1
+    # A step that never catches up: the drain is incomplete and the after-drain figure is the peak, not blank
+    e = startup_drain_entries([0.0, 5.0, 10.0], [2.0, 8.0, 12.0])
+    assert e["startup_drain_complete"] == 0 and e["send_lateness_max_after_drain_ms"] == e["startup_drain_peak_ms"]
+    assert e["startup_drain_peak_ms"] == 3000.0
 
 
 # sha256 of the first 64 prompts per mode, computed with main's llm_bench (origin/main bea62a4) by the same code
@@ -3692,16 +3706,23 @@ def test_existing_modes_prompts_are_byte_identical_to_main(mode) -> None:
         "chat": ["--chat", "-p", "600"],
         "chat-pcml": ["--chat", "-p", "600", "-pcml", "300"],
     }[mode]
+    # The default tokenizer from the local cache only: a hub call can't succeed after gevent patched ssl (the pacing
+    # tests), and the tokens are the same as the hub id's
+    from huggingface_hub import try_to_load_from_cache
+
+    cached = try_to_load_from_cache(load_test.DEFAULT_TOKENIZER, "tokenizer_config.json")
+    if not isinstance(cached, str):
+        pytest.skip("default tokenizer not cached")
+    tokenizer = os.path.dirname(cached)
     parser = get_empty_argument_parser()
     setup_parser_arguments(parser)
     load_test.init_parser(parser)
-    opts = parser.parse_args(["--provider", "vllm", "-m", "m", "--dataset", "limericks"] + args)
+    opts = parser.parse_args(
+        ["--provider", "vllm", "-m", "m", "--dataset", "limericks", "--tokenizer", tokenizer] + args
+    )
     load_test.DatasetHolder._instance = None
-    try:
-        _random.seed(7)
-        ds = iter(load_test.DatasetHolder.get_instance(opts))
-    except OSError as e:
-        pytest.skip(f"default tokenizer unavailable: {e}")
+    _random.seed(7)
+    ds = iter(load_test.DatasetHolder.get_instance(opts))
     items = [list(next(ds)) for _ in range(64)]
     load_test.DatasetHolder._instance = None
     assert hashlib.sha256(json.dumps(items).encode()).hexdigest() == _MAIN_PROMPT_SHA[mode]

@@ -22,6 +22,8 @@ from load_test import (
     resolve_served_model_config,
 )
 
+_LIMERICKS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt")
+
 
 def _ns(**kw):
     return argparse.Namespace(
@@ -195,11 +197,11 @@ def test_chat_head_zero_is_distinguishable_from_unmeasured(caplog) -> None:
     """N10-145-3: an unmeasured head is None (a loud warning, no calibration, a blank summary field); a
     measured 0 is 0 (the server adds nothing, calibrated, 0 in the summary)."""
     ds = TranslationDataset(
-        "limericks.txt", "\n\nTranslate.", _WordTok(), "x", chat=False, num_tokens=50, common_tokens=10, chat_head=None
+        _LIMERICKS, "\n\nTranslate.", _WordTok(), "x", chat=False, num_tokens=50, common_tokens=10, chat_head=None
     )
     assert ds.chat_head is None and ds._num_tokens == 50
     ds = TranslationDataset(
-        "limericks.txt", "\n\nTranslate.", _WordTok(), "x", chat=False, num_tokens=50, common_tokens=10, chat_head=0
+        _LIMERICKS, "\n\nTranslate.", _WordTok(), "x", chat=False, num_tokens=50, common_tokens=10, chat_head=0
     )
     assert ds.chat_head == 0 and ds._num_tokens == 50  # measured 0: nothing subtracted, but calibrated
     with caplog.at_level("WARNING", logger="load_test"):
@@ -250,7 +252,7 @@ def test_no_pcml_run_gets_no_silent_shared_prefix() -> None:
             return text.split()
 
     plain = TranslationDataset(
-        "limericks.txt", "\n\nT.", _Tok(), "x", chat=False, num_tokens=80, common_tokens=0, reuse_overhang=128
+        _LIMERICKS, "\n\nT.", _Tok(), "x", chat=False, num_tokens=80, common_tokens=0, reuse_overhang=128
     )
     assert plain._prefix == "" and plain._prefix_suffix_tokens == len("\n\nT.".split())  # nothing shared
     assert plain.designed_cached_tokens == 0
