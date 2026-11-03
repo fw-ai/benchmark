@@ -2161,7 +2161,10 @@ class ShapeMixDataset:
             if generated is None:
                 # A tier's generated_tokens_by_tier is its mean output: used as is, or with
                 # --shape-mix-sample-lengths the class's draw scaled to it (the class's spread at the tier's mean)
-                tier_output = dict(cls.generated_tokens_by_tier or ()).get(tier)
+                # (a class with one reasoning_effort and no shares has no drawn tier: its own tier keys the lookup)
+                tier_output = dict(cls.generated_tokens_by_tier or ()).get(
+                    tier if tier is not None else cls.reasoning_effort
+                )
                 generated = tier_output or cls.generated_tokens
                 if self.sample_lengths and cls.generated_tokens_quantiles:
                     drawn = self._generated_dist[ci].value(self._stratum(ci, "generated").next())
@@ -4853,6 +4856,14 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 def validate_shape_mix_options(options: argparse.Namespace) -> None:
     """Parse --shape-mix against the chat template overhead; raises ValueError naming any class too short."""
     resolve_shape_mix_corpus(getattr(options, "shape_mix_corpus", None))
+    if getattr(options, "replay_schedule", None):
+        # Replay rows carry their own recorded tier; per-prefix tier shares belong to drawn traffic only
+        shared = [c.name for c in parse_shape_mix(options.shape_mix).classes if c.reasoning_effort_shares]
+        if shared:
+            raise ValueError(
+                f"--replay-schedule: class(es) {', '.join(shared)} set reasoning_effort_shares, which replay doesn't "
+                f"apply (each row sends its own recorded reasoning_effort); drop the shares for a replay"
+            )
     if (
         getattr(options, "prefix_reuse_overhang", None) is None
         and resolve_prefix_reuse_overhang(options) == 0
