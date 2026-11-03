@@ -2899,6 +2899,7 @@ def test_a_negative_overhang_trims_the_shared_prefix_for_an_overshooting_engine(
 
     # the probe reads the overshoot as a negative overhang
     ladder = [1097, 2649, 4400, 6238, 7984, 9730, 11476, 13219, 15065, 16811, 20012]
+    # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
     w, b, form, error, table, under, over = infer_reuse_semantics([(s2, s2 + 22) for s2 in ladder])
     assert (w, b, error) == (-22, 0, 0) and under == over == -22
     # the layout trims the prefix, and the reusable stays the designed cached length
@@ -3530,6 +3531,7 @@ def test_chat_head_calibration_lays_out_server_seen_lengths() -> None:
     tokenizer = WordTokenizer()
     mix = json.loads(json.dumps(MIX))
     plain = _dataset(mix, tokenizer=tokenizer, chat_overhead_tokens=4, chat_head_tokens=2)
+    # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
     calibrated = _dataset(mix, tokenizer=tokenizer, chat_overhead_tokens=4 + 26, chat_head_tokens=2)
     for a, b in zip(_take(plain, 20), _take(calibrated, 20)):
         assert b.prompt_tokens == a.prompt_tokens  # the server-seen target is unchanged

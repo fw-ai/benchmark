@@ -5973,8 +5973,7 @@ class LLMUser(HttpUser):
                 logger.info(
                     f"--prefix-reuse-probe: the server renders each prompt {PrefixReuseProbe.prompt_overhead} tokens "
                     f"longer than the client counts (its chat rendering's head): those tokens are shared ahead of "
-                    f"the divergence, so the overhang to pass for this mode is the engine's window minus "
-                    f"{PrefixReuseProbe.prompt_overhead}"
+                    f"the divergence, so pass the overhang measured here for this mode, not the engine's window"
                 )
             logger.info(
                 f"--prefix-reuse-probe: overhang {w}, restore boundary {b} ({form} form, residual {error} over "
