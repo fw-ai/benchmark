@@ -2646,8 +2646,10 @@ class ShapeMixDataset:
             )
             if v is not None
         }
-        # a replay row's own tier wins; else the class's (the row carries overrides already when set)
-        overrides.setdefault("reasoning_effort", self.mix.classes[ci].reasoning_effort)
+        # a replay row's own tier wins; else the class's (the row carries overrides already when set). No tier on
+        # either sends no field at all, so the payload is unchanged from before tiers existed (not "null")
+        if self.mix.classes[ci].reasoning_effort is not None:
+            overrides.setdefault("reasoning_effort", self.mix.classes[ci].reasoning_effort)
         return ShapeRequest(
             prompt="".join(self._render_segment(seg) for seg in plan["segments"]),
             prompt_tokens=plan["prompt_tokens"],
