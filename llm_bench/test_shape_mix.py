@@ -4174,3 +4174,39 @@ def test_stratified_uniform_covers_every_stratum_per_block() -> None:
     for s in range(strata):  # each stratum's visits over SUBSTRATA blocks take each of its sub-strata once
         visits = sorted(int((u * strata - s) * sub) for block in blocks for u in block if int(u * strata) == s)
         assert visits == list(range(sub))
+
+
+def _harness_delivery(rows, tolerance=0.03):
+    """D-183's harness-delivery check as a runner applies it, per class: the server's prompt counts against prompt=."""
+    import re
+
+    server = designed = 0
+    for line in rows:
+        m = re.search(r"(\d+) prompt, \d+ cached.*\| reuse class=\S+ designed=\d+ delivered=\S+ prompt=(\d+)", line)
+        server, designed = server + int(m.group(1)), designed + int(m.group(2))
+    return abs(server / designed - 1) <= tolerance
+
+
+def test_prompt_field_is_the_design_so_harness_delivery_is_two_sided() -> None:
+    """N10-148-3 (D-183): prompt= is the designed prompt (the client's count plus the run's one constant calibrated
+    head, folded into the class's lengths), never the server's per-request figure. So 30 chat rows over-delivering
+    by 40 tokens fail the check, a server-short run fails too, and an exact run passes. In completions the head is 0."""
+    from load_test import reuse_record
+
+    designed_prompt, cached = 900, 400
+
+    def line(server_prompt):
+        record = reuse_record("chat", cached, cached + 2, "high", prompt=designed_prompt)
+        return f"Response received: ..., {server_prompt} prompt, {cached + 2} cached, 4 completion{record}"
+
+    assert _harness_delivery([line(900) for _ in range(30)])  # exact
+    assert not _harness_delivery([line(940) for _ in range(30)])  # over-delivering by 40: fails (passed before)
+    assert not _harness_delivery([line(860) for _ in range(30)])  # server-short: fails
+    # the dataset's designed prompt already carries the calibrated head: content shrinks by it, prompt_tokens doesn't
+    mix = json.loads(json.dumps(MIX))
+    plain = _dataset(mix, tokenizer=WordTokenizer(), chat_overhead_tokens=4, chat_head_tokens=2)
+    calibrated = _dataset(mix, tokenizer=WordTokenizer(), chat_overhead_tokens=4 + 26, chat_head_tokens=2)
+    a, b = _take(plain, 20), _take(calibrated, 20)
+    assert [r.prompt_tokens for r in a] == [r.prompt_tokens for r in b]  # prompt= is the same design either way
+    completions = _dataset(mix, tokenizer=WordTokenizer())  # no head in completions: prompt= is the client's count
+    assert all(r.prompt_tokens == mix["classes"][r.class_index]["prompt_tokens"] for r in _take(completions, 20))
