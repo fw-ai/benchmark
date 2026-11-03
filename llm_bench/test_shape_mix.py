@@ -4201,3 +4201,31 @@ def test_summary_reports_all_sent_designed_means_beside_completed_ones() -> None
     empty = shape_mix_summary_entries(RequestStats(), ["agent"], True)
     assert empty["class_agent_sent_requests"] == 0 and empty["class_agent_designed_prompt_tokens_sent"] == ""
     SentDesign.reset()
+
+
+def test_replay_refuses_tier_shares_and_a_single_tier_gets_its_output() -> None:
+    """#148 review: replay rows carry their own recorded tier, so a class with reasoning_effort_shares under
+    --replay-schedule is refused instead of silently sending no tier; and a class with one reasoning_effort uses its
+    generated_tokens_by_tier entry (there's no drawn tier to key it)."""
+    from load_test import validate_shape_mix_options
+
+    mix = json.loads(json.dumps(MIX))
+    mix["classes"][0].pop("reasoning_effort", None)
+    mix["classes"][0]["reasoning_effort_shares"] = {"high": 0.5, "low": 0.5}
+    ns = argparse.Namespace(
+        shape_mix=json.dumps(mix),
+        shape_mix_corpus=None,
+        replay_schedule="rows.jsonl",
+        replay_pods=1,
+        replay_pod_index=0,
+        chat=False,
+        tokenizer=None,
+        prefix_reuse_overhang=0,
+    )
+    with pytest.raises(ValueError, match="reasoning_effort_shares"):
+        validate_shape_mix_options(ns)
+    single = json.loads(json.dumps(MIX))
+    single["classes"][0]["reasoning_effort"] = "high"
+    single["classes"][0]["generated_tokens_by_tier"] = {"high": 77}
+    drawn = [r for r in _take(_dataset(single), 200) if r.class_index == 0]
+    assert drawn and all(r.generated_tokens == 77 and r.reasoning_effort == "high" for r in drawn)
