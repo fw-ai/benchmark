@@ -3852,3 +3852,89 @@ def test_a_first_row_reuses_its_lead_in_recorded_exactly_cached_long(tmp_path) -
     # within one overhang window of the recorded cached length (the engine recomputes that window)
     assert first.cached_length - first_plan["reusable"] <= overhang + 1
     assert ds.replay_request(first).prompt.startswith(ds.replay_request(lead).prompt)
+
+
+# sha256 of prefix_tier_split's source: the same function as task 15's eviction simulation (fw-ai/fireworks #68788
+# @ c612d16dd7b, serving/perfagent_mcp/scripts/pool_sizing_study.py), byte for byte, so the two agree
+_PREFIX_TIER_SPLIT_SHA = "67ce1c79d4634f02e03cdedb6642c10828136000a2eda90885f473fe2ee95fad"
+
+
+def _zipf(n, s):
+    return [1 / (j + 1) ** s for j in range(n)]
+
+
+def test_prefix_tier_split_is_the_shared_function_and_matches_its_cross_check_vector() -> None:
+    """The per-prefix tier rule shared with task 15: request-weighted shares are exact, at most tiers - 1 prefixes
+    carry more than one tier, and the cross-check vector both sides assert reproduces."""
+    import ast
+    import hashlib
+
+    from load_test import prefix_tier_split
+
+    source = open(load_test.__file__).read()
+    node = next(n for n in ast.parse(source).body if getattr(n, "name", None) == "prefix_tier_split")
+    text = "\n".join(source.split("\n")[node.lineno - 1 : node.end_lineno])
+    assert hashlib.sha256(text.encode()).hexdigest() == _PREFIX_TIER_SPLIT_SHA
+    shares = {"high": 0.2, "low": 0.3, "medium": 0.5}
+    split = prefix_tier_split(shares, _zipf(500, 3.0))
+    expected = {"high": 0.240411, "low": 0.360616, "medium": 0.398973}
+    assert set(split[0]) == set(expected) and all(abs(split[0][t] - v) < 1e-6 for t, v in expected.items())
+    assert split[1] == split[2] == split[3] == {"medium": 1.0}
+    for popularity in ([1.0] * 500, _zipf(500, 1.9), _zipf(500, 3.0)):
+        split = prefix_tier_split(shares, popularity)
+        total = sum(popularity)
+        for tier, share in shares.items():
+            delivered = sum(w * s.get(tier, 0.0) for w, s in zip(popularity, split)) / total
+            assert abs(delivered - share) < 1e-9
+        assert sum(len(s) > 1 for s in split) <= len(shares) - 1
+        assert all(abs(sum(s.values()) - 1.0) < 1e-12 for s in split)
+
+
+def test_tier_shares_hold_per_request_and_change_only_the_tier() -> None:
+    """D-174: with reasoning_effort_shares a class keeps one name and one text pool; each prefix carries its tiers
+    from prefix_tier_split, so delivered request-weighted shares match even under steep Zipf skew. The prompts
+    are the same request stream as without shares (a split prefix draws from its own tier stream), and a tier's
+    generated_tokens_by_tier sets its output."""
+    from collections import Counter
+
+    shares = {"high": 0.2, "low": 0.3, "medium": 0.5}
+    for zipf in (None, 1.9, 3.0):
+        mix = json.loads(json.dumps(MIX))
+        for c in mix["classes"]:
+            c.pop("reasoning_effort", None)
+        plain_mix = json.loads(json.dumps(mix))
+        chat = mix["classes"][0]
+        chat["reasoning_effort_shares"] = shares
+        chat["generated_tokens_by_tier"] = {"high": 77}
+        if zipf is not None:
+            chat["prefix_popularity"] = {"zipf": zipf}
+            plain_mix["classes"][0]["prefix_popularity"] = {"zipf": zipf}
+        ds, plain = _dataset(mix), _dataset(plain_mix)
+        drawn, base = _take(ds, 6000), _take(plain, 6000)
+        assert [r.prompt for r in drawn] == [r.prompt for r in base]  # only the tier (and its output) changes
+        on_chat = [r for r in drawn if r.class_name == "chat"]
+        counts = Counter(r.reasoning_effort for r in on_chat)
+        for tier, share in shares.items():
+            assert abs(counts[tier] / len(on_chat) - share) < 0.03, (zipf, counts)  # ~4 sigma at n ~ 2000
+        assert all(r.generated_tokens == 77 for r in on_chat if r.reasoning_effort == "high")
+        assert all(r.reasoning_effort is None for r in drawn if r.class_name != "chat")
+        # A split prefix is filled once per tier it carries; the others once
+        fills = [ds.prefix_tiers(0, j) for j in range(ds.pool_sizes[0])]
+        assert sum(len(t) for t in fills) <= ds.pool_sizes[0] + len(shares) - 1
+        assert {ds.fill_request(0, j, t).reasoning_effort for j, tiers in enumerate(fills) for t in tiers} == set(
+            shares
+        )
+    plain = _dataset(plain_mix)
+    assert plain.prefix_tiers(0, 0) == [None] and plain.fill_request(0, 0).reasoning_effort is None
+
+
+def test_tier_shares_validation() -> None:
+    mix = json.loads(json.dumps(MIX))
+    mix["classes"][0]["reasoning_effort"] = "high"
+    mix["classes"][0]["reasoning_effort_shares"] = {"high": 1}
+    with pytest.raises(ValueError, match="not both"):
+        parse_shape_mix(json.dumps(mix))
+    mix["classes"][0].pop("reasoning_effort")
+    mix["classes"][0]["reasoning_effort_shares"] = {"extreme": 1}
+    with pytest.raises(ValueError, match="reasoning_effort_shares"):
+        parse_shape_mix(json.dumps(mix))
