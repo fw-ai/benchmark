@@ -3866,7 +3866,7 @@ def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] 
     (so delivered vs designed uncached can be gated per request: the harness-delivery check), and the request's tier
     (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers.
 
-    designed and prompt are the design only: for shape-mix and replay rows the client's count plus the run's one
+    designed and prompt are the design only: for shape-mix, replay and -pcml rows the client's count plus the run's one
     constant calibrated head (the setup measurement or --chat-head-tokens, 0 in completions mode), which the layout
     already folds into the class's lengths; never a per-request server figure. So comparing the server's prompt with
     prompt is two-sided, and a head the calibration missed (or one that drifts) shows as a delivered-vs-designed gap,
@@ -5980,6 +5980,8 @@ class LLMUser(HttpUser):
         self.qps_pacer = None  # Will be set if --qps is used
         # The -pcml shared prefix this run's requests all start with (None until the dataset is built)
         self._designed_cached_tokens = None
+        # The run's one calibrated chat head on -pcml rows (0 in completions or unmeasured): prompt= adds it back
+        self._pcml_chat_head = 0
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         self.prompt_images = None
@@ -6158,6 +6160,7 @@ class LLMUser(HttpUser):
         self._designed_cached_tokens = (
             dataset.designed_cached_tokens if getattr(dataset, "designed_cached_tokens", 0) else None
         )
+        self._pcml_chat_head = (getattr(dataset, "chat_head", None) or 0) if self.environment.parsed_options.chat else 0
         # Once per process, not per user: users start inside the run window, and tokenizing a long prompt for
         # each of them blocked the event loop there
         self.prompt_tokenizer_tokens = DatasetHolder.prompt_token_estimate(
@@ -6946,7 +6949,14 @@ class LLMUser(HttpUser):
                 )
             elif self._designed_cached_tokens is not None:
                 # A -pcml run's shared prefix (compensations applied), class `default`
-                reuse_str = reuse_record("default", self._designed_cached_tokens, cached_tokens, prompt=designed_prompt)
+                # -pcml builds the client's count net of the calibrated head; prompt= is the designed SERVER length
+                # (that count plus the run's one constant head), as on shape-mix and replay rows (D-183)
+                reuse_str = reuse_record(
+                    "default",
+                    self._designed_cached_tokens,
+                    cached_tokens,
+                    prompt=designed_prompt + self._pcml_chat_head if designed_prompt else designed_prompt,
+                )
 
             logger.info(
                 f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, "
