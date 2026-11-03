@@ -161,11 +161,11 @@ def test_preflight_refuses_a_layout_that_doesnt_match_the_mock(tmp_path, capsys)
     assert not (tmp_path / "out" / "mock.requests").exists()
 
     summary = tmp_path / "s.csv"
-    summary.write_text("Reuse Overhang Tokens,Chat Head Tokens\n128,20\n")
+    summary.write_text("Reuse Overhang Tokens,Chat Head Tokens,Reuse Restore Boundary\n128,20,0\n")
     assert "overhang 128" in summary_mismatch(str(summary), completions, 0, 0, "tok")
     assert summary_mismatch(str(summary), completions, 128, 0, "tok") is None
     headed = ("s", 1, None, None, ["--chat", "--tokenizer", "tok", "--prefix-reuse-overhang", "102"])
-    summary.write_text("Reuse Overhang Tokens,Chat Head Tokens\n102,20\n")
+    summary.write_text("Reuse Overhang Tokens,Chat Head Tokens,Reuse Restore Boundary\n102,20,0\n")
     assert "chat head of 20" in summary_mismatch(str(summary), headed, 128, 26, "tok")
     assert summary_mismatch(str(summary), headed, 128, 26, "another-tok") is None  # a counting-tokenizer head
 
@@ -251,3 +251,28 @@ def test_preflight_checks_the_restore_boundary_and_a_summary_that_cant_vouch(tmp
     assert main([str(path), "--out", str(tmp_path / "out"), "--window", "128", "--boundary", "1"]) == 2
     assert "restore boundary 2048" in capsys.readouterr().out
     assert not (tmp_path / "out" / "mock.requests").exists()  # refused before any mock started
+
+
+def test_preflight_tokenizer_check_compares_content_and_blank_boundary_refused(tmp_path) -> None:
+    """The tokenizer check compares what the tokenizers are (tokenizer.json's hash), so a local copy of the same
+    tokenizer under another name matches and a different tokenizer sharing a name doesn't; unreadable ones fall back
+    to the names, saying so. A text step's summary with a blank Reuse Restore Boundary can't vouch for its layout;
+    an embeddings step carries no reuse columns at all."""
+    from preflight_run import summary_mismatch, tokenizer_mismatch
+
+    a, b, c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    for d, content in ((a, '{"model": 1}'), (b, '{"model": 1}'), (c, '{"model": 2}')):
+        d.mkdir()
+        (d / "tokenizer.json").write_text(content)
+    assert tokenizer_mismatch(str(a), str(a)) is None
+    assert tokenizer_mismatch(str(a), str(b)) is None  # same tokenizer, two names
+    assert "different tokenizer.json" in tokenizer_mismatch(str(a), str(c))
+    assert "compared by name only" in tokenizer_mismatch(str(a), str(tmp_path / "missing"))
+
+    step = ("s", 1, None, None, ["--no-chat", "--prefix-reuse-overhang", "128"])
+    summary = tmp_path / "s.csv"
+    summary.write_text("Reuse Overhang Tokens,Reuse Restore Boundary\n128,\n")
+    assert "no Reuse Restore Boundary" in summary_mismatch(str(summary), step, 128, 0, "tok")
+    embeddings = ("e", 1, None, None, ["--embeddings"])
+    summary.write_text("Num Requests\n10\n")
+    assert summary_mismatch(str(summary), embeddings, 128, 0, "tok") is None

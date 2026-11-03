@@ -119,6 +119,47 @@ def applied_overhang(step) -> int:
     return applied_reuse(step)[0]
 
 
+def tokenizer_fingerprint(name: str):
+    """sha256 of a tokenizer's tokenizer.json (a local directory, else the cached or downloaded HF file), so two names
+    for the same tokenizer compare equal and two tokenizers sharing a name don't; None when it can't be read."""
+    import hashlib
+
+    try:
+        path = os.path.join(name, "tokenizer.json")
+        if not os.path.isfile(path):
+            from huggingface_hub import hf_hub_download
+
+            path = hf_hub_download(repo_id=name, filename="tokenizer.json")
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception:
+        return None
+
+
+def tokenizer_mismatch(counting: str, mock: str):
+    """A warning when the steps count tokens with a different tokenizer than the mock tokenizes with, else None.
+    Compared by content (tokenizer.json); by name, said so, when either can't be read."""
+    if counting == mock:
+        return None
+    a, b = tokenizer_fingerprint(counting), tokenizer_fingerprint(mock)
+    if a is not None and b is not None:
+        if a == b:
+            return None
+        how = "different tokenizer.json"
+    else:
+        how = "names differ; tokenizer.json unreadable, so compared by name only"
+    return (
+        f"the mock tokenizes with {mock} but the step counts with {counting} ({how}): token and cached counts in "
+        f"the summary come from the mock's tokenizer (pass --tokenizer {mock} in the steps, or --mock-tokenizer "
+        f"{counting})"
+    )
+
+
+def text_step(step) -> bool:
+    """A step that sends text requests (not --embeddings, --rerank or --systemone): the ones with reuse columns."""
+    return not any(flag in step[4] for flag in ("--embeddings", "--rerank", "--systemone"))
+
+
 def _token_exact(boundary) -> int:
     """llm_bench's boundary 0 and the mock's 1 both mean token-exact reuse."""
     return 0 if int(boundary) <= 1 else int(boundary)
@@ -277,6 +318,8 @@ def summary_mismatch(summary: str, step, window: int, mock_chat_head: int, mock_
         return (
             f"step {step[0]}'s summary {summary} can't be read ({e!r}), so its layout can't be checked against the mock"
         )
+    if not text_step(step):  # embeddings, rerank and systemone summaries carry no reuse columns
+        return None
     expected = expected_overhang(step, window, mock_chat_head)
     applied = row.get("Reuse Overhang Tokens")
     if applied in (None, ""):
@@ -284,6 +327,10 @@ def summary_mismatch(summary: str, step, window: int, mock_chat_head: int, mock_
     if int(float(applied)) != expected:
         return mismatch_message(step, int(float(applied)), expected, window, mock_chat_head)
     applied_boundary = row.get("Reuse Restore Boundary")
+    if applied_boundary in (None, ""):
+        return (
+            f"step {step[0]}'s summary has no Reuse Restore Boundary, so its layout can't be checked against the mock"
+        )
     if applied_boundary not in (None, "") and _token_exact(float(applied_boundary)) != _token_exact(boundary):
         return boundary_message(step, int(float(applied_boundary)), boundary)
     head = row.get("Chat Head Tokens")
@@ -402,13 +449,13 @@ def main(argv=None) -> int:
         if _token_exact(applied_boundary) != _token_exact(boundary):
             mismatched.append(boundary_message(s, applied_boundary, boundary))
     # The mock should count tokens as the client does, or the summary's token counts and the designed ones differ
-    counting = _flag(step[4], "--tokenizer") or DEFAULT_TOKENIZER
-    if counting != tokenizer:
-        print(
-            f"preflight: !!! the mock tokenizes with {tokenizer} but the steps count with {counting}: token and cached "
-            f"counts in the summary come from the mock's tokenizer (pass --tokenizer {tokenizer} in the steps, or "
-            f"--mock-tokenizer {counting})"
-        )
+    warned = set()
+    for s in fills + [step]:
+        counting = _flag(s[4], "--tokenizer") or DEFAULT_TOKENIZER
+        message = tokenizer_mismatch(counting, tokenizer) if counting not in warned else None
+        warned.add(counting)
+        if message:
+            print(f"preflight: !!! step {s[0]}: {message}")
     if mismatched and not args.allow_mismatch:
         for m in mismatched:
             print(f"preflight: !!! refusing: {m}")

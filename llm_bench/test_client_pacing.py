@@ -405,3 +405,26 @@ def test_every_request_failure_is_classified() -> None:
     assert RequestOutcomes.counts == {"other_error": 10, "load_shed": 1}
     assert RequestOutcomes.by_class["chat"] == {"other_error": 10, "load_shed": 1}
     RequestOutcomes.reset()
+
+
+def test_startup_offset_counts_from_the_window_start_and_paced_runs() -> None:
+    """Under --replay-start-at the window is set up 0.1 s early, so its start is stamped at the real window start: a
+    punctual first row reads ~0, not ~0.1. Without an explicit start the stamp is now (plain --qps runs unchanged).
+    paced_run is the one condition for the send-timing summary fields."""
+    import argparse
+    import time as _time
+
+    from load_test import SendTimeline, paced_run
+
+    SendTimeline.reset()
+    start = _time.monotonic() + 0.1  # the window opens 0.1 s after it's set up
+    SendTimeline.spawned(at=start)
+    SendTimeline.record(start, start + 0.002)  # a punctual first row
+    assert abs(SendTimeline.first_send_offset - 0.002) < 1e-9
+    SendTimeline.reset()
+    before = _time.monotonic()
+    SendTimeline.spawned()
+    assert SendTimeline.spawned_monotonic >= before
+    SendTimeline.reset()
+    ns = lambda **kw: argparse.Namespace(**{"qps": None, "replay_schedule": None, **kw})
+    assert paced_run(ns(qps=2.0)) and paced_run(ns(replay_schedule="s.jsonl")) and not paced_run(ns())

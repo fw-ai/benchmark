@@ -4002,8 +4002,9 @@ class SendTimeline:
         cls.actual.append(actual)
 
     @classmethod
-    def spawned(cls) -> None:
-        cls.spawned_monotonic = time.monotonic()
+    def spawned(cls, at: Optional[float] = None) -> None:
+        """Stamp the window's start: now, or `at` (a monotonic time) when the window is set up ahead of it."""
+        cls.spawned_monotonic = time.monotonic() if at is None else at
 
     @classmethod
     def reset(cls) -> None:
@@ -4091,6 +4092,11 @@ def arrival_summary_entries(intended, actual) -> dict[str, Any]:
 RUN_ID = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{os.getpid()}"
 
 
+def paced_run(options: argparse.Namespace) -> bool:
+    """A run whose sends are scheduled (--qps or --replay-schedule): the runs with send-timing summary fields."""
+    return getattr(options, "qps", None) is not None or bool(getattr(options, "replay_schedule", None))
+
+
 def startup_drain_entries(intended, actual) -> dict[str, Any]:
     """The start-up drain: a pacer that doesn't resync catches up after spawn through a run of late sends, not
     one. In schedule order, the drain is the contiguous run from the first send that is more than min(1 s,
@@ -4098,7 +4104,8 @@ def startup_drain_entries(intended, actual) -> dict[str, Any]:
     seconds from the first send to the first on-time one), its peak lateness, and the largest lateness after it,
     which is what a step is checked on. A run with no late first send has a drain of 0. A run that never catches up
     has an incomplete drain (startup_drain_complete 0), and its after-drain lateness is the drain's peak, so the
-    worst case reads as failing rather than unmeasured."""
+    worst case reads as failing rather than unmeasured. Only a run of late sends starting at the first send is a
+    drain: a late send after an on-time first send counts toward the after-drain maximum, not the drain."""
     if not actual:
         return {}
     sends = sorted(zip(intended, actual))
@@ -4346,10 +4353,14 @@ class InitTracker:
         start_wait = cls._replay_start_wait()
         if start_wait > 0:
             # The window (stats, QPS, -t) starts at the shared --replay-start-at, not while waiting for it
+            window_start = time.monotonic() + start_wait
+
             def _start_window():
                 cls.reset_stats()
                 SendTimeline.reset()
-                SendTimeline.spawned()  # the measured window starts here; count the first send from it
+                # Set up 0.1 s early (below), so the start is stamped at the window's real start, not now: the first
+                # send is counted from it and a punctual first row reads ~0
+                SendTimeline.spawned(at=window_start)
                 RequestOutcomes.reset()
                 ClientCpu.reset()
 
@@ -7845,7 +7856,7 @@ def _(environment, **kw):
             name = f"P{percentile}_{percentile_metric}"
             entries[name] = metric_entry.get_response_time_percentile(percentile / 100)
 
-    if environment.parsed_options.qps is not None or replaying:
+    if paced_run(environment.parsed_options):
         entries.update(arrival_summary_entries(SendTimeline.intended, SendTimeline.actual))
         entries["late_sends_skipped"] = SendTimeline.skipped
         pacer = ReplayPacer._instance if replaying else FixedQPSPacer._instance
