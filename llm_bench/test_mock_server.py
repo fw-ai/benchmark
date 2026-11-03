@@ -186,3 +186,21 @@ def test_preflight_mock_window_nets_a_chat_probe_and_leads_with_the_mock_fix(tmp
     assert mock_window({"overhang": 102}, None, 0) == 102 and mock_window(probe, 120, 26) == 120
     message = mismatch_message(chat, 102, 76, 102, 26)
     assert message.index("--window 128 --mock-chat-head 26") < message.index("--prefix-reuse-overhang")
+
+
+def test_preflight_sets_an_earlier_summary_aside(tmp_path) -> None:
+    """A reused --out dir must not hold two runs' rows (llm_bench appends): P9's re-run was misread from v5's row.
+    The earlier summary is moved aside, never deleted, and every summary row carries the run's id."""
+    import re
+
+    from load_test import RUN_ID
+    from preflight_run import set_aside
+
+    summary = tmp_path / "ramp-3.summary.csv"
+    assert set_aside(str(summary)) is None  # nothing to move
+    summary.write_text("old\n")
+    assert set_aside(str(summary)) == f"{summary}.prev" and not summary.exists()
+    summary.write_text("older\n")
+    assert set_aside(str(summary)) == f"{summary}.prev2"  # never overwrites an earlier .prev
+    assert (tmp_path / "ramp-3.summary.csv.prev").read_text() == "old\n"
+    assert re.fullmatch(r"\d{8}T\d{6}Z-\d+", RUN_ID)

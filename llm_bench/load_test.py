@@ -4086,6 +4086,11 @@ def arrival_summary_entries(intended, actual) -> dict[str, Any]:
     return {k: ("" if v is None else v) for k, v in entries.items()}
 
 
+# This process's run, for telling summary rows apart when runs share one --summary-file (rows are appended): the UTC
+# start time and the pid
+RUN_ID = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{os.getpid()}"
+
+
 def startup_drain_entries(intended, actual) -> dict[str, Any]:
     """The start-up drain: a pacer that doesn't resync catches up after spawn through a run of late sends, not
     one. In schedule order, the drain is the contiguous run from the first send that is more than min(1 s,
@@ -7741,6 +7746,7 @@ def _(environment, **kw):
     # logging_params is None whenever on_start failed before notify_init (a required-mode error, a bad
     # --model): the row still lands, with the real error above it
     entries = dict(copy.copy(InitTracker.logging_params) or {})
+    entries["run_id"] = RUN_ID
     replaying = bool(getattr(environment.parsed_options, "replay_schedule", None))
     if replaying and ReplayPacer._instance is not None:
         entries["concurrency"] = ReplayPacer._instance.describe()
