@@ -382,3 +382,26 @@ def test_sends_per_minute_counts_planned_sends_from_the_first_one() -> None:
     assert sends_per_minute(times) == "3,2,1,1"
     assert sends_per_minute([100.0, 400.0]) == "1,0,0,0,0,1"
     assert sends_per_minute([5.0, 1.0, 62.0]) == "2,1"  # any order
+
+
+def test_every_request_failure_is_classified() -> None:
+    """A parse failure, an empty response or a stream error counts in the request outcomes (overall and per class),
+    not only in locust's failures: fail_request records then fails, in one call."""
+    from load_test import RequestOutcomes, fail_request
+
+    class Response:
+        def __init__(self):
+            self.failures = []
+
+        def failure(self, message):
+            self.failures.append(message)
+
+    RequestOutcomes.reset()
+    for _ in range(10):  # an unparseable body, an empty one
+        fail_request(Response(), ValueError("bad json"), class_name="chat", kind="other_error")
+    r = Response()
+    assert fail_request(r, lambda outcome: f"Error ({outcome})", status_code=503, class_name="chat") == "load_shed"
+    assert r.failures == ["Error (load_shed)"]
+    assert RequestOutcomes.counts == {"other_error": 10, "load_shed": 1}
+    assert RequestOutcomes.by_class["chat"] == {"other_error": 10, "load_shed": 1}
+    RequestOutcomes.reset()

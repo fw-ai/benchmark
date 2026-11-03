@@ -4814,6 +4814,16 @@ class RequestOutcomes:
         cls.by_class = {}
 
 
+def fail_request(response, message, *, error=None, status_code=None, class_name=None, kind=None) -> str:
+    """Mark a request failed AND count it in the request outcomes (overall and per class), so every failure is
+    classified: `kind` when given, else from the error and status. `message` is locust's failure (a string, an
+    exception, or a callable taking the outcome). Returns the outcome."""
+    outcome = kind or RequestOutcomes.classify(error, status_code)
+    RequestOutcomes.record(outcome, class_name)
+    response.failure(message(outcome) if callable(message) else message)
+    return outcome
+
+
 def request_counts(stats) -> tuple[int, int]:
     """Requests sent and failed, excluding the METRIC rows the custom metrics are logged as."""
     entries = [e for (name, method), e in stats.entries.items() if method != "METRIC"]
@@ -6166,19 +6176,22 @@ class LLMUser(HttpUser):
             body = response.content
             dur_total = time.perf_counter() - t_start
             if response.status_code != 200:
-                outcome = RequestOutcomes.classify(getattr(response, "error", None), response.status_code)
-                RequestOutcomes.record(outcome)
-                response.failure(f"Error in response ({outcome}): HTTP {response.status_code}: {response.text}")
+                fail_request(
+                    response,
+                    lambda outcome: f"Error in response ({outcome}): HTTP {response.status_code}: {response.text}",
+                    error=getattr(response, "error", None),
+                    status_code=response.status_code,
+                )
                 return
             try:
                 resp_data = orjson.loads(body)
             except Exception as e:
                 logger.error(f"Failed to parse response body with error {repr(e)}")
-                response.failure(e)
+                fail_request(response, e, kind="other_error")
                 return
             error = validate_systemone_response(resp_data, question_ids)
             if error is not None:
-                response.failure(error)
+                fail_request(response, error, kind="other_error")
                 return
             out = self.provider_formatter.parse_output_json(resp_data)
             input_tokens = out.prompt_tokens or 0
@@ -6284,13 +6297,21 @@ class LLMUser(HttpUser):
                 # failure is counted in stats.total.num_failures (visible in
                 # the summary, stats CSV, HTML report, and stats_failures.csv)
                 # rather than being routed to runner.exceptions.
-                outcome = RequestOutcomes.classify(getattr(response, "error", None) or e, response.status_code)
-                RequestOutcomes.record(outcome, class_name)
-                response.failure(f"Error in response ({outcome}): {response.text or repr(e)}")
+                fail_request(
+                    response,
+                    lambda outcome: f"Error in response ({outcome}): {response.text or repr(e)}",
+                    error=getattr(response, "error", None) or e,
+                    status_code=response.status_code,
+                    class_name=class_name,
+                )
                 return
             if response.status_code == CLIENT_CANCELLED_STATUS:
-                RequestOutcomes.record("http_299", class_name)
-                response.failure(f"Request cancelled (HTTP {CLIENT_CANCELLED_STATUS})")
+                fail_request(
+                    response,
+                    f"Request cancelled (HTTP {CLIENT_CANCELLED_STATUS})",
+                    class_name=class_name,
+                    kind="http_299",
+                )
                 return
             t_first_token = None
             t_first_visible_token = None
@@ -6306,9 +6327,12 @@ class LLMUser(HttpUser):
                 try:
                     body = response.content
                 except (requests.exceptions.RequestException, urllib3.exceptions.HTTPError) as e:
-                    outcome = RequestOutcomes.classify(e)
-                    RequestOutcomes.record(outcome, class_name)
-                    response.failure(f"Error reading response ({outcome}): {e!r}")
+                    fail_request(
+                        response,
+                        lambda outcome: f"Error reading response ({outcome}): {e!r}",
+                        error=e,
+                        class_name=class_name,
+                    )
                     return
                 # Recorded so a client-side ceiling is visible in the results rather than
                 # being mistaken for server latency.
@@ -6319,7 +6343,9 @@ class LLMUser(HttpUser):
                 # it via locust's failure API so fail_ratio/--max-fail-ratio catch it instead
                 # of the parse error landing in runner.exceptions.
                 if not body:
-                    response.failure(Exception("empty response received"))
+                    fail_request(
+                        response, Exception("empty response received"), class_name=class_name, kind="other_error"
+                    )
                     return
                 try:
                     if self.provider_formatter.parsed_options.rerank:
@@ -6337,7 +6363,7 @@ class LLMUser(HttpUser):
                         server_prompt_tokens = extract_prompt_tokens(body)
                 except Exception as e:
                     logger.error(f"Failed to parse response body with error {repr(e)}")
-                    response.failure(e)
+                    fail_request(response, e, class_name=class_name, kind="other_error")
                     return
 
                 # Only count a first token once the body has parsed successfully, so an empty
@@ -6407,18 +6433,23 @@ class LLMUser(HttpUser):
                         total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
                 except Exception as e:
                     logger.error(f"Failed to parse response: {chunk} with error {repr(e)}")
-                    response.failure(e)
+                    fail_request(response, e, class_name=class_name, kind="other_error")
                     return
             if stream_errors:
-                outcome = RequestOutcomes.classify(stream_errors[0])
-                RequestOutcomes.record(outcome, class_name)
-                response.failure(f"Error reading stream ({outcome}): {stream_errors[0]!r}")
+                fail_request(
+                    response,
+                    lambda outcome: f"Error reading stream ({outcome}): {stream_errors[0]!r}",
+                    error=stream_errors[0],
+                    class_name=class_name,
+                )
                 return
             if t_first_token is None:
                 if max_tokens == 0:
                     t_first_token = time.perf_counter()
                 else:
-                    response.failure(Exception("empty response received"))
+                    fail_request(
+                        response, Exception("empty response received"), class_name=class_name, kind="other_error"
+                    )
                     return
 
             if (
@@ -7831,7 +7862,8 @@ def _(environment, **kw):
         entries["intended_sends_per_minute"] = sends_per_minute(planned)
         entries["schedule_shift_s"] = pacer.shifted_seconds if pacer is not None else 0.0
         # D-154: the first send after "All users spawned", before any in-load shift
-        entries["startup_offset_s"] = SendTimeline.first_send_offset if SendTimeline.first_send_offset else ""
+        # blank when there was no send; an offset of exactly 0 is still reported
+        entries["startup_offset_s"] = "" if SendTimeline.first_send_offset is None else SendTimeline.first_send_offset
         entries.update(startup_drain_entries(SendTimeline.intended, SendTimeline.actual))
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
