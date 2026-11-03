@@ -3459,6 +3459,15 @@ class InFlightGauge:
             cls.in_flight -= 1
 
     @classmethod
+    def start_for(cls, options: argparse.Namespace) -> bool:
+        """Start the sampler for a paced run only: the same paced_run() condition that puts the gauge's fields in the
+        summary, so the two can't drift apart. Returns whether it started."""
+        if not paced_run(options):
+            return False
+        cls.start(getattr(options, "client_in_flight_interval", 15.0))
+        return cls._started
+
+    @classmethod
     def start(cls, interval: float) -> None:
         if cls._started or not interval or interval <= 0:
             return
@@ -4715,7 +4724,7 @@ def _build_shape_mix_before_spawning(environment, **_kwargs):
                 f"template's difference). Pass --tokenizer {served} for exact lengths"
             )
     ClientCpu.start()
-    InFlightGauge.start(getattr(options, "client_in_flight_interval", 15.0))
+    InFlightGauge.start_for(options)
     if not getattr(options, "shape_mix", None):
         if not (options.systemone or options.embeddings or options.rerank):
             try:

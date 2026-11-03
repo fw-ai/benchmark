@@ -532,3 +532,20 @@ def test_in_flight_slope_interval_accounts_for_autocorrelation() -> None:
     detected = sum(low > 0 for _, low, _ in (in_flight_slope(_mginf_samples(s, stuck=0.05)) for s in seeds))
     assert false_alarms / len(seeds) <= 0.10, false_alarms
     assert detected / len(seeds) >= 0.95, detected
+
+
+def test_in_flight_gauge_starts_only_for_paced_runs() -> None:
+    """The sampler starts only where the summary reports it: paced_run() (--qps or --replay-schedule)."""
+    import argparse
+
+    from load_test import InFlightGauge
+
+    ns = lambda **kw: argparse.Namespace(
+        **{"qps": None, "replay_schedule": None, "client_in_flight_interval": 15.0, **kw}
+    )
+    InFlightGauge._started = False
+    assert InFlightGauge.start_for(ns()) is False and InFlightGauge._started is False  # closed loop: no sampler
+    assert InFlightGauge.start_for(ns(qps=2.0)) is True
+    InFlightGauge._started = False
+    assert InFlightGauge.start_for(ns(qps=2.0, client_in_flight_interval=0)) is False  # 0 turns it off
+    InFlightGauge._started = False
