@@ -1896,7 +1896,7 @@ def test_replay_row_fields_validation_and_overrides(tmp_path) -> None:
                 "class": "chat",
                 "temperature": -1,
                 "top_p": 1.5,
-                "reasoning_effort": "max",
+                "reasoning_effort": "extreme",
                 "output_length": 0,
             },
             {"timestamp": 1, "class": "chat", "temperature": 0.7},
@@ -3899,3 +3899,71 @@ def test_tier_shares_validation() -> None:
     mix["classes"][0]["reasoning_effort_shares"] = {"extreme": 1}
     with pytest.raises(ValueError, match="reasoning_effort_shares"):
         parse_shape_mix(json.dumps(mix))
+
+
+def test_tier_output_keeps_the_sampled_spread_and_the_context_cap() -> None:
+    """N10-148-1: a tier's generated_tokens_by_tier is its mean. With --shape-mix-sample-lengths the class's
+    per-request draw is scaled to it (not overwritten by the constant), and the context cap still applies."""
+    import statistics as _st
+
+    mix = json.loads(json.dumps(MIX))
+    chat = mix["classes"][0]
+    chat.pop("reasoning_effort", None)
+    chat["reasoning_effort_shares"] = {"high": 1.0}
+    chat["generated_tokens_by_tier"] = {"high": 2 * chat["generated_tokens"]}
+    chat["generated_tokens_quantiles"] = {
+        "0.1": 2,
+        "0.5": chat["generated_tokens"],
+        "0.9": 4 * chat["generated_tokens"],
+    }
+    plain = json.loads(json.dumps(mix))
+    plain["classes"][0].pop("generated_tokens_by_tier")
+    tiered = [r for r in _take(_dataset(mix, sample_lengths=True), 4000) if r.class_name == "chat"]
+    base = [r for r in _take(_dataset(plain, sample_lengths=True), 4000) if r.class_name == "chat"]
+    assert len({r.generated_tokens for r in tiered}) > 5  # still a spread, not the tier constant
+    ratio = _st.mean(r.generated_tokens for r in tiered) / _st.mean(r.generated_tokens for r in base)
+    assert 1.9 < ratio < 2.1
+    capped = _dataset(mix, sample_lengths=True, context_tokens=chat["prompt_tokens"] + 3)
+    assert all(r.generated_tokens <= 3 for r in _take(capped, 500) if r.class_name == "chat")
+
+
+def test_max_and_integer_tiers_are_sent_as_logged(tmp_path) -> None:
+    """V4.1 production logs a "max" tier and integer tiers (e.g. 20): "max" is sent as "max" and an integer tier as
+    that integer (never rounded to a named tier), counted as its own tier in the shares; 0 and 1024 are refused."""
+    from collections import Counter
+
+    from load_test import OpenAIProvider, build_shape_mix_request, reasoning_effort_tier
+
+    assert reasoning_effort_tier("max", "t") == "max" and reasoning_effort_tier(20, "t") == "20"
+    assert reasoning_effort_tier("20", "t") == "20" and reasoning_effort_tier(1023, "t") == "1023"
+    for bad in (0, 1024, "1024", "extreme", True):
+        with pytest.raises(ValueError):
+            reasoning_effort_tier(bad, "t")
+    provider = OpenAIProvider(MODEL, _options(chat=True))
+    mix = json.loads(json.dumps(MIX))
+    chat = mix["classes"][0]
+    chat.pop("reasoning_effort", None)
+    chat["reasoning_effort_shares"] = {"max": 0.5, "20": 0.5}
+    chat["generated_tokens_by_tier"] = {"20": 3}
+    on_chat = [r for r in _take(_dataset(mix), 3000) if r.class_name == "chat"]
+    counts = Counter(r.reasoning_effort for r in on_chat)
+    assert set(counts) == {"max", "20"} and abs(counts["20"] / len(on_chat) - 0.5) < 0.05
+    sent = {build_shape_mix_request(provider, r)[0]["reasoning_effort"] for r in on_chat}
+    assert sent == {"max", 20}  # the integer as an integer
+    assert all(r.generated_tokens == 3 for r in on_chat if r.reasoning_effort == "20")
+    mix["classes"][0]["reasoning_effort_shares"] = {"20": 0.5, "020": 0.5}
+    with pytest.raises(ValueError, match="twice"):
+        parse_shape_mix(json.dumps(mix))
+    # A replay row's integer tier is sent as the integer too
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 4,
+            "reasoning_effort": 20,
+        }
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    assert build_shape_mix_request(provider, ds.replay_request(entries[0]))[0]["reasoning_effort"] == 20

@@ -2101,22 +2101,26 @@ class ShapeMixDataset:
             elif prefix_index is None:
                 prefix_index = self._draw_prefix_index(ci)
             tier = self._draw_tier(ci, prefix_index)
-            generated_given = generated is not None
             nonce = self._rng.getrandbits(64)
             variant = self._draw_variant(ci, self._rng)
             cls = self.classes[ci]
             tail_tokens = None
             if generated is None:
-                generated = cls.generated_tokens
+                # A tier's generated_tokens_by_tier is its mean output: used as is, or with
+                # --shape-mix-sample-lengths the class's draw scaled to it (the class's spread at the tier's mean)
+                tier_output = dict(cls.generated_tokens_by_tier or ()).get(tier)
+                generated = tier_output or cls.generated_tokens
                 if self.sample_lengths and cls.generated_tokens_quantiles:
                     drawn = self._generated_dist[ci].value(self._rng.random())
+                    if tier_output:
+                        drawn *= tier_output / cls.generated_tokens
                     generated = max(1, round(drawn))
             if self.sample_lengths and cls.uncached_tokens_quantiles and variant is None:
                 drawn = self._uncached_dist[ci].value(self._rng.random())
                 tail_tokens = self._tail_for_uncached(ci, drawn)
-        return self._with_tier(
-            self._render(ci, prefix_index, nonce, counter, variant, generated, tail_tokens), ci, tier, generated_given
-        )
+        request = self._render(ci, prefix_index, nonce, counter, variant, generated, tail_tokens)
+        # The output (and its context cap) is settled in _render; the tier only adds its field
+        return request if tier is None else dataclasses.replace(request, reasoning_effort=tier)
 
     def _draw_variant(self, ci: int, rng: random.Random) -> Optional[int]:
         count = len(self._filler_tokens[ci])
@@ -2174,15 +2178,6 @@ class ShapeMixDataset:
             return next(iter(tiers))
         names = sorted(tiers)
         return self._tier_rng.choices(names, weights=[tiers[t] for t in names])[0]
-
-    def _with_tier(self, request: ShapeRequest, ci: int, tier: Optional[str], generated_given: bool) -> ShapeRequest:
-        if tier is None:
-            return request
-        changes = {"reasoning_effort": tier}
-        by_tier = dict(self.classes[ci].generated_tokens_by_tier or ())
-        if tier in by_tier and not generated_given:
-            changes["generated_tokens"] = by_tier[tier]
-        return dataclasses.replace(request, **changes)
 
     def prefix_popularity_share(self, ci: int, top: int) -> float:
         """Fraction of the class's requests expected on its `top` most popular prefixes."""
@@ -2858,9 +2853,11 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
         data["messages"] = request.messages
     if request.reasoning_effort is not None:
         # a class's reasoning-effort tier (before overrides, so a replay row's own tier wins)
-        data["reasoning_effort"] = request.reasoning_effort
+        data["reasoning_effort"] = reasoning_effort_payload(request.reasoning_effort)
     if request.overrides:
         data.update(request.overrides)
+        if request.overrides.get("reasoning_effort") is not None:
+            data["reasoning_effort"] = reasoning_effort_payload(request.overrides["reasoning_effort"])
     if output_mode == "max":
         data.pop("min_tokens", None)
         data.pop("ignore_eos", None)
@@ -3577,22 +3574,30 @@ def _replay_bool(row: dict, key: str, where: str) -> bool:
 
 def _parse_tier_shares(raw: dict, where: str) -> tuple:
     """reasoning_effort_shares ({tier: share}) and generated_tokens_by_tier ({tier: tokens}), validated."""
-    tiers = ("none", "low", "medium", "high")
     shares = raw.get("reasoning_effort_shares")
     by_tier = raw.get("generated_tokens_by_tier")
+
+    def tiers_of(mapping, field):
+        if not isinstance(mapping, dict) or not mapping:
+            raise ValueError(f"--shape-mix {where}: {field} must map reasoning-effort tiers to numbers")
+        keyed = {reasoning_effort_tier(t, f"--shape-mix {where} {field}"): t for t in mapping}
+        if len(keyed) < len(mapping):
+            raise ValueError(f"--shape-mix {where}: {field} names a tier twice ({sorted(mapping)})")
+        return keyed  # tier -> the profile's key
+
     if shares is not None:
         if raw.get("reasoning_effort") is not None:
             raise ValueError(f"--shape-mix {where}: give reasoning_effort or reasoning_effort_shares, not both")
-        if not isinstance(shares, dict) or not shares or set(shares) - set(tiers):
-            raise ValueError(f"--shape-mix {where}: reasoning_effort_shares must map tiers {tiers} to shares")
-        values = {t: _shape_number(shares, t, f"{where} reasoning_effort_shares") for t in shares}
+        keyed = tiers_of(shares, "reasoning_effort_shares")
+        values = {t: _shape_number(shares, k, f"{where} reasoning_effort_shares") for t, k in keyed.items()}
         if any(v < 0 for v in values.values()) or sum(values.values()) <= 0:
             raise ValueError(f"--shape-mix {where}: reasoning_effort_shares must be >= 0 with a positive sum")
         shares = tuple(sorted((t, v) for t, v in values.items() if v > 0))
     if by_tier is not None:
-        if not isinstance(by_tier, dict) or set(by_tier) - set(tiers):
-            raise ValueError(f"--shape-mix {where}: generated_tokens_by_tier must map tiers {tiers} to tokens")
-        by_tier = tuple(sorted((t, _shape_int(by_tier, t, f"{where} generated_tokens_by_tier", 1)) for t in by_tier))
+        keyed = tiers_of(by_tier, "generated_tokens_by_tier")
+        by_tier = tuple(
+            sorted((t, _shape_int(by_tier, k, f"{where} generated_tokens_by_tier", 1)) for t, k in keyed.items())
+        )
     return shares, by_tier
 
 
@@ -3630,11 +3635,38 @@ def prefix_tier_split(shares, popularity):
     return split
 
 
+# The reasoning-effort names the serving stack accepts (DeepSeek V4.1 maps medium to high and xhigh to max, minimal
+# to low), plus integer tiers 1-1023 as production logs them (1-100 is the budget; 101-1023 maps to low)
+REASONING_EFFORT_NAMES = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def reasoning_effort_tier(value, where: str) -> Optional[str]:
+    """A tier as llm_bench keeps it: a name, or an integer tier as its decimal string ("20"); None stays None.
+    Integers are sent as integers (reasoning_effort_payload), never rounded to a named tier."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{where}: 'reasoning_effort' must be a tier name or an integer, got {value!r}")
+    if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
+        number = int(value)
+        if not 1 <= number <= 1023:
+            raise ValueError(f"{where}: an integer 'reasoning_effort' must be in 1-1023, got {value!r}")
+        return str(number)
+    if value in REASONING_EFFORT_NAMES:
+        return value
+    raise ValueError(
+        f"{where}: 'reasoning_effort' must be one of {', '.join(REASONING_EFFORT_NAMES)} or an integer 1-1023, "
+        f"got {value!r}"
+    )
+
+
+def reasoning_effort_payload(tier: str):
+    """The payload value of a tier: an integer tier as the integer the log records, a name as is."""
+    return int(tier) if tier.isdigit() else tier
+
+
 def _replay_effort(row: dict, where: str) -> Optional[str]:
-    value = row.get("reasoning_effort")
-    if value is not None and value not in ("none", "low", "medium", "high"):
-        raise ValueError(f"{where}: 'reasoning_effort' must be none, low, medium or high, got {value!r}")
-    return value
+    return reasoning_effort_tier(row.get("reasoning_effort"), where)
 
 
 def _replay_pod(entry: ScheduleEntry, pods: int) -> int:
