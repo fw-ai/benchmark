@@ -4016,6 +4016,15 @@ def test_reuse_record_carries_the_tier_only_when_tiers_are_used(tmp_path) -> Non
     assert reuse_record("chat", 400, 390) == " | reuse class=chat designed=400 delivered=390"  # unchanged format
     assert reuse_record("default", 539, None) == " | reuse class=default designed=539 delivered=none"
     assert reuse_record("chat", 400, 390.0, "20") == " | reuse class=chat designed=400 delivered=390 tier=20"
+    # the designed prompt tokens, for the per-request harness-delivery check, ahead of the tier
+    assert (
+        reuse_record("chat", 400, 390, "high", prompt=773)
+        == " | reuse class=chat designed=400 delivered=390 prompt=773 tier=high"
+    )
+    assert (
+        reuse_record("default", 539, 536, prompt=1000)
+        == " | reuse class=default designed=539 delivered=536 prompt=1000"
+    )
     mix = json.loads(json.dumps(MIX))
     for c in mix["classes"]:
         c.pop("reasoning_effort", None)

@@ -3694,12 +3694,14 @@ def request_tier(request) -> Optional[str]:
     return overrides.get("reasoning_effort") or getattr(request, "reasoning_effort", None)
 
 
-def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] = None) -> str:
-    """The per-request reuse record the runner parses: designed vs delivered cached tokens, and the request's tier
+def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] = None, prompt=None) -> str:
+    """The per-request reuse record the runner parses: designed vs delivered cached tokens, the designed prompt tokens
+    (so delivered vs designed uncached can be gated per request: the harness-delivery check), and the request's tier
     (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers."""
     record = (
         f" | reuse class={class_name} designed={designed} delivered={'none' if delivered is None else int(delivered)}"
     )
+    record += f" prompt={int(prompt)}" if prompt else ""
     return record + (f" tier={tier}" if tier is not None else "")
 
 
@@ -6518,6 +6520,7 @@ class LLMUser(HttpUser):
         if prepared is None:
             prepared = self._prepare_text_request()
         data, request_headers, max_tokens, prompt_tokens, shape_request, body = prepared
+        designed_prompt = prompt_tokens  # the client's own count, before the server's replaces it below
         batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
@@ -6757,12 +6760,17 @@ class LLMUser(HttpUser):
                 head_overhead = int(prompt_tokens) - shape_request.prompt_tokens
             reuse_str = ""
             if class_name is not None:
+                # The designed prompt carries the measured head like designed does, so designed uncached is net of it
                 reuse_str = reuse_record(
-                    class_name, designed_cached + head_overhead, cached_tokens, request_tier(shape_request)
+                    class_name,
+                    designed_cached + head_overhead,
+                    cached_tokens,
+                    request_tier(shape_request),
+                    prompt=shape_request.prompt_tokens + head_overhead,
                 )
             elif self._designed_cached_tokens is not None:
                 # A -pcml run's shared prefix (compensations applied), class `default`
-                reuse_str = reuse_record("default", self._designed_cached_tokens, cached_tokens)
+                reuse_str = reuse_record("default", self._designed_cached_tokens, cached_tokens, prompt=designed_prompt)
 
             logger.info(
                 f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, "
