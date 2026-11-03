@@ -4285,6 +4285,37 @@ def paced_run(options: argparse.Namespace) -> bool:
     return getattr(options, "qps", None) is not None or bool(getattr(options, "replay_schedule", None))
 
 
+# Serving's arrival-counter idle rule (D-99): a gap longer than IDLE_GAP_FACTOR times the running mean gap (an EWMA
+# with weight IDLE_GAP_EWMA_ALPHA), clamped to IDLE_GAP_BOUNDS_S, restarts the stream and stays out of the moments.
+# The same constants and rule as task 15's idle_rule_gap_cv2 (#68788), cross-checked on shared vectors in the tests.
+IDLE_GAP_FACTOR = 50.0
+IDLE_GAP_BOUNDS_S = (5.0, 600.0)
+IDLE_GAP_EWMA_ALPHA = 0.01
+
+
+def idle_rule_gap_cv2(times) -> Optional[float]:
+    """A stream's gap CV² under serving's idle-restart rule, never the raw CV² over idle gaps: the figure the
+    profile's arrivals carry. None with fewer than two counted gaps. *times* in seconds, any order."""
+    gaps = total = squared = 0.0
+    mean_gap = last = None
+    low, high = IDLE_GAP_BOUNDS_S
+    for t in sorted(times):
+        idle = high if mean_gap is None else min(max(IDLE_GAP_FACTOR * mean_gap, low), high)
+        if last is not None and t - last > idle:
+            last = None  # an idle stretch: the stream restarts, the gap isn't counted (the EWMA carries on)
+        if last is not None:
+            gap = t - last
+            gaps += 1
+            total += gap
+            squared += gap * gap
+            mean_gap = gap if mean_gap is None else mean_gap + IDLE_GAP_EWMA_ALPHA * (gap - mean_gap)
+        last = t
+    if gaps < 2 or total <= 0:
+        return None
+    mean = total / gaps
+    return max(0.0, squared / gaps - mean * mean) / (mean * mean)
+
+
 def startup_drain_entries(intended, actual) -> dict[str, Any]:
     """The start-up drain: a pacer that doesn't resync catches up after spawn through a run of late sends, not
     one. In schedule order, the drain is the contiguous run from the first send that is more than min(1 s,
@@ -4308,6 +4339,27 @@ def startup_drain_entries(intended, actual) -> dict[str, Any]:
         "startup_drain_complete": int(end < len(sends)),
         "send_lateness_max_after_drain_ms": max(lateness[end:]) * 1000 if end < len(sends) else peak_ms,
     }
+
+
+def _start_arrival_log(interval: float) -> None:
+    """Every *interval* seconds of a paced run, log the delivered gap CV² under the idle rule so far, so a runner can
+    check arrivals mid-run (the summary only lands at the end). Silent until the first sends."""
+    if not interval or interval <= 0:
+        return
+
+    def log_arrivals():
+        while True:
+            gevent.sleep(interval)
+            sent = len(SendTimeline.actual)
+            if sent < 3:
+                continue
+            value = idle_rule_gap_cv2(SendTimeline.actual)
+            logger.info(
+                f"Arrivals so far: {sent} sends, delivered gap CV2 (idle rule) "
+                f"{'none' if value is None else f'{value:.4f}'}"
+            )
+
+    gevent.spawn(log_arrivals)
 
 
 class RampingPacer:
@@ -4786,6 +4838,7 @@ def _build_shape_mix_before_spawning(environment, **_kwargs):
                 f"template's difference). Pass --tokenizer {served} for exact lengths"
             )
     ClientCpu.start()
+    _start_arrival_log(getattr(options, "arrival_log_interval", 60.0))
     if not getattr(options, "shape_mix", None):
         if not (options.systemone or options.embeddings or options.rerank):
             try:
@@ -7128,6 +7181,14 @@ def init_parser(parser):
         "uncached prefills). 0 waits forever. Timed-out requests count as failures and are reported as Requests Timeout in the summary.",
     )
     parser.add_argument(
+        "--arrival-log-interval",
+        type=float,
+        default=60.0,
+        help="With --qps or --replay-schedule: seconds between 'Arrivals so far' log lines carrying the delivered gap "
+        "CV2 under serving's idle rule (also in the summary as Delivered Gap Cv2 Idle Rule), for a mid-run check. "
+        "0 turns it off.",
+    )
+    parser.add_argument(
         "--qps-max-lateness",
         type=float,
         default=DEFAULT_MAX_LATENESS_SECONDS,
@@ -8064,6 +8125,10 @@ def _(environment, **kw):
         # blank when there was no send; an offset of exactly 0 is still reported
         entries["startup_offset_s"] = "" if SendTimeline.first_send_offset is None else SendTimeline.first_send_offset
         entries.update(startup_drain_entries(SendTimeline.intended, SendTimeline.actual))
+        # The delivered gap CV² under serving's idle rule (what the profile's arrivals carry), and its intended twin
+        for name, times in (("delivered", SendTimeline.actual), ("intended", SendTimeline.intended)):
+            value = idle_rule_gap_cv2(times)
+            entries[f"{name}_gap_cv2_idle_rule"] = "" if value is None else value
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())

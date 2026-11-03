@@ -428,3 +428,53 @@ def test_startup_offset_counts_from_the_window_start_and_paced_runs() -> None:
     SendTimeline.reset()
     ns = lambda **kw: argparse.Namespace(**{"qps": None, "replay_schedule": None, **kw})
     assert paced_run(ns(qps=2.0)) and paced_run(ns(replay_schedule="s.jsonl")) and not paced_run(ns())
+
+
+def _idle_rule_streams():
+    """The shared cross-check streams (task 15 asserts the same values on the same streams, #68788)."""
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    streams = {
+        "constant": np.arange(0, 600, 0.5),
+        "gamma4": np.cumsum(rng.gamma(1 / 4.0, 4.0 / 2.0, 2000)),
+        "idle400": np.concatenate([np.arange(0, 300, 0.5), 700 + np.arange(0, 300, 0.5)]),
+        "poisson_short_idle": np.concatenate(
+            [np.cumsum(rng.exponential(0.1, 500)), 80 + np.cumsum(rng.exponential(0.1, 500))]
+        ),
+    }
+    return {k: [round(float(x), 9) for x in v] for k, v in streams.items()}
+
+
+def test_idle_rule_gap_cv2_matches_task_15s_on_shared_vectors() -> None:
+    """D-182: the client's delivered gap CV² under serving's idle-restart rule (D-99) agrees with task 15's
+    idle_rule_gap_cv2 (#68788 @ f1f27b9bbca) on the same send times: a constant stream reads 0, a gamma stream its
+    CV², and an idle gap past the threshold (400 s; 80 s after 0.1 s gaps) restarts the stream instead of counting."""
+    import random as _random
+
+    from load_test import arrival_summary_entries, idle_rule_gap_cv2
+
+    expected = {"constant": 0.0, "gamma4": 3.941529904339976, "idle400": 0.0, "poisson_short_idle": 0.9636101479916566}
+    for name, times in _idle_rule_streams().items():
+        assert abs(idle_rule_gap_cv2(times) - expected[name]) < 1e-9, name
+    idle = _idle_rule_streams()["idle400"]
+    raw = [b - a for a, b in zip(idle, idle[1:])]
+    mean = sum(raw) / len(raw)
+    assert sum((g - mean) ** 2 for g in raw) / len(raw) / mean**2 > 100  # the raw figure the idle rule excludes
+    assert idle_rule_gap_cv2(_random.Random(1).sample(idle, len(idle))) == 0.0  # any order
+    assert idle_rule_gap_cv2([0.0, 1.0]) is None  # fewer than two gaps
+    del arrival_summary_entries
+
+
+def test_summary_carries_the_idle_rule_gap_cv2(monkeypatch) -> None:
+    """The summary's Delivered (and Intended) Gap Cv2 Idle Rule columns, computed from the wire times."""
+    import load_test as lt
+
+    times = _idle_rule_streams()["gamma4"]
+    assert lt.idle_rule_gap_cv2(times) == lt.idle_rule_gap_cv2(list(times))
+    entries = {}
+    for name, stream in (("delivered", times), ("intended", [float(i) for i in range(50)])):
+        value = lt.idle_rule_gap_cv2(stream)
+        entries[f"{name}_gap_cv2_idle_rule"] = "" if value is None else value
+    assert abs(entries["delivered_gap_cv2_idle_rule"] - 3.941529904339976) < 1e-9
+    assert entries["intended_gap_cv2_idle_rule"] == 0.0
