@@ -144,6 +144,19 @@ def mismatch_message(step, applied: int, expected: int, window: int, mock_chat_h
     )
 
 
+def set_aside(path: str):
+    """Move an existing file to <path>.prev (or .prev2, .prev3, ... if taken), never overwriting; the new name, or
+    None when there was nothing to move."""
+    if not os.path.exists(path):
+        return None
+    target, n = f"{path}.prev", 1
+    while os.path.exists(target):
+        n += 1
+        target = f"{path}.prev{n}"
+    os.rename(path, target)
+    return target
+
+
 def _mark_experiment(out: str, messages: list) -> None:
     with open(os.path.join(out, "MISMATCH_EXPERIMENT"), "w") as f:
         f.write("\n".join(messages) + "\n")
@@ -404,6 +417,11 @@ def main(argv=None) -> int:
             if not paths_ok(fill, start_line):
                 return 1
         summary = os.path.join(args.out, f"{step[0]}.summary.csv")
+        # llm_bench appends a row per run: a reused --out dir would hold two runs' rows, so a reader taking the wrong
+        # one scores the old run. An earlier summary is moved aside (never deleted)
+        moved = set_aside(summary)
+        if moved:
+            print(f"preflight: an earlier {os.path.basename(summary)} is kept as {os.path.basename(moved)}")
         run_for = step[3] if args.duration is None else min(step[3] or args.duration, args.duration)
         print(f"preflight: scored step {step[0]} (rate {step[2]}, concurrency {step[1]}, {run_for:.0f} s)")
         start_line = _log_lines(request_log)
