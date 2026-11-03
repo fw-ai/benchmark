@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 import threading
 import time
@@ -478,8 +479,13 @@ def test_in_flight_slope_ignores_the_warm_up_ramp_of_long_requests() -> None:
     from load_test import InFlightGauge, in_flight_slope
 
     healthy = _simulated_in_flight(lambda i: 15.0 if i % 5 == 0 else 0.05)  # 20% held 15 s, the rest 50 ms
-    whole = in_flight_slope(healthy)
-    assert whole[1] > 0  # the old fit: a false "rising"
+    # the plain least-squares interval over the whole window: a false "rising" (the warm-up ramp)
+    n = len(healthy)
+    mt, mv = sum(t for t, _ in healthy) / n, sum(v for _, v in healthy) / n
+    sxx = sum((t - mt) ** 2 for t, _ in healthy)
+    b = sum((t - mt) * (v - mv) for t, v in healthy) / sxx
+    sse = sum((v - mv - b * (t - mt)) ** 2 for t, v in healthy)
+    assert b - 2.228 * (sse / (n - 2) / sxx) ** 0.5 > 0  # t(10)
     stuck = _simulated_in_flight(lambda i: 1e9)
     for samples, rising in ((healthy, False), (stuck, True)):
         InFlightGauge._window_start, InFlightGauge.samples = _time.monotonic() - 60.0, samples
@@ -493,10 +499,36 @@ def test_in_flight_slope_t_beyond_30_degrees_of_freedom() -> None:
     """N10-147-2: past the table, the t value comes from an expansion of the normal one (not 1.96 flat)."""
     from load_test import in_flight_slope
 
-    samples = [(float(i), float(i % 7)) for i in range(42)]  # 40 degrees of freedom: t = 2.021
+    # 40 degrees of freedom: t = 2.021 (an alternating series: no positive autocorrelation, so no inflation)
+    samples = [(float(i), float(i % 2)) for i in range(42)]
     slope, low, high = in_flight_slope(samples)
     n = len(samples)
     mt, mv = sum(t for t, _ in samples) / n, sum(v for _, v in samples) / n
     sxx = sum((t - mt) ** 2 for t, _ in samples)
     sse = sum((v - mv - slope / 60 * (t - mt)) ** 2 for t, v in samples)
     assert abs((high - low) / 2 / 60 / ((sse / (n - 2) / sxx) ** 0.5) - 2.021) < 0.002
+
+
+def _mginf_samples(seed, stuck=0.0, samples=40, every=15.0, rate=2.0, hold=30.0):
+    """In-flight counts of a healthy server (Poisson arrivals, exponential request times) sampled every `every` s:
+    strongly autocorrelated when requests last about that long. `stuck`: a share that never completes."""
+    rng = random.Random(seed)
+    t, requests, horizon = 0.0, [], samples * every + hold * 4
+    while t < horizon:
+        t += rng.expovariate(rate)
+        requests.append((t, math.inf if rng.random() < stuck else t + rng.expovariate(1 / hold)))
+    times = [hold * 4 + every * k for k in range(samples)]
+    return [(s, sum(1 for a, b in requests if a <= s < b)) for s in times]
+
+
+def test_in_flight_slope_interval_accounts_for_autocorrelation() -> None:
+    """#147 review: counts sampled every 15 s of requests lasting ~30 s are autocorrelated, and the plain interval
+    excluded zero on 37% of healthy streams (a false capacity break). With the lag-1 inflation it's near the nominal
+    5%, while a stream where 5% of requests never complete (~6/min accumulating) is still detected."""
+    from load_test import in_flight_slope
+
+    seeds = range(200)
+    false_alarms = sum(not (low <= 0 <= high) for _, low, high in (in_flight_slope(_mginf_samples(s)) for s in seeds))
+    detected = sum(low > 0 for _, low, _ in (in_flight_slope(_mginf_samples(s, stuck=0.05)) for s in seeds))
+    assert false_alarms / len(seeds) <= 0.10, false_alarms
+    assert detected / len(seeds) >= 0.95, detected

@@ -3399,9 +3399,21 @@ _T95.update({20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 2
 _T95.update({29: 2.045, 30: 2.042})
 
 
+def _t95(df: float) -> float:
+    """The two-sided 95% t critical value for df degrees of freedom (floored; past the table, an expansion)."""
+    df, z = max(1, int(df)), 1.959964
+    return _T95[df] if df in _T95 else z + (z**3 + z) / (4 * df) + (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
+
+
 def in_flight_slope(samples) -> Optional[tuple]:
     """(slope, 95% low, 95% high) in requests per minute of a least-squares line through (seconds, in flight)
-    samples; None with fewer than 3. A zero-variance fit (a flat line) has a zero-width interval."""
+    samples; None with fewer than 3, or when all samples share one time. In-flight counts sampled every ~15 s are
+    autocorrelated whenever requests last that long, which makes the plain interval too narrow (on a healthy stream
+    with 15-30 s requests it excluded zero 17-37% of the time, against a nominal 5%). So the slope's variance is
+    inflated by the residuals' lag-1 autocorrelation rho, by (1 + rho) / (1 - rho), with the degrees of freedom of the
+    matching effective sample size: about 6% false alarms over 40 samples, with a stream whose requests pile up at a
+    few per minute still detected. Below about 20 samples no interval is reliable (rho itself is poorly estimated,
+    and below 10 it isn't used): a step should give the fitted half at least 20 samples."""
     if len(samples) < 3:
         return None
     n = len(samples)
@@ -3411,10 +3423,12 @@ def in_flight_slope(samples) -> Optional[tuple]:
     if sxx <= 0:
         return None
     slope = sum((t - mt) * (v - mv) for t, v in samples) / sxx
-    sse = sum((v - mv - slope * (t - mt)) ** 2 for t, v in samples)
-    df, z = n - 2, 1.959964
-    t = _T95[df] if df in _T95 else z + (z**3 + z) / (4 * df) + (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
-    half = t * math.sqrt(sse / (n - 2) / sxx)
+    residuals = [v - mv - slope * (t - mt) for t, v in samples]
+    sse = sum(r * r for r in residuals)
+    # rho from fewer than 10 samples is noise (it can swallow an unmistakable slope): the plain interval there
+    rho = sum(residuals[i] * residuals[i - 1] for i in range(1, n)) / sse if sse > 0 and n >= 10 else 0.0
+    inflation = (1 + min(max(rho, 0.0), 0.95)) / (1 - min(max(rho, 0.0), 0.95))
+    half = _t95(n / inflation - 2) * math.sqrt(sse / (n - 2) / sxx * inflation)
     return slope * 60, (slope - half) * 60, (slope + half) * 60
 
 
@@ -7050,8 +7064,9 @@ def init_parser(parser):
         default=15.0,
         help="With --qps or --replay-schedule: seconds between samples of the client's requests not yet completed "
         "(sent, still waiting or streaming), reported as Client In Flight Samples and a slope per minute fitted over "
-        "the window's second half, with its 95%% interval. A rising count the server doesn't see means requests "
-        "stuck before the server. 0 turns it off.",
+        "the window's second half, with its 95%% interval (corrected for the samples' autocorrelation; it needs about "
+        "20 samples in that half). A rising count the server doesn't see means requests stuck before the server. 0 "
+        "turns it off.",
     )
     parser.add_argument(
         "--qps-max-lateness",
