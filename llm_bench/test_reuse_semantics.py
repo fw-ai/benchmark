@@ -330,3 +330,33 @@ def test_probe_point_prefixes_share_no_leading_text() -> None:
                 assert _common_prefix_count(a, b) < min(len(a), len(b)) and _common_prefix_count(a, b) <= len(
                     headers[0]
                 )
+
+
+def test_pcml_prompt_field_is_the_designed_server_length() -> None:
+    """N10-15-23 (D-183): in chat, -pcml builds the client's count net of the calibrated head (num_tokens - head), so
+    the reuse record's prompt= adds that one constant head back: the designed SERVER length, as on shape-mix rows. At
+    500 tokens and head 26 the client count alone read the harness-delivery check +5.5% off a correct layout."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "limericks.txt")
+
+    class WordTok:
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+    def first_count(**kw):
+        import random as _random
+
+        _random.seed(5)  # -pcml draws limericks from the global RNG
+        ds = TranslationDataset(
+            path, "\n\nTranslate.", WordTok(), "x", chat=False, num_tokens=500, common_tokens=250, **kw
+        )
+        return next(iter(ds))[1]
+
+    # Values from DSV4.1/MiniMax measurements (D-134/D-120); any value exercises the path
+    head = 26
+    client = first_count(chat_head=head)  # what the client builds and counts
+    limerick = 60  # whole limericks: the count lands at or a little past its target
+    assert 500 - head <= client < 500 - head + limerick
+    designed = client + head  # prompt= on the -pcml reuse line (self._pcml_chat_head = the dataset's chat_head)
+    assert 500 <= designed < 500 + limerick
+    assert abs(client / designed - 1) > 0.04  # the client count alone would read the server's length ~5% long
+    assert first_count(chat_head=None) == first_count()  # completions / unmeasured: no head, prompt= = client count
