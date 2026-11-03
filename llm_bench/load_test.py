@@ -4571,6 +4571,14 @@ def _build_shape_mix_before_spawning(environment, **_kwargs):
         )
         _APPLIED_REUSE["boundary"] = resolve_prefix_restore_boundary(options)
         _APPLIED_REUSE["served_model_config"] = resolve_served_model_config(options)
+        served = getattr(options, "served_model_config", None)
+        if served and not getattr(options, "tokenizer", None):
+            logger.warning(
+                f"--served-model-config {served} without --tokenizer: prompt tokens are counted with the default "
+                f"{DEFAULT_TOKENIZER}, not the served model's tokenizer, so lengths the server sees differ from the "
+                f"designed ones (about 1% on prose for DeepSeek V4; the chat-head calibration absorbs only the "
+                f"template's difference). Pass --tokenizer {served} for exact lengths"
+            )
     ClientCpu.start()
     if not getattr(options, "shape_mix", None):
         if not (options.systemone or options.embeddings or options.rerank):

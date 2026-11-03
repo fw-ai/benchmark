@@ -16,6 +16,11 @@ It prints the applied reuse semantics and a per-class designed vs delivered tabl
 summary's path as its last line. The verdict is task 15's check (D-117): --check runs it after the run, as
 `traffic_profile_logs preflight-check PLAN SUMMARY --step STEP`, and exits with its code (0 pass, 1 fail,
 2 insufficient rows). Paths in the extra args that don't exist locally can be remapped with --path SRC=DST.
+The layout must match the mock: every step's overhang (an explicit --prefix-reuse-overhang, else what llm_bench
+resolves from the served model's config) must equal the mock's window, less its chat head (--mock-chat-head) in chat
+mode, or the run is refused (exit 2) before it starts, and the verdict is refused if the step's summary reports
+otherwise. A mismatch would make the verdict measure the mock, not the plan; --allow-mismatch runs it anyway for
+deliberate experiments, labelled in the output and in DIR/MISMATCH_EXPERIMENT.
 Every step it runs must name its wire mode (--chat or --no-chat; llm_bench requires one), and every request the
 mock logs for a step must hit that mode's path (/v1/chat/completions or /v1/completions), else the run fails.
 Exit code: the check's with --check, else llm_bench's for the scored step (non-zero also when the mock or a step
@@ -69,6 +74,41 @@ def path_mismatches(request_log: str, start_line: int, expected: str) -> tuple:
         if path.split("?", 1)[0] != expected:
             wrong[path] = wrong.get(path, 0) + 1
     return seen, wrong
+
+
+def expected_overhang(step, window: int, mock_chat_head: int) -> int:
+    """The layout overhang that makes a step's prefixes reuse exactly their designed share on this mock: the window
+    it recomputes, less (in chat) the head it renders ahead of every prompt, which is shared and so pre-pays part
+    of the window."""
+    return window - (mock_chat_head if step_path(step) == MODE_PATHS["--chat"] else 0)
+
+
+def applied_overhang(step) -> int:
+    """The overhang llm_bench will apply for a step, resolved by llm_bench itself (an explicit
+    --prefix-reuse-overhang, else the served model's config), in a subprocess so this process stays unpatched."""
+    explicit = _flag(step[4], "--prefix-reuse-overhang")
+    if explicit is not None:
+        return int(explicit)
+    code = (
+        "import argparse, sys; sys.argv = ['x']; import load_test as lt; "
+        "print(lt.resolve_prefix_reuse_overhang(argparse.Namespace(prefix_reuse_overhang=None, "
+        f"served_model_config={_flag(step[4], '--served-model-config')!r}, tokenizer={_flag(step[4], '--tokenizer')!r})))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], cwd=HERE, capture_output=True, text=True)
+    lines = out.stdout.strip().splitlines()
+    if out.returncode or not lines:
+        raise RuntimeError(f"couldn't resolve step {step[0]}'s overhang: {out.stderr.strip()[-300:]}")
+    return int(lines[-1])
+
+
+def mismatch_message(step, applied: int, expected: int, window: int, mock_chat_head: int) -> str:
+    head = f" less its chat head {mock_chat_head}" if expected != window else ""
+    return (
+        f"step {step[0]} lays prefixes out with overhang {applied}, but the mock recomputes {window}{head}, so it "
+        f"needs {expected}: the delivered cached share would be off by {applied - expected} tokens per hit, a mock "
+        f"artifact, not a plan result. Pass --prefix-reuse-overhang {expected} in the step (or run the mock with "
+        f"--window/--mock-chat-head matching the layout); --allow-mismatch runs it anyway, labelled"
+    )
 
 
 def _log_lines(request_log: str) -> int:
@@ -144,6 +184,25 @@ def _locust(port: int, step, duration_cap, summary: str, log: str) -> int:
         return subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=HERE).returncode
 
 
+def summary_mismatch(summary: str, step, window: int, mock_chat_head: int, mock_tokenizer: str):
+    """The applied overhang (and, when the client counts with the mock's tokenizer, the measured chat head) from the
+    step's summary, against the mock; a message when they disagree, else None."""
+    try:
+        with open(summary, newline="") as f:
+            row = list(csv.DictReader(f))[-1]
+    except (OSError, IndexError):
+        return None
+    expected = expected_overhang(step, window, mock_chat_head)
+    applied = row.get("Reuse Overhang Tokens")
+    if applied not in (None, "") and int(float(applied)) != expected:
+        return mismatch_message(step, int(float(applied)), expected, window, mock_chat_head)
+    head = row.get("Chat Head Tokens")
+    counting = _flag(step[4], "--tokenizer")
+    if head not in (None, "") and counting == mock_tokenizer and int(float(head)) != mock_chat_head:
+        return f"step {step[0]} measured a chat head of {head} tokens on a mock that renders {mock_chat_head}"
+    return None
+
+
 def quick_look(summary: str, step) -> None:
     """Designed vs delivered uncached per class (information only; task 15's check decides)."""
     try:
@@ -188,6 +247,18 @@ def main(argv=None) -> int:
     parser.add_argument("--window", type=int, default=None, help="Engine recompute (default: the plan's probe).")
     parser.add_argument("--boundary", type=int, default=None, help="Restore block (default: the plan's probe).")
     parser.add_argument("--mock-tokenizer", default=None, help="The served model's tokenizer for the engine.")
+    parser.add_argument(
+        "--mock-chat-head",
+        type=int,
+        default=0,
+        help="Tokens the mock engine renders ahead of every chat prompt (DeepSeek V4.1: 26); 0 renders as the client.",
+    )
+    parser.add_argument(
+        "--allow-mismatch",
+        action="store_true",
+        help="Run even when a step's layout overhang doesn't match the mock (a deliberate mismatch experiment; the "
+        "output and DIR/MISMATCH_EXPERIMENT say so).",
+    )
     parser.add_argument("--path", action="append", default=[], help="SRC=DST remap for paths in the extra args.")
     parser.add_argument(
         "--check",
@@ -226,13 +297,29 @@ def main(argv=None) -> int:
     if not probe and args.window is None:
         print("preflight: !!! the plan records no reuse_probe; the mock engine reuses token-exact with no window")
     os.makedirs(args.out, exist_ok=True)
+    # The layout and the mock must agree, or the verdict measures the mismatch instead of the plan
+    mismatched = []
+    for s in fills + [step]:
+        applied, expected = applied_overhang(s), expected_overhang(s, window, args.mock_chat_head)
+        if applied != expected:
+            mismatched.append(mismatch_message(s, applied, expected, window, args.mock_chat_head))
+    if mismatched and not args.allow_mismatch:
+        for m in mismatched:
+            print(f"preflight: !!! refusing: {m}")
+        return 2
+    for m in mismatched:
+        print(f"preflight: !!! MISMATCH EXPERIMENT (--allow-mismatch): {m}")
+    if mismatched:
+        with open(os.path.join(args.out, "MISMATCH_EXPERIMENT"), "w") as f:
+            f.write("\n".join(mismatched) + "\n")
     port = _free_port()
     server_log = os.path.join(args.out, "mock_server.log")
     request_log = os.path.join(args.out, "mock.requests")
     with open(server_log, "w") as f:
         server = subprocess.Popen(
             [sys.executable, os.path.join(HERE, "mock_server.py"), "--port", str(port), "--window", str(window)]
-            + ["--boundary", str(boundary), "--tokenizer", tokenizer, "--log", request_log],
+            + ["--boundary", str(boundary), "--tokenizer", tokenizer, "--log", request_log]
+            + ["--chat-head", str(args.mock_chat_head)],
             stdout=f,
             stderr=subprocess.STDOUT,
         )
@@ -246,7 +333,10 @@ def main(argv=None) -> int:
                     print(f"preflight: the mock server exited (see {server_log})")
                     return 2
                 time.sleep(1)
-        print(f"preflight: mock engine window {window}, boundary {boundary}, tokenizer {tokenizer}, port {port}")
+        print(
+            f"preflight: mock engine window {window}, boundary {boundary}, chat head {args.mock_chat_head}, "
+            f"tokenizer {tokenizer}, port {port}"
+        )
 
         def paths_ok(s, start_line) -> bool:
             seen, wrong = path_mismatches(request_log, start_line, step_path(s))
@@ -280,6 +370,15 @@ def main(argv=None) -> int:
             print(summary)
             return 1
         quick_look(summary, step)
+        # Backstop: what the step's summary says it applied (the authority), against the mock
+        verdict = summary_mismatch(summary, step, window, args.mock_chat_head, tokenizer)
+        if verdict and not mismatched:
+            print(
+                f"preflight: !!! {'MISMATCH EXPERIMENT' if args.allow_mismatch else 'refusing the verdict'}: {verdict}"
+            )
+            if not args.allow_mismatch:
+                print(summary)
+                return 2
         if args.check:
             if not os.path.exists(summary):
                 print("preflight: no summary to check")

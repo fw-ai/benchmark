@@ -108,7 +108,10 @@ def _dsv4_encoder(tokenizer, tokenizer_path):
 class PrefixCacheEngine:
     """Token-id prompts per cache, and the reuse rule: floor(common prefix / boundary) * boundary - window."""
 
-    def __init__(self, tokenizer, window=0, boundary=1, caches=1, affinity=False, seed=0, tokenizer_path=None):
+    def __init__(
+        self, tokenizer, window=0, boundary=1, caches=1, affinity=False, seed=0, tokenizer_path=None, chat_head=0
+    ):
+        self.chat_head = chat_head
         self.tokenizer = tokenizer
         self.encode_messages = _dsv4_encoder(tokenizer, tokenizer_path)
         self.window = window
@@ -120,6 +123,15 @@ class PrefixCacheEngine:
         self.lock = threading.Lock()
 
     def token_ids(self, body: dict) -> list:
+        ids = self._content_ids(body)
+        # The engine's own chat head (DeepSeek V4.1 renders +26 the client doesn't count), shared by every chat prompt
+        return (
+            [_HEAD_TOKEN_BASE + i for i in range(self.chat_head)] + ids
+            if self.chat_head and "messages" in body
+            else ids
+        )
+
+    def _content_ids(self, body: dict) -> list:
         if "messages" in body and self.encode_messages is not None:
             # DeepSeek V4 family: no chat_template; the checkpoint ships its own encoding module (as llm_bench uses)
             prompt = self.encode_messages(body["messages"], thinking_mode="chat")
@@ -144,6 +156,10 @@ class PrefixCacheEngine:
             index.add(ids)
             self.last_cache = cache
         return max(0, (common // self.boundary) * self.boundary - self.window)
+
+
+# Token ids for the engine's chat head: outside any real vocabulary, so they never match prompt text
+_HEAD_TOKEN_BASE = 9_990_000
 
 
 def make_handler(engine: PrefixCacheEngine, ttft: float, tpot: float, log=None):
@@ -219,6 +235,12 @@ def main(argv=None):
     parser.add_argument("--affinity", action="store_true", help="Route by x-session-affinity, else at random.")
     parser.add_argument("--ttft", type=float, default=0.05, help="Seconds before the first streamed token.")
     parser.add_argument("--tpot", type=float, default=0.002, help="Seconds between streamed tokens.")
+    parser.add_argument(
+        "--chat-head",
+        type=int,
+        default=0,
+        help="Tokens the engine renders ahead of every chat prompt beyond the client's count (DeepSeek V4.1: 26).",
+    )
     parser.add_argument("--log", default=None, help="Append 'arrival prompt_tokens cached_tokens' per request.")
     args = parser.parse_args(argv)
 
@@ -231,6 +253,7 @@ def main(argv=None):
         args.caches,
         args.affinity,
         tokenizer_path=args.tokenizer,
+        chat_head=args.chat_head,
     )
     log = open(args.log, "a") if args.log else None
     ThreadingHTTPServer.daemon_threads = True
