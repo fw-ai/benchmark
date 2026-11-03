@@ -1371,6 +1371,8 @@ class ShapeRequest:
     # What the layout intends the server to reuse for this row, after every compensation (the runner's
     # in-run reuse check compares it with the server's cached count, D-123)
     designed_cached_tokens: Optional[int] = None
+    # --replay-schedule: the row's 0-based position in the schedule file (ScheduleEntry.row), logged as row=
+    schedule_row: Optional[int] = None
 
 
 class _CyclicText:
@@ -2744,7 +2746,11 @@ class ShapeMixDataset:
         return self._corpus.slice(seg[1], seg[2])
 
     def replay_request(self, entry: "ScheduleEntry") -> ShapeRequest:
-        """The request for a --replay-schedule row (see prepare_replay)."""
+        """The request for a --replay-schedule row (see prepare_replay), tagged with the row's position in the
+        schedule file, so a checker can join each logged reuse record to its recorded row."""
+        return dataclasses.replace(self._replay_request(entry), schedule_row=entry.row)
+
+    def _replay_request(self, entry: "ScheduleEntry") -> ShapeRequest:
         plan = getattr(self, "_replay", {}).get(entry.index)
         if plan is None:
             request = self.scheduled_request(entry.class_index, entry.prefix_index, entry.output_length)
@@ -3704,6 +3710,7 @@ class ScheduleEntry:
     input_length: Optional[int] = None  # prompt tokens as the server counts them (chat template included)
     session: Optional[str] = None
     index: int = 0  # position in the whole time-sorted schedule
+    row: int = 0  # 0-based position among the schedule file's rows, in file order (what a checker joins on)
     cached_length: Optional[int] = None  # recorded reusable (cached) prompt tokens, as the server counts them
     cancelled: bool = False
     temperature: Optional[float] = None
@@ -3864,7 +3871,7 @@ def request_tier(request) -> Optional[str]:
     return overrides.get("reasoning_effort") or getattr(request, "reasoning_effort", None)
 
 
-def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] = None, prompt=None) -> str:
+def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] = None, prompt=None, row=None) -> str:
     """The per-request reuse record the runner parses: designed vs delivered cached tokens, the designed prompt tokens
     (so delivered vs designed uncached can be gated per request: the harness-delivery check), and the request's tier
     (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers.
@@ -3878,6 +3885,7 @@ def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] 
         f" | reuse class={class_name} designed={designed} delivered={'none' if delivered is None else int(delivered)}"
     )
     record += f" prompt={int(prompt)}" if prompt else ""
+    record += f" row={int(row)}" if row is not None else ""  # a replay row's position in the schedule file
     return record + (f" tier={tier}" if tier is not None else "")
 
 
@@ -4018,11 +4026,13 @@ def load_replay_schedule(
     index = {name: i for i, name in enumerate(class_names)}
     raw = []
     unknown: dict[str, int] = {}
+    file_row = -1  # rows in file order, blank lines not counted
     with open(path, "r") as f:
         for n, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
+            file_row += 1
             where = f"--replay-schedule {path}:{n}"
             try:
                 row = json.loads(line)
@@ -4086,7 +4096,7 @@ def load_replay_schedule(
             if session is not None:
                 # Session keys are scoped to their recorded pod
                 session = f"{fields['pod']}/{session}" if fields["pod"] is not None else str(session)
-            raw.append((t, n, index[name], session, fields))
+            raw.append((t, n, index[name], session, dict(fields, row=file_row)))
     if not raw:
         raise ValueError(f"--replay-schedule {path}: no entries")
     _warn_unknown_replay_fields(path, unknown)
@@ -7004,6 +7014,7 @@ class LLMUser(HttpUser):
                     cached_tokens,
                     request_tier(shape_request),
                     prompt=shape_request.prompt_tokens,
+                    row=shape_request.schedule_row,
                 )
             elif self._designed_cached_tokens is not None:
                 # A -pcml run's shared prefix (compensations applied), class `default`
