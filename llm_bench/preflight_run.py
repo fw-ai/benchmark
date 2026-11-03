@@ -250,6 +250,9 @@ def main(argv=None) -> int:
 
         def paths_ok(s, start_line) -> bool:
             seen, wrong = path_mismatches(request_log, start_line, step_path(s))
+            if not seen:
+                print(f"preflight: !!! step {s[0]} logged no requests on the mock (expected {step_path(s)})")
+                return False
             if wrong:
                 print(
                     f"preflight: !!! step {s[0]} expects {step_path(s)} but {sum(wrong.values())} of {seen} requests hit {wrong}"

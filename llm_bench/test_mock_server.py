@@ -104,6 +104,10 @@ def test_preflight_requires_a_mode_and_checks_the_logged_paths(tmp_path) -> None
     assert step_path(("s", 1, None, None, ["--shape-mix", "x", "--no-chat"])) == "/v1/completions"
     assert step_path(("s", 1, None, None, ["--no-chat", "--chat"])) == "/v1/chat/completions"  # the last wins
     assert step_path(("s", 1, None, None, ["--shape-mix", "x"])) is None
+    assert path_mismatches(str(tmp_path / "missing.requests"), 0, "/v1/completions") == (
+        0,
+        {},
+    )  # 0 seen: main() fails it
     log = tmp_path / "mock.requests"
     log.write_text("1.0 900 0 0 /v1/completions\n2.0 900 400 0 /v1/completions\n3.0 900 400 0 /v1/chat/completions\n")
     assert path_mismatches(str(log), 0, "/v1/completions") == (3, {"/v1/chat/completions": 1})
