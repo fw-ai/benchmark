@@ -162,7 +162,7 @@ class PrefixCacheEngine:
 _HEAD_TOKEN_BASE = 9_990_000
 
 
-def make_handler(engine: PrefixCacheEngine, ttft: float, tpot: float, log=None):
+def make_handler(engine: PrefixCacheEngine, ttft: float, tpot: float, log=None, slow_fraction=0.0, slow_ttft=0.0):
     log_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -207,7 +207,8 @@ def make_handler(engine: PrefixCacheEngine, ttft: float, tpot: float, log=None):
                 self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
                 self.wfile.flush()
 
-            time.sleep(ttft)
+            # A share of requests is held long (long generations on a healthy server)
+            time.sleep(slow_ttft if slow_fraction and random.random() < slow_fraction else ttft)
             for i in range(n):
                 if i:
                     time.sleep(tpot)
@@ -241,6 +242,8 @@ def main(argv=None):
         default=0,
         help="Tokens the engine renders ahead of every chat prompt beyond the client's count (DeepSeek V4.1: 26).",
     )
+    parser.add_argument("--slow-fraction", type=float, default=0.0, help="Share of requests held --slow-ttft s.")
+    parser.add_argument("--slow-ttft", type=float, default=0.0, help="Seconds before the first token when held.")
     parser.add_argument("--log", default=None, help="Append 'arrival prompt_tokens cached_tokens' per request.")
     args = parser.parse_args(argv)
 
@@ -257,7 +260,9 @@ def main(argv=None):
     )
     log = open(args.log, "a") if args.log else None
     ThreadingHTTPServer.daemon_threads = True
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(engine, args.ttft, args.tpot, log))
+    server = ThreadingHTTPServer(
+        (args.host, args.port), make_handler(engine, args.ttft, args.tpot, log, args.slow_fraction, args.slow_ttft)
+    )
     print(
         f"mock_server: http://{args.host}:{args.port}  window {args.window}  boundary {args.boundary}  "
         f"caches {args.caches}{' (affinity)' if args.affinity else ''}",

@@ -3392,7 +3392,7 @@ def _timed_adapter(pool_maxsize: int) -> LocustHttpAdapter:
     return adapter
 
 
-# Two-sided 95% t critical values by degrees of freedom (beyond 30, the normal value)
+# Two-sided 95% t critical values by degrees of freedom (beyond 30, a Cornish-Fisher expansion of the normal value)
 _T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
 _T95.update({11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093})
 _T95.update({20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048})
@@ -3412,16 +3412,19 @@ def in_flight_slope(samples) -> Optional[tuple]:
         return None
     slope = sum((t - mt) * (v - mv) for t, v in samples) / sxx
     sse = sum((v - mv - slope * (t - mt)) ** 2 for t, v in samples)
-    half = _T95.get(n - 2, 1.96) * math.sqrt(sse / (n - 2) / sxx)
+    df, z = n - 2, 1.959964
+    t = _T95[df] if df in _T95 else z + (z**3 + z) / (4 * df) + (5 * z**5 + 16 * z**3 + 3 * z) / (96 * df**2)
+    half = t * math.sqrt(sse / (n - 2) / sxx)
     return slope * 60, (slope - half) * 60, (slope + half) * 60
 
 
 class InFlightGauge:
-    """The client's in-flight paced requests (sent on the wire, no response yet), sampled every
-    --client-in-flight-interval seconds over the run window. A rising count with a flat server-side count means
-    requests that never reach the server (a receive stall): the capacity probe reads the slope and its interval.
-    Paced sends only; the count is absolute, so a send straddling the window's start is answered without going
-    negative."""
+    """The client's paced requests not yet completed (sent on the wire; still waiting or still streaming), sampled
+    every --client-in-flight-interval seconds over the run window. A rising count with a flat server-side count
+    means requests that never reach the server (a receive stall): the capacity probe reads the slope and its
+    interval. The slope is fitted over the window's second half only: the first half includes the ramp from 0 to
+    rate x request time, which a healthy server with long requests would read as rising. Paced sends only; the
+    count is absolute, so a send straddling the window's start is answered without going negative."""
 
     in_flight = 0
     samples: list = []
@@ -3464,7 +3467,9 @@ class InFlightGauge:
     def summary_entries(cls) -> dict:
         if cls._window_start is None:
             return {}
-        fit = in_flight_slope(cls.samples)
+        # The second half of the window: past the warm-up ramp (one request time), as the server count is fitted
+        span = time.monotonic() - cls._window_start
+        fit = in_flight_slope([(t, v) for t, v in cls.samples if t >= span / 2])
         return {
             "client_in_flight_samples": ";".join(f"{t:.0f}:{v}" for t, v in cls.samples),
             "client_in_flight_max": max((v for _, v in cls.samples), default=cls.in_flight),
@@ -7043,9 +7048,10 @@ def init_parser(parser):
         "--client-in-flight-interval",
         type=float,
         default=15.0,
-        help="With --qps or --replay-schedule: seconds between samples of the client's in-flight requests (sent, "
-        "not yet answered), reported as Client In Flight Samples and a fitted slope per minute with its 95%% "
-        "interval. A rising count the server doesn't see means requests stuck before the server. 0 turns it off.",
+        help="With --qps or --replay-schedule: seconds between samples of the client's requests not yet completed "
+        "(sent, still waiting or streaming), reported as Client In Flight Samples and a slope per minute fitted over "
+        "the window's second half, with its 95%% interval. A rising count the server doesn't see means requests "
+        "stuck before the server. 0 turns it off.",
     )
     parser.add_argument(
         "--qps-max-lateness",

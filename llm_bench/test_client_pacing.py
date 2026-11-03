@@ -459,3 +459,44 @@ def test_in_flight_gauge_counts_sends_minus_responses_and_fits_a_slope() -> None
     assert entries["client_in_flight_samples"] == "15:3;30:5" and entries["client_in_flight_max"] == 5
     assert entries["client_in_flight_slope_per_min"] == ""
     InFlightGauge._window_start, InFlightGauge.samples = None, []
+
+
+def _simulated_in_flight(hold, rate=10.0, seconds=60.0, every=5.0):
+    """In-flight samples of a paced step: a send every 1/rate s, each completing after hold(i) seconds."""
+    sends = [(i / rate, hold(i)) for i in range(int(seconds * rate))]
+    return [
+        (t, sum(1 for s, h in sends if s <= t < s + h)) for t in [every * (k + 1) for k in range(int(seconds / every))]
+    ]
+
+
+def test_in_flight_slope_ignores_the_warm_up_ramp_of_long_requests() -> None:
+    """N10-147-1: a healthy server with long requests ramps in flight from 0 to rate x request time; fitted from the
+    window's start, that read as rising (+21/min, interval excluding 0, a false capacity break). The slope is fitted
+    over the second half, so the healthy step's interval includes 0 while a server that never answers still rises."""
+    import time as _time
+
+    from load_test import InFlightGauge, in_flight_slope
+
+    healthy = _simulated_in_flight(lambda i: 15.0 if i % 5 == 0 else 0.05)  # 20% held 15 s, the rest 50 ms
+    whole = in_flight_slope(healthy)
+    assert whole[1] > 0  # the old fit: a false "rising"
+    stuck = _simulated_in_flight(lambda i: 1e9)
+    for samples, rising in ((healthy, False), (stuck, True)):
+        InFlightGauge._window_start, InFlightGauge.samples = _time.monotonic() - 60.0, samples
+        e = InFlightGauge.summary_entries()
+        low, high = e["client_in_flight_slope_ci95_low"], e["client_in_flight_slope_ci95_high"]
+        assert (low > 0) if rising else (low <= 0 <= high), (samples, low, high)
+    InFlightGauge._window_start, InFlightGauge.samples = None, []
+
+
+def test_in_flight_slope_t_beyond_30_degrees_of_freedom() -> None:
+    """N10-147-2: past the table, the t value comes from an expansion of the normal one (not 1.96 flat)."""
+    from load_test import in_flight_slope
+
+    samples = [(float(i), float(i % 7)) for i in range(42)]  # 40 degrees of freedom: t = 2.021
+    slope, low, high = in_flight_slope(samples)
+    n = len(samples)
+    mt, mv = sum(t for t, _ in samples) / n, sum(v for _, v in samples) / n
+    sxx = sum((t - mt) ** 2 for t, _ in samples)
+    sse = sum((v - mv - slope / 60 * (t - mt)) ** 2 for t, v in samples)
+    assert abs((high - low) / 2 / 60 / ((sse / (n - 2) / sxx) ** 0.5) - 2.021) < 0.002
