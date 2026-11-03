@@ -4228,6 +4228,34 @@ class ReplayPacer:
 _HEAD_OVERHEAD_LOGGED: set = set()
 
 
+class SentDesign:
+    """Per class, the design of every request SENT in the run window: the summary's per-class means count completed
+    responses only, so under a time-boxed step the last ~(rate x p99 latency) sends, still in flight at quit and
+    likelier long, are missing from them. These all-sent designed means sit beside them (delivered values exist
+    only for completed requests)."""
+
+    sent: dict = {}
+
+    @classmethod
+    def record(cls, class_name: str, prompt_tokens: int, designed_cached) -> None:
+        n, prompt, cached = cls.sent.get(class_name, (0, 0, 0))
+        cls.sent[class_name] = (n + 1, prompt + prompt_tokens, cached + (designed_cached or 0))
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.sent = {}
+
+    @classmethod
+    def entries(cls, class_name: str) -> dict:
+        n, prompt, cached = cls.sent.get(class_name, (0, 0, 0))
+        prefix = f"class_{class_name}_"
+        return {
+            prefix + "sent_requests": n,
+            prefix + "designed_prompt_tokens_sent": prompt / n if n else "",
+            prefix + "designed_cached_tokens_sent": cached / n if n else "",
+        }
+
+
 class SendTimeline:
     """Intended and actual send times of paced requests, for delivered-arrival stats in the summary."""
 
@@ -4647,6 +4675,7 @@ class InitTracker:
         ClientCpu.reset()
         SendTimeline.reset()
         RequestOutcomes.reset()
+        SentDesign.reset()
         SendTimeline.spawned()
         # Paced users start claiming send times only now, so the schedule doesn't begin with half the users
         cls.spawned.set()
@@ -4662,6 +4691,7 @@ class InitTracker:
                 # send is counted from it and a punctual first row reads ~0
                 SendTimeline.spawned(at=window_start)
                 RequestOutcomes.reset()
+                SentDesign.reset()
                 ClientCpu.reset()
 
             # Just before the start: no scored row goes out earlier, and the first sends' stamps must survive it
@@ -6582,6 +6612,11 @@ class LLMUser(HttpUser):
             prepared = self._prepare_text_request()
         data, request_headers, max_tokens, prompt_tokens, shape_request, body = prepared
         designed_prompt = prompt_tokens  # the client's own count, before the server's replaces it below
+        if shape_request is not None:
+            # counted when sent, whether or not its response completes in the window
+            SentDesign.record(
+                shape_request.class_name, shape_request.prompt_tokens, shape_request.designed_cached_tokens
+            )
         batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
@@ -8014,6 +8049,7 @@ def shape_mix_summary_entries(
         designed = stats.entries.get((prefix + "designed_cached_tokens", "METRIC"))
         if designed is not None:
             entries[prefix + "designed_cached_tokens"] = designed.avg_response_time
+        entries.update(SentDesign.entries(name))  # the all-sent designed means, beside the completed-only ones
         recorded = stats.entries.get((prefix + "recorded_cached_tokens", "METRIC"))
         if recorded is not None:
             laid_out = stats.entries.get((prefix + "laid_out_cached_tokens", "METRIC"))
