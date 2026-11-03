@@ -3742,10 +3742,11 @@ def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] 
     (so delivered vs designed uncached can be gated per request: the harness-delivery check), and the request's tier
     (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers.
 
-    For shape-mix and replay rows, designed and prompt both carry the request's measured head (the server's prompt
-    count minus the client's, when the server's is longer), so prompt equals the server's own count whenever it is
-    longer: prompt - designed (designed uncached) is net of it, but prompt is not an independent designed length
-    and can't test whether the server sees the designed length (D-134's check uses the class's designed prompt)."""
+    designed and prompt are the design only: for shape-mix and replay rows the client's count plus the run's one
+    constant calibrated head (the setup measurement or --chat-head-tokens, 0 in completions mode), which the layout
+    already folds into the class's lengths; never a per-request server figure. So comparing the server's prompt with
+    prompt is two-sided, and a head the calibration missed (or one that drifts) shows as a delivered-vs-designed gap,
+    as it should."""
     record = (
         f" | reuse class={class_name} designed={designed} delivered={'none' if delivered is None else int(delivered)}"
     )
@@ -6794,10 +6795,10 @@ class LLMUser(HttpUser):
             token_str = ", ".join(token_parts)
             # D-123: the in-run reuse check's per-request record, parsed by the runner from generator logs and
             # stdout (designed is what the layout intends the server to reuse for this row; delivered=none when
-            # the server reports no cached count). D-131: on chat runs the server renders the prompt with a
-            # longer head than the client counts (the measured +26 on DeepSeek V4.1); those tokens are reused
-            # ahead of the divergence, so they belong in designed, measured per request as the server's prompt
-            # count minus the client's
+            # the server reports no cached count). prompt= is the designed prompt: the client's count plus the run's
+            # one constant calibrated head (already in the class's prompt_tokens, D-134), never a per-request server
+            # figure, so the harness-delivery check is two-sided (D-183). head_overhead is only what the server
+            # rendered beyond the design (an uncalibrated or drifting head), logged once, and shows as that gap
             head_overhead = 0
             if (
                 designed_cached is not None
@@ -6808,13 +6809,12 @@ class LLMUser(HttpUser):
                 head_overhead = int(prompt_tokens) - shape_request.prompt_tokens
             reuse_str = ""
             if class_name is not None:
-                # The designed prompt carries the measured head like designed does, so designed uncached is net of it
                 reuse_str = reuse_record(
                     class_name,
-                    designed_cached + head_overhead,
+                    designed_cached,
                     cached_tokens,
                     request_tier(shape_request),
-                    prompt=shape_request.prompt_tokens + head_overhead,
+                    prompt=shape_request.prompt_tokens,
                 )
             elif self._designed_cached_tokens is not None:
                 # A -pcml run's shared prefix (compensations applied), class `default`
@@ -6865,10 +6865,10 @@ class LLMUser(HttpUser):
 
             if shape_request is not None and head_overhead and not _HEAD_OVERHEAD_LOGGED:
                 _HEAD_OVERHEAD_LOGGED.add(head_overhead)
-                logger.info(
-                    f"--shape-mix: the server renders chat prompts {head_overhead} tokens longer than designed "
-                    f"(its chat head, once per value); those tokens are counted in the reuse record's designed "
-                    f"value (D-131)"
+                logger.warning(
+                    f"--shape-mix: the server renders prompts {head_overhead} tokens longer than designed (once per "
+                    f"value): a chat head the calibration missed, or one that drifted; the reuse record's prompt= is "
+                    f"the design, so this shows as a delivered-vs-designed gap. Pass --chat-head-tokens to calibrate"
                 )
             if shape_request is not None:
                 record_shape_class_metrics(
@@ -6881,11 +6881,7 @@ class LLMUser(HttpUser):
                     recorded_cached_tokens=shape_request.recorded_cached_tokens,
                     laid_out_cached_tokens=shape_request.reusable_tokens,
                     replay_role=shape_request.replay_role,
-                    designed_cached_tokens=(
-                        (shape_request.designed_cached_tokens + head_overhead)
-                        if shape_request.designed_cached_tokens is not None
-                        else None
-                    ),
+                    designed_cached_tokens=shape_request.designed_cached_tokens,
                 )
 
             # Allow provider to process response (e.g., for custom metrics)
