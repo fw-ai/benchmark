@@ -4229,3 +4229,41 @@ def test_replay_refuses_tier_shares_and_a_single_tier_gets_its_output() -> None:
     single["classes"][0]["generated_tokens_by_tier"] = {"high": 77}
     drawn = [r for r in _take(_dataset(single), 200) if r.class_index == 0]
     assert drawn and all(r.generated_tokens == 77 and r.reasoning_effort == "high" for r in drawn)
+
+
+# Task 15's reuse-record pattern (fw-ai/fireworks #68788 @ 2fefdcee3bd, traffic_profile_logs.py): row= is group 7
+_TASK15_REUSE_RE = (
+    r"(\d+) prompt, (?:(\d+) cached, )?.*\| reuse class=(\S+) designed=(\d+) delivered=(\d+|none)"
+    r"(?:.*? prompt=(\d+))?(?:.*? row=(\d+))?"
+)
+
+
+def test_replay_reuse_records_carry_the_schedule_row(tmp_path) -> None:
+    """A replay request's reuse record carries row=<its 0-based position in the schedule file>, so a checker can join
+    each completed record to its recorded row (and compare over the same row set). The position is in FILE order,
+    blank lines not counted, even when the file isn't time-sorted; shape-mix draws log no row."""
+    import re
+
+    from load_test import reuse_record
+
+    rows = [
+        {"timestamp": 3000, "class": "chat", "input_length": 900, "cached_length": 300, "output_length": 4},
+        {"timestamp": 1000, "class": "agent", "input_length": 800, "cached_length": 200, "output_length": 4},
+        {"timestamp": 2000, "class": "cold", "input_length": 700, "cached_length": 0, "output_length": 4},
+    ]
+    path = tmp_path / "s.jsonl"
+    path.write_text(json.dumps(rows[0]) + "\n\n" + json.dumps(rows[1]) + "\n" + json.dumps(rows[2]) + "\n")
+    from load_test import load_replay_schedule
+
+    entries = load_replay_schedule(str(path), ("chat", "agent", "cold"))
+    assert [e.row for e in entries] == [1, 2, 0]  # time order agent, cold, chat; rows are file positions
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    assert sorted(ds.replay_request(e).schedule_row for e in entries) == [0, 1, 2]
+    assert all(r.schedule_row is None for r in _take(_dataset(tokenizer=WordTokenizer()), 20))
+    line = "Response received: ..., 900 prompt, 302 cached, 4 completion" + reuse_record(
+        "chat", 300, 302, "high", prompt=900, row=7
+    )
+    assert line.endswith(" designed=300 delivered=302 prompt=900 row=7 tier=high")
+    m = re.search(_TASK15_REUSE_RE, line)
+    assert m.group(6) == "900" and m.group(7) == "7"  # task 15's parser reads it
+    assert re.search(_TASK15_REUSE_RE, line.replace(" row=7", "")).group(7) is None  # absent on draws
