@@ -4074,3 +4074,21 @@ def test_reuse_record_carries_the_tier_only_when_tiers_are_used(tmp_path) -> Non
     ]
     ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
     assert request_tier(ds.replay_request(entries[0])) == "20"
+
+
+def test_served_config_identity_hashes_the_config_it_read(tmp_path) -> None:
+    """The summary carries the sha256 of the served model's config.json bytes and its reuse fields (text_config
+    first), so a runner can match them against the replica's launch config."""
+    import hashlib
+
+    from load_test import served_config_identity
+
+    raw = json.dumps(
+        {"model_type": "deepseek_v41", "text_config": {"model_type": "deepseek_v41_text", "sliding_window": 128}}
+    )
+    (tmp_path / "config.json").write_text(raw)
+    entries = served_config_identity(str(tmp_path))
+    assert entries["served_model_config_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert entries["served_model_config_fields"] == "model_type=deepseek_v41_text;sliding_window=128;index_topk="
+    assert served_config_identity(None) == {"served_model_config_sha256": "", "served_model_config_fields": ""}
+    assert served_config_identity(str(tmp_path / "missing"))["served_model_config_sha256"] == ""
