@@ -4362,8 +4362,11 @@ class SentDesign:
 
     @classmethod
     def record(cls, class_name: str, prompt_tokens: int, designed_cached) -> None:
-        n, prompt, cached = cls.sent.get(class_name, (0, 0, 0))
-        cls.sent[class_name] = (n + 1, prompt + prompt_tokens, cached + (designed_cached or 0))
+        # rows without a designed cached value (e.g. a replay lead-in) count for the prompt mean, not the cached one
+        n, prompt, n_cached, cached = cls.sent.get(class_name, (0, 0, 0, 0))
+        if designed_cached is not None:
+            n_cached, cached = n_cached + 1, cached + designed_cached
+        cls.sent[class_name] = (n + 1, prompt + prompt_tokens, n_cached, cached)
 
     @classmethod
     def reset(cls) -> None:
@@ -4371,12 +4374,12 @@ class SentDesign:
 
     @classmethod
     def entries(cls, class_name: str) -> dict:
-        n, prompt, cached = cls.sent.get(class_name, (0, 0, 0))
+        n, prompt, n_cached, cached = cls.sent.get(class_name, (0, 0, 0, 0))
         prefix = f"class_{class_name}_"
         return {
             prefix + "sent_requests": n,
             prefix + "designed_prompt_tokens_sent": prompt / n if n else "",
-            prefix + "designed_cached_tokens_sent": cached / n if n else "",
+            prefix + "designed_cached_tokens_sent": cached / n_cached if n_cached else "",
         }
 
 
