@@ -116,3 +116,55 @@ def test_preflight_requires_a_mode_and_checks_the_logged_paths(tmp_path) -> None
     # A log from before the path column counts as a mismatch, not a silent pass
     log.write_text("1.0 900 0 0\n")
     assert path_mismatches(str(log), 0, "/v1/completions") == (1, {"?": 1})
+
+
+def test_preflight_refuses_a_layout_that_doesnt_match_the_mock(tmp_path, capsys) -> None:
+    """The layout overhang must equal what the mock withholds (its window, less its chat head in chat), or the
+    verdict measures the mismatch: P9's 2-log pre-flight laid prefixes out +128 on a window-0 mock and "failed"
+    its short classes by -67%. The pre-flight refuses before starting; --allow-mismatch is for experiments."""
+    import json
+
+    from preflight_run import applied_overhang, expected_overhang, main, summary_mismatch
+
+    chat = ("s", 1, None, None, ["--shape-mix", "x", "--chat", "--prefix-reuse-overhang", "102"])
+    completions = ("s", 1, None, None, ["--shape-mix", "x", "--no-chat", "--prefix-reuse-overhang", "128"])
+    assert expected_overhang(chat, 128, 26) == 102 and expected_overhang(completions, 128, 26) == 128
+    assert applied_overhang(chat) == 102
+    # resolved by llm_bench from the served model's config when the step passes no overhang
+    config = tmp_path / "dsv4"
+    config.mkdir()
+    (config / "config.json").write_text(json.dumps({"model_type": "deepseek_v4", "sliding_window": 128}))
+    assert applied_overhang(("s", 1, None, None, ["--no-chat", "--served-model-config", str(config)])) == 128
+
+    mix = '{"seed":1,"classes":[{"name":"c","weight":1,"prompt_tokens":900,"cached_prompt_tokens":500}]}'
+    plan = {
+        "record": {"target_qps": 1.0},
+        "traffic_generator_create_args": {
+            "ramp-1": [
+                "traffic-generator",
+                "create",
+                "--concurrency",
+                "2",
+                "--duration",
+                "10s",
+                "--qps",
+                "1.0",
+                "--extra-args",
+                f"--shape-mix '{mix}' --no-chat --prefix-reuse-overhang 128",
+            ],
+        },
+    }
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan))
+    assert main([str(path), "--out", str(tmp_path / "out"), "--window", "0"]) == 2  # before any mock starts
+    assert "refusing" in capsys.readouterr().out
+    assert not (tmp_path / "out" / "mock.requests").exists()
+
+    summary = tmp_path / "s.csv"
+    summary.write_text("Reuse Overhang Tokens,Chat Head Tokens\n128,20\n")
+    assert "overhang 128" in summary_mismatch(str(summary), completions, 0, 0, "tok")
+    assert summary_mismatch(str(summary), completions, 128, 0, "tok") is None
+    headed = ("s", 1, None, None, ["--chat", "--tokenizer", "tok", "--prefix-reuse-overhang", "102"])
+    summary.write_text("Reuse Overhang Tokens,Chat Head Tokens\n102,20\n")
+    assert "chat head of 20" in summary_mismatch(str(summary), headed, 128, 26, "tok")
+    assert summary_mismatch(str(summary), headed, 128, 26, "another-tok") is None  # a counting-tokenizer head
