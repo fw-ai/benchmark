@@ -4210,3 +4210,27 @@ def test_prompt_field_is_the_design_so_harness_delivery_is_two_sided() -> None:
     assert [r.prompt_tokens for r in a] == [r.prompt_tokens for r in b]  # prompt= is the same design either way
     completions = _dataset(mix, tokenizer=WordTokenizer())  # no head in completions: prompt= is the client's count
     assert all(r.prompt_tokens == mix["classes"][r.class_index]["prompt_tokens"] for r in _take(completions, 20))
+
+
+def test_summary_reports_all_sent_designed_means_beside_completed_ones() -> None:
+    """The per-class means count completed responses only; a request still in flight at quit (likelier a long one)
+    is missing from them. Sent Requests and the all-sent designed prompt and cached means sit beside them."""
+    from load_test import SentDesign, shape_mix_summary_entries
+
+    SentDesign.reset()
+    for prompt in (600, 600, 2400):  # the long one is the last sent, still in flight at quit
+        SentDesign.record("chat", prompt, 400)
+    stats = RequestStats()
+    for value in (600, 600):  # only the two short ones completed
+        stats.log_request("METRIC", "class_chat_prompt_tokens", value, 0)
+        stats.log_request("METRIC", "class_chat_total_latency", 10, 0)
+    entries = shape_mix_summary_entries(stats, ["chat"], True)
+    assert entries["class_chat_requests"] == 2 and entries["class_chat_prompt_tokens"] == 600
+    assert entries["class_chat_sent_requests"] == 3
+    assert (
+        entries["class_chat_designed_prompt_tokens_sent"] == 1200
+        and entries["class_chat_designed_cached_tokens_sent"] == 400
+    )
+    empty = shape_mix_summary_entries(RequestStats(), ["agent"], True)
+    assert empty["class_agent_sent_requests"] == 0 and empty["class_agent_designed_prompt_tokens_sent"] == ""
+    SentDesign.reset()
