@@ -1,0 +1,11 @@
+prose_corpus.txt.gz: the default --shape-mix-corpus for llm_bench
+
+The corpus is the text of three novels, each starting with its own title line:
+
+- Pride and Prejudice, by Jane Austen (first published 1813)
+- The Adventures of Sherlock Holmes, by Arthur Conan Doyle (first published 1892)
+- Frankenstein, by Mary Shelley (first published 1818)
+
+All three works are in the public domain in the United States and in countries whose copyright terms are the
+author's life plus 70 years or less. The text carries no third-party license headers or trademarks. llm_bench uses
+it as load-test prompt material: prefixes and tails are cut from it.
