@@ -9,3 +9,4 @@ python-dotenv
 tabulate
 tiktoken
 transformers
+numpy
