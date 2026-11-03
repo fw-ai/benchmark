@@ -34,6 +34,7 @@ import bisect
 import hashlib
 import io
 import itertools
+import numpy as np
 from PIL import Image
 import transformers
 import re
@@ -777,6 +778,8 @@ SHAPE_CLASS_FIELDS = {
     "generated_tokens_quantiles",
     "prefix_popularity",
     "reasoning_effort",
+    "reasoning_effort_shares",
+    "generated_tokens_by_tier",
 }
 _SHAPE_CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SHAPE_NAME_INVALID_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -813,6 +816,11 @@ class ShapeClass:
     # or its --prefix-pool-cache file. The server's KV cache does depend on it: the preamble sits ahead of the shared
     # prefix, so the server caches a prefix once per tier it's requested with
     reasoning_effort: Optional[str] = None
+    # Tier shares instead of one tier: ((tier, share), ...) sorted by tier. Each prefix gets its tiers from
+    # prefix_tier_split, so request-weighted shares match; None: one tier (reasoning_effort) for every request
+    reasoning_effort_shares: Optional[tuple] = None
+    # Output tokens per tier, ((tier, tokens), ...); a tier without one uses generated_tokens
+    generated_tokens_by_tier: Optional[tuple] = None
     # Largest prompt (tokens) the class's prompt_band allows, widened by bands merged into it; None: no ceiling
     prompt_tokens_max: Optional[int] = None
 
@@ -1216,6 +1224,8 @@ def _parse_shape_mix(text: str) -> ShapeMix:
                     raw, where, _shape_int(raw, "prefix_pool_size", where, 1, default=1)
                 ),
                 reasoning_effort=_replay_effort(raw, where),
+                reasoning_effort_shares=_parse_tier_shares(raw, where)[0],
+                generated_tokens_by_tier=_parse_tier_shares(raw, where)[1],
                 prompt_tokens_max=_prompt_tokens_max(raw, spec),
             )
         )
@@ -1565,6 +1575,10 @@ class ShapeMixDataset:
         self._prefix_cumulative = [
             self._popularity_cumulative(ci, default_popularity_zipf) for ci in range(len(self.classes))
         ]
+        # Tier shares (default off): each class's per-prefix tier split, and the request seed's own stream for a split
+        # prefix's draws, so the request stream is the same as without shares
+        self._tier_split = [self._class_tier_split(ci) for ci in range(len(self.classes))]
+        self._tier_rng = random.Random(f"shape-mix:{self.request_seed}:tiers:{self._worker_index}")
         self._filler_offsets = [array("I", bytes(4 * len(t))) for t in self._filler_tokens]
         self._filler_widths = [array("I", [_UNBUILT]) * len(t) for t in self._filler_tokens]
         if self.tail_variants:
@@ -2086,6 +2100,8 @@ class ShapeMixDataset:
                 prefix_index = None
             elif prefix_index is None:
                 prefix_index = self._draw_prefix_index(ci)
+            tier = self._draw_tier(ci, prefix_index)
+            generated_given = generated is not None
             nonce = self._rng.getrandbits(64)
             variant = self._draw_variant(ci, self._rng)
             cls = self.classes[ci]
@@ -2098,7 +2114,9 @@ class ShapeMixDataset:
             if self.sample_lengths and cls.uncached_tokens_quantiles and variant is None:
                 drawn = self._uncached_dist[ci].value(self._rng.random())
                 tail_tokens = self._tail_for_uncached(ci, drawn)
-        return self._render(ci, prefix_index, nonce, counter, variant, generated, tail_tokens)
+        return self._with_tier(
+            self._render(ci, prefix_index, nonce, counter, variant, generated, tail_tokens), ci, tier, generated_given
+        )
 
     def _draw_variant(self, ci: int, rng: random.Random) -> Optional[int]:
         count = len(self._filler_tokens[ci])
@@ -2127,6 +2145,44 @@ class ShapeMixDataset:
         kind, value = popularity
         weights = (1 / (j + 1) ** value for j in range(n)) if kind == "zipf" else value
         return array("d", itertools.accumulate(weights))
+
+    def _class_tier_split(self, ci: int) -> Optional[list]:
+        """prefix_tier_split over the class's actual popularity weights (uniform, Zipf or explicit), in prefix-index
+        order; a class without a pool is one prefix carrying the shares. None without reasoning_effort_shares."""
+        shares = self.classes[ci].reasoning_effort_shares
+        if not shares:
+            return None
+        n = max(1, self.pool_sizes[ci])
+        cumulative = self._prefix_cumulative[ci]
+        weights = [1.0] * n if cumulative is None else [b - a for a, b in zip([0.0, *cumulative[:-1]], cumulative)]
+        return prefix_tier_split(dict(shares), weights)
+
+    def prefix_tiers(self, ci: int, prefix_index: Optional[int]) -> list:
+        """The tiers a prefix carries (one per fill request): [None] without shares, else its split's tiers."""
+        split = self._tier_split[ci]
+        if split is None:
+            return [None]
+        return sorted(split[prefix_index or 0])
+
+    def _draw_tier(self, ci: int, prefix_index: Optional[int]) -> Optional[str]:
+        """A request's tier from its prefix's split: the one tier, or a draw from the tier stream when split."""
+        split = self._tier_split[ci]
+        if split is None:
+            return None
+        tiers = split[prefix_index or 0]
+        if len(tiers) == 1:
+            return next(iter(tiers))
+        names = sorted(tiers)
+        return self._tier_rng.choices(names, weights=[tiers[t] for t in names])[0]
+
+    def _with_tier(self, request: ShapeRequest, ci: int, tier: Optional[str], generated_given: bool) -> ShapeRequest:
+        if tier is None:
+            return request
+        changes = {"reasoning_effort": tier}
+        by_tier = dict(self.classes[ci].generated_tokens_by_tier or ())
+        if tier in by_tier and not generated_given:
+            changes["generated_tokens"] = by_tier[tier]
+        return dataclasses.replace(request, **changes)
 
     def prefix_popularity_share(self, ci: int, top: int) -> float:
         """Fraction of the class's requests expected on its `top` most popular prefixes."""
@@ -2683,7 +2739,7 @@ class ShapeMixDataset:
         random.Random(f"shape-mix:{self.request_seed}:fill-order:{pass_index}").shuffle(plan)
         return plan
 
-    def fill_request(self, class_index: int, prefix_index: int) -> ShapeRequest:
+    def fill_request(self, class_index: int, prefix_index: int, tier: Optional[str] = None) -> ShapeRequest:
         """A request on one prefix shaped like live traffic (prefix + unique tail), generating one token.
 
         Live traffic diverges right after the prefix, so filling with the same shape leaves the cache as
@@ -2693,7 +2749,9 @@ class ShapeMixDataset:
             self._counter += 1
             nonce = self._fill_rng.getrandbits(64)
             variant = self._draw_variant(class_index, self._fill_rng)
-        return self._render(class_index, prefix_index, nonce, counter, variant, 1)
+        request = self._render(class_index, prefix_index, nonce, counter, variant, 1)
+        # With tier shares the server caches a prefix once per tier it carries (the preamble is ahead of it)
+        return request if tier is None else dataclasses.replace(request, reasoning_effort=tier)
 
     def _render(self, ci, prefix_index, nonce, counter, variant, generated_tokens, tail_tokens=None) -> ShapeRequest:
         cls = self.classes[ci]
@@ -3524,6 +3582,61 @@ def _replay_bool(row: dict, key: str, where: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{where}: '{key}' must be true or false, got {value!r}")
     return value
+
+
+def _parse_tier_shares(raw: dict, where: str) -> tuple:
+    """reasoning_effort_shares ({tier: share}) and generated_tokens_by_tier ({tier: tokens}), validated."""
+    tiers = ("none", "low", "medium", "high")
+    shares = raw.get("reasoning_effort_shares")
+    by_tier = raw.get("generated_tokens_by_tier")
+    if shares is not None:
+        if raw.get("reasoning_effort") is not None:
+            raise ValueError(f"--shape-mix {where}: give reasoning_effort or reasoning_effort_shares, not both")
+        if not isinstance(shares, dict) or not shares or set(shares) - set(tiers):
+            raise ValueError(f"--shape-mix {where}: reasoning_effort_shares must map tiers {tiers} to shares")
+        values = {t: _shape_number(shares, t, f"{where} reasoning_effort_shares") for t in shares}
+        if any(v < 0 for v in values.values()) or sum(values.values()) <= 0:
+            raise ValueError(f"--shape-mix {where}: reasoning_effort_shares must be >= 0 with a positive sum")
+        shares = tuple(sorted((t, v) for t, v in values.items() if v > 0))
+    if by_tier is not None:
+        if not isinstance(by_tier, dict) or set(by_tier) - set(tiers):
+            raise ValueError(f"--shape-mix {where}: generated_tokens_by_tier must map tiers {tiers} to tokens")
+        by_tier = tuple(sorted((t, _shape_int(by_tier, t, f"{where} generated_tokens_by_tier", 1)) for t in by_tier))
+    return shares, by_tier
+
+
+def prefix_tier_split(shares, popularity):
+    """Each prefix's tier split, ``{tier: fraction of its requests}``, so request-weighted tier shares equal *shares*.
+
+    A pure function of the class's shares and its prefixes' popularity weights (in prefix-index order), shared with
+    llm_bench (task 03), which draws a split prefix's tier per request from its seed. Prefixes are walked from the most
+    popular (ties to the lower index) and laid along the cumulative request weight; the tiers, in name order, take
+    consecutive stretches of it as long as their shares. A prefix straddling a tier boundary is split at it, so at most
+    tiers - 1 prefixes per class carry more than one tier.
+    """
+    names = sorted(shares)
+    total = float(sum(shares.values()))
+    bounds = np.cumsum([shares[t] / total for t in names])
+    bounds[-1] = 1.0
+    weights = np.asarray(popularity, dtype=float)
+    weights = weights / weights.sum()
+    split: list[dict[str, float]] = [{} for _ in range(len(weights))]
+    start, tier = 0.0, 0
+    for j in sorted(range(len(weights)), key=lambda k: (-weights[k], k)):
+        end = min(start + float(weights[j]), 1.0)
+        at = start
+        while at < end - 1e-15:
+            upto = min(end, float(bounds[tier]))
+            if upto > at:
+                split[j][names[tier]] = split[j].get(names[tier], 0.0) + (upto - at) / weights[j]
+            at = upto
+            if at >= bounds[tier] - 1e-15 and tier < len(names) - 1:
+                tier += 1
+        start = end
+        # Float accumulation leaves a split a hair off 1 on long tails: normalise so each sums to 1 exactly.
+        mass = sum(split[j].values())
+        split[j] = {t: f / mass for t, f in split[j].items()}
+    return split
 
 
 def _replay_effort(row: dict, where: str) -> Optional[str]:
@@ -6060,12 +6173,16 @@ class LLMUser(HttpUser):
         started = time.monotonic()
         for pass_index in range(first_pass, first_pass + passes):
             for ci, j in ds.fill_plan(pass_index):
-                request = ds.fill_request(ci, j)
-                data, headers = build_shape_mix_request(self.provider_formatter, request)
-                PrefixFill.prompt_tokens_sent += request.prompt_tokens
-                PrefixFill.prefix_tokens_sent += ds._head + ds.prefix_tokens[ci]
-                PrefixFill.requests += 1
-                pool.spawn(self._send_paced, (data, headers, 1, request.prompt_tokens, request, json.dumps(data)), None)
+                # One fill per tier the prefix carries ([None] without tier shares: one, as before)
+                for tier in ds.prefix_tiers(ci, j):
+                    request = ds.fill_request(ci, j, tier)
+                    data, headers = build_shape_mix_request(self.provider_formatter, request)
+                    PrefixFill.prompt_tokens_sent += request.prompt_tokens
+                    PrefixFill.prefix_tokens_sent += ds._head + ds.prefix_tokens[ci]
+                    PrefixFill.requests += 1
+                    pool.spawn(
+                        self._send_paced, (data, headers, 1, request.prompt_tokens, request, json.dumps(data)), None
+                    )
             pool.join()  # a pass completes before the next starts
         PrefixFill.seconds = time.monotonic() - started
         logger.info(
