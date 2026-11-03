@@ -3878,6 +3878,15 @@ def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] 
     return record + (f" tier={tier}" if tier is not None else "")
 
 
+def pcml_reuse_record(designed_cached: int, delivered, client_prompt, chat_head: int) -> str:
+    """A -pcml row's reuse record (class `default`). -pcml builds the client's count net of the calibrated chat head
+    (D-134), so prompt= adds that one constant head back: the designed SERVER length, as on shape-mix and replay rows
+    (D-183). *chat_head* is 0 in completions or when unmeasured."""
+    return reuse_record(
+        "default", designed_cached, delivered, prompt=client_prompt + chat_head if client_prompt else client_prompt
+    )
+
+
 def reasoning_effort_payload(tier: str):
     """The payload value of a tier: an integer tier as the integer the log records, a name as is."""
     return int(tier) if tier.isdigit() else tier
@@ -6949,13 +6958,8 @@ class LLMUser(HttpUser):
                 )
             elif self._designed_cached_tokens is not None:
                 # A -pcml run's shared prefix (compensations applied), class `default`
-                # -pcml builds the client's count net of the calibrated head; prompt= is the designed SERVER length
-                # (that count plus the run's one constant head), as on shape-mix and replay rows (D-183)
-                reuse_str = reuse_record(
-                    "default",
-                    self._designed_cached_tokens,
-                    cached_tokens,
-                    prompt=designed_prompt + self._pcml_chat_head if designed_prompt else designed_prompt,
+                reuse_str = pcml_reuse_record(
+                    self._designed_cached_tokens, cached_tokens, designed_prompt, self._pcml_chat_head
                 )
 
             logger.info(
