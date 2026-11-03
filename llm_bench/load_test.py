@@ -2867,6 +2867,9 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
         data.update(request.overrides)
         if request.overrides.get("reasoning_effort") is not None:
             data["reasoning_effort"] = reasoning_effort_payload(request.overrides["reasoning_effort"])
+    if data.get("reasoning_effort") == REASONING_EFFORT_UNSET:
+        # "unset": no field at all (not null, not "none"), whatever --reasoning-effort would have added
+        del data["reasoning_effort"]
     if output_mode == "max":
         data.pop("min_tokens", None)
         data.pop("ignore_eos", None)
@@ -3647,13 +3650,18 @@ def prefix_tier_split(shares, popularity):
 # The reasoning-effort names the serving stack accepts (DeepSeek V4.1 maps medium to high and xhigh to max, minimal
 # to low), plus integer tiers 1-1023 as production logs them (1-100 is the budget; 101-1023 maps to low)
 REASONING_EFFORT_NAMES = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+# A tier meaning "send no reasoning_effort field" (profiles label untiered rows "unset"); "null" is accepted for it
+REASONING_EFFORT_UNSET = "unset"
 
 
 def reasoning_effort_tier(value, where: str) -> Optional[str]:
-    """A tier as llm_bench keeps it: a name, or an integer tier as its decimal string ("20"); None stays None.
-    Integers are sent as integers (reasoning_effort_payload), never rounded to a named tier."""
+    """A tier as llm_bench keeps it: a name, an integer tier as its decimal string ("20"), or "unset" (also "null"):
+    the request carries no reasoning_effort field at all. None (no tier given) stays None. Integers are sent as
+    integers (reasoning_effort_payload), never rounded to a named tier."""
     if value is None:
         return None
+    if value in (REASONING_EFFORT_UNSET, "null"):
+        return REASONING_EFFORT_UNSET
     if isinstance(value, bool):
         raise ValueError(f"{where}: 'reasoning_effort' must be a tier name or an integer, got {value!r}")
     if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
@@ -3664,7 +3672,7 @@ def reasoning_effort_tier(value, where: str) -> Optional[str]:
     if value in REASONING_EFFORT_NAMES:
         return value
     raise ValueError(
-        f"{where}: 'reasoning_effort' must be one of {', '.join(REASONING_EFFORT_NAMES)} or an integer 1-1023, "
+        f"{where}: 'reasoning_effort' must be one of {', '.join(REASONING_EFFORT_NAMES)}, unset or an integer 1-1023, "
         f"got {value!r}"
     )
 

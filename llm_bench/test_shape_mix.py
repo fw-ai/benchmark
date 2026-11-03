@@ -4006,3 +4006,42 @@ def test_max_and_integer_tiers_are_sent_as_logged(tmp_path) -> None:
     ]
     ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
     assert build_shape_mix_request(provider, ds.replay_request(entries[0]))[0]["reasoning_effort"] == 20
+
+
+def test_unset_tier_sends_no_reasoning_effort_field(tmp_path) -> None:
+    """A profile's untiered rows ("unset", also "null") are a tier of their own whose requests carry no
+    reasoning_effort key at all (not null, not "none"), even with --reasoning-effort set; it combines with other
+    tiers in the shares and is counted separately."""
+    from collections import Counter
+
+    from load_test import OpenAIProvider, build_shape_mix_request, reasoning_effort_tier
+
+    assert reasoning_effort_tier("unset", "t") == reasoning_effort_tier("null", "t") == "unset"
+    mix = json.loads(json.dumps(MIX))
+    chat = mix["classes"][0]
+    chat.pop("reasoning_effort", None)
+    chat["reasoning_effort_shares"] = {"unset": 0.3, "high": 0.7}
+    on_chat = [r for r in _take(_dataset(mix), 3000) if r.class_name == "chat"]
+    counts = Counter(r.reasoning_effort for r in on_chat)
+    assert set(counts) == {"unset", "high"} and abs(counts["unset"] / len(on_chat) - 0.3) < 0.04
+    for flag in (None, "low"):  # --reasoning-effort low would otherwise add the field
+        provider = OpenAIProvider(MODEL, _options(chat=True, reasoning_effort=flag))
+        for r in on_chat[:200]:
+            data = build_shape_mix_request(provider, r)[0]
+            if r.reasoning_effort == "unset":
+                assert "reasoning_effort" not in data
+            else:
+                assert data["reasoning_effort"] == "high"
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 4,
+            "reasoning_effort": "unset",
+        }
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    provider = OpenAIProvider(MODEL, _options(chat=False))
+    assert "reasoning_effort" not in build_shape_mix_request(provider, ds.replay_request(entries[0]))[0]
