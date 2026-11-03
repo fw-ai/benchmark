@@ -3677,6 +3677,21 @@ def reasoning_effort_tier(value, where: str) -> Optional[str]:
     )
 
 
+def request_tier(request) -> Optional[str]:
+    """The tier a shape-mix or replay request sends: a replay row's own tier, else its class's; None untiered."""
+    overrides = getattr(request, "overrides", None) or {}
+    return overrides.get("reasoning_effort") or getattr(request, "reasoning_effort", None)
+
+
+def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] = None) -> str:
+    """The per-request reuse record the runner parses: designed vs delivered cached tokens, and the request's tier
+    (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers."""
+    record = (
+        f" | reuse class={class_name} designed={designed} delivered={'none' if delivered is None else int(delivered)}"
+    )
+    return record + (f" tier={tier}" if tier is not None else "")
+
+
 def reasoning_effort_payload(tier: str):
     """The payload value of a tier: an integer tier as the integer the log records, a name as is."""
     return int(tier) if tier.isdigit() else tier
@@ -6678,16 +6693,12 @@ class LLMUser(HttpUser):
                 head_overhead = int(prompt_tokens) - shape_request.prompt_tokens
             reuse_str = ""
             if class_name is not None:
-                reuse_str = (
-                    f" | reuse class={class_name} designed={designed_cached + head_overhead}"
-                    f" delivered={'none' if cached_tokens is None else int(cached_tokens)}"
+                reuse_str = reuse_record(
+                    class_name, designed_cached + head_overhead, cached_tokens, request_tier(shape_request)
                 )
             elif self._designed_cached_tokens is not None:
                 # A -pcml run's shared prefix (compensations applied), class `default`
-                reuse_str = (
-                    f" | reuse class=default designed={self._designed_cached_tokens}"
-                    f" delivered={'none' if cached_tokens is None else int(cached_tokens)}"
-                )
+                reuse_str = reuse_record("default", self._designed_cached_tokens, cached_tokens)
 
             logger.info(
                 f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, "
