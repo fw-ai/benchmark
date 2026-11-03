@@ -4118,7 +4118,9 @@ def test_stratified_sampled_lengths_track_the_class_mean_at_small_n() -> None:
         m, v = st.mean(xs), st.pvariance(xs)
         lag1 = sum((a - m) * (b - m) for a, b in zip(xs, xs[1:])) / (len(xs) - 1) / v
         assert abs(lag1) < 0.05, lag1
-    assert abs(st.correlation(unc, out)) < 0.05  # uncached and output streams are independent
+    mu, mo = st.mean(unc), st.mean(out)  # Pearson by hand: statistics.correlation needs Python 3.10
+    cov = sum((a - mu) * (b - mo) for a, b in zip(unc, out)) / len(unc)
+    assert abs(cov / (st.pstdev(unc) * st.pstdev(out))) < 0.05  # uncached and output streams are independent
 
 
 def test_stratified_uniform_covers_every_stratum_per_block() -> None:

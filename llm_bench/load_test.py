@@ -3740,7 +3740,12 @@ def request_tier(request) -> Optional[str]:
 def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] = None, prompt=None) -> str:
     """The per-request reuse record the runner parses: designed vs delivered cached tokens, the designed prompt tokens
     (so delivered vs designed uncached can be gated per request: the harness-delivery check), and the request's tier
-    (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers."""
+    (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers.
+
+    For shape-mix and replay rows, designed and prompt both carry the request's measured head (the server's prompt
+    count minus the client's, when the server's is longer), so prompt equals the server's own count whenever it is
+    longer: prompt - designed (designed uncached) is net of it, but prompt is not an independent designed length
+    and can't test whether the server sees the designed length (D-134's check uses the class's designed prompt)."""
     record = (
         f" | reuse class={class_name} designed={designed} delivered={'none' if delivered is None else int(delivered)}"
     )
