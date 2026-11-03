@@ -4231,6 +4231,12 @@ def test_summary_reports_all_sent_designed_means_beside_completed_ones() -> None
         entries["class_chat_designed_prompt_tokens_sent"] == 1200
         and entries["class_chat_designed_cached_tokens_sent"] == 400
     )
+    SentDesign.record("chat", 600, None)  # a row with no designed cached value: in the prompt mean only
+    entries = shape_mix_summary_entries(stats, ["chat"], True)
+    assert entries["class_chat_sent_requests"] == 4 and entries["class_chat_designed_prompt_tokens_sent"] == 1050
+    assert entries["class_chat_designed_cached_tokens_sent"] == 400  # not pulled down to 300
+    SentDesign.record("cold", 300, None)
+    assert shape_mix_summary_entries(RequestStats(), ["cold"], True)["class_cold_designed_cached_tokens_sent"] == ""
     empty = shape_mix_summary_entries(RequestStats(), ["agent"], True)
     assert empty["class_agent_sent_requests"] == 0 and empty["class_agent_designed_prompt_tokens_sent"] == ""
     SentDesign.reset()
