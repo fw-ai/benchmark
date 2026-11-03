@@ -3357,9 +3357,11 @@ _WIRE_PENDING: dict = {}
 def _stamp_wire_send() -> None:
     """The request has been written to the socket: put a paced send on the timeline now, stamped with this
     moment, so a send still waiting for its response at the end of the run isn't missing from the figures."""
-    pending = _WIRE_PENDING.pop(id(gevent.getcurrent()), None)
+    key = id(gevent.getcurrent())
+    pending = _WIRE_PENDING.pop(key, None)
     if pending is not None:
         SendTimeline.record(pending[0], time.monotonic())
+        InFlightGauge.sent(key)
 
 
 class _TimedHTTPConnection(urllib3.connection.HTTPConnection):
@@ -3390,6 +3392,89 @@ def _timed_adapter(pool_maxsize: int) -> LocustHttpAdapter:
     return adapter
 
 
+# Two-sided 95% t critical values by degrees of freedom (beyond 30, the normal value)
+_T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228}
+_T95.update({11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093})
+_T95.update({20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048})
+_T95.update({29: 2.045, 30: 2.042})
+
+
+def in_flight_slope(samples) -> Optional[tuple]:
+    """(slope, 95% low, 95% high) in requests per minute of a least-squares line through (seconds, in flight)
+    samples; None with fewer than 3. A zero-variance fit (a flat line) has a zero-width interval."""
+    if len(samples) < 3:
+        return None
+    n = len(samples)
+    mt = sum(t for t, _ in samples) / n
+    mv = sum(v for _, v in samples) / n
+    sxx = sum((t - mt) ** 2 for t, _ in samples)
+    if sxx <= 0:
+        return None
+    slope = sum((t - mt) * (v - mv) for t, v in samples) / sxx
+    sse = sum((v - mv - slope * (t - mt)) ** 2 for t, v in samples)
+    half = _T95.get(n - 2, 1.96) * math.sqrt(sse / (n - 2) / sxx)
+    return slope * 60, (slope - half) * 60, (slope + half) * 60
+
+
+class InFlightGauge:
+    """The client's in-flight paced requests (sent on the wire, no response yet), sampled every
+    --client-in-flight-interval seconds over the run window. A rising count with a flat server-side count means
+    requests that never reach the server (a receive stall): the capacity probe reads the slope and its interval.
+    Paced sends only; the count is absolute, so a send straddling the window's start is answered without going
+    negative."""
+
+    in_flight = 0
+    samples: list = []
+    _window_start = None
+    _counted: set = set()
+    _started = False
+
+    @classmethod
+    def sent(cls, key) -> None:
+        if key not in cls._counted:
+            cls._counted.add(key)
+            cls.in_flight += 1
+
+    @classmethod
+    def answered(cls, key) -> None:
+        if key in cls._counted:
+            cls._counted.discard(key)
+            cls.in_flight -= 1
+
+    @classmethod
+    def start(cls, interval: float) -> None:
+        if cls._started or not interval or interval <= 0:
+            return
+        cls._started = True
+
+        def sample():
+            while True:
+                gevent.sleep(interval)
+                if cls._window_start is not None:
+                    cls.samples.append((time.monotonic() - cls._window_start, cls.in_flight))
+
+        gevent.spawn(sample)
+
+    @classmethod
+    def reset(cls) -> None:
+        cls._window_start = time.monotonic()
+        cls.samples = []
+
+    @classmethod
+    def summary_entries(cls) -> dict:
+        if cls._window_start is None:
+            return {}
+        fit = in_flight_slope(cls.samples)
+        return {
+            "client_in_flight_samples": ";".join(f"{t:.0f}:{v}" for t, v in cls.samples),
+            "client_in_flight_max": max((v for _, v in cls.samples), default=cls.in_flight),
+            "client_in_flight_end": cls.in_flight,
+            "client_in_flight_slope_per_min": "" if fit is None else fit[0],
+            "client_in_flight_slope_ci95_low": "" if fit is None else fit[1],
+            "client_in_flight_slope_ci95_high": "" if fit is None else fit[2],
+        }
+
+
 def _begin_wire_timing(intended: Optional[float] = None) -> float:
     """Start timing this greenlet's request; with `intended` (a paced send), it is recorded on the SendTimeline
     when it goes out on the wire (or by _finish_wire_timing, if it never does)."""
@@ -3405,9 +3490,11 @@ def _begin_wire_timing(intended: Optional[float] = None) -> float:
 def _finish_wire_timing() -> None:
     """A paced send that failed before it reached the wire (refused connection, connect timeout) still counts,
     stamped at dispatch."""
-    pending = _WIRE_PENDING.pop(id(gevent.getcurrent()), None)
+    key = id(gevent.getcurrent())
+    pending = _WIRE_PENDING.pop(key, None)
     if pending is not None:
         SendTimeline.record(*pending)
+        InFlightGauge.sent(key)
 
 
 class PrefixFill:
@@ -4357,6 +4444,7 @@ class InitTracker:
         SendTimeline.reset()
         RequestOutcomes.reset()
         SendTimeline.spawned()
+        InFlightGauge.reset()
         # Paced users start claiming send times only now, so the schedule doesn't begin with half the users
         cls.spawned.set()
         start_wait = cls._replay_start_wait()
@@ -4370,6 +4458,7 @@ class InitTracker:
                 # Set up 0.1 s early (below), so the start is stamped at the window's real start, not now: the first
                 # send is counted from it and a punctual first row reads ~0
                 SendTimeline.spawned(at=window_start)
+                InFlightGauge.reset()
                 RequestOutcomes.reset()
                 ClientCpu.reset()
 
@@ -4607,6 +4696,7 @@ def _build_shape_mix_before_spawning(environment, **_kwargs):
                 f"template's difference). Pass --tokenizer {served} for exact lengths"
             )
     ClientCpu.start()
+    InFlightGauge.start(getattr(options, "client_in_flight_interval", 15.0))
     if not getattr(options, "shape_mix", None):
         if not (options.systemone or options.embeddings or options.rerank):
             try:
@@ -6169,6 +6259,7 @@ class LLMUser(HttpUser):
             logger.error(f"Paced request failed: {e!r}\n{traceback.format_exc()}")
         finally:
             _finish_wire_timing()
+            InFlightGauge.answered(id(gevent.getcurrent()))
 
     def _prepare_request(self):
         if self.environment.parsed_options.systemone:
@@ -6947,6 +7038,14 @@ def init_parser(parser):
         default=600.0,
         help="Seconds to wait for a connection and, for streaming responses, between reads (default 600, for long "
         "uncached prefills). 0 waits forever. Timed-out requests count as failures and are reported as Requests Timeout in the summary.",
+    )
+    parser.add_argument(
+        "--client-in-flight-interval",
+        type=float,
+        default=15.0,
+        help="With --qps or --replay-schedule: seconds between samples of the client's in-flight requests (sent, "
+        "not yet answered), reported as Client In Flight Samples and a fitted slope per minute with its 95%% "
+        "interval. A rising count the server doesn't see means requests stuck before the server. 0 turns it off.",
     )
     parser.add_argument(
         "--qps-max-lateness",
@@ -7885,6 +7984,7 @@ def _(environment, **kw):
         # blank when there was no send; an offset of exactly 0 is still reported
         entries["startup_offset_s"] = "" if SendTimeline.first_send_offset is None else SendTimeline.first_send_offset
         entries.update(startup_drain_entries(SendTimeline.intended, SendTimeline.actual))
+        entries.update(InFlightGauge.summary_entries())
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())

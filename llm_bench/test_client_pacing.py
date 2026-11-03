@@ -428,3 +428,34 @@ def test_startup_offset_counts_from_the_window_start_and_paced_runs() -> None:
     SendTimeline.reset()
     ns = lambda **kw: argparse.Namespace(**{"qps": None, "replay_schedule": None, **kw})
     assert paced_run(ns(qps=2.0)) and paced_run(ns(replay_schedule="s.jsonl")) and not paced_run(ns())
+
+
+def test_in_flight_gauge_counts_sends_minus_responses_and_fits_a_slope() -> None:
+    """D-173: the client's in-flight paced requests, as sends on the wire minus responses; the slope per minute
+    with a 95% interval is what the capacity probe reads."""
+    from load_test import InFlightGauge, in_flight_slope
+
+    InFlightGauge.in_flight, InFlightGauge._counted = 0, set()
+    InFlightGauge.answered("never-sent")  # a greenlet that never reached the wire doesn't count down
+    assert InFlightGauge.in_flight == 0
+    InFlightGauge.sent("a")
+    InFlightGauge.sent("a")  # stamped once, however many times the wire hooks fire
+    InFlightGauge.sent("b")
+    assert InFlightGauge.in_flight == 2
+    InFlightGauge.answered("a")
+    InFlightGauge.answered("a")
+    assert InFlightGauge.in_flight == 1
+    InFlightGauge.answered("b")
+    assert InFlightGauge.in_flight == 0
+    # A steady count: zero slope inside its interval. A growing one: the rate, with an interval excluding zero
+    flat = in_flight_slope([(15.0 * i, 8 + (i % 3) - 1) for i in range(20)])
+    assert flat[1] <= 0.0 <= flat[2] and abs(flat[0]) < 1.0
+    rising = in_flight_slope([(15.0 * i, 4 * i + (i % 2)) for i in range(20)])
+    assert abs(rising[0] - 16.0) < 0.5 and rising[1] > 0
+    assert in_flight_slope([(0.0, 1), (15.0, 2)]) is None  # too few samples
+    InFlightGauge.reset()
+    InFlightGauge.samples = [(15.0, 3), (30.0, 5)]
+    entries = InFlightGauge.summary_entries()
+    assert entries["client_in_flight_samples"] == "15:3;30:5" and entries["client_in_flight_max"] == 5
+    assert entries["client_in_flight_slope_per_min"] == ""
+    InFlightGauge._window_start, InFlightGauge.samples = None, []
