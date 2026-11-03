@@ -4006,3 +4006,32 @@ def test_unset_tier_sends_no_reasoning_effort_field(tmp_path) -> None:
     ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
     provider = OpenAIProvider(MODEL, _options(chat=False))
     assert "reasoning_effort" not in build_shape_mix_request(provider, ds.replay_request(entries[0]))[0]
+
+
+def test_reuse_record_carries_the_tier_only_when_tiers_are_used(tmp_path) -> None:
+    """The per-request reuse record logs ` tier=<name|integer|unset>` (a replay row's own tier winning over its
+    class's), so a runner can attribute every delivered row to its tier; untiered requests log exactly as before."""
+    from load_test import request_tier, reuse_record
+
+    assert reuse_record("chat", 400, 390) == " | reuse class=chat designed=400 delivered=390"  # unchanged format
+    assert reuse_record("default", 539, None) == " | reuse class=default designed=539 delivered=none"
+    assert reuse_record("chat", 400, 390.0, "20") == " | reuse class=chat designed=400 delivered=390 tier=20"
+    mix = json.loads(json.dumps(MIX))
+    for c in mix["classes"]:
+        c.pop("reasoning_effort", None)
+    assert all(request_tier(r) is None for r in _take(_dataset(mix), 50))  # untiered: no tier field
+    mix["classes"][0]["reasoning_effort_shares"] = {"unset": 0.5, "max": 0.5}
+    tiers = {request_tier(r) for r in _take(_dataset(mix), 400) if r.class_name == "chat"}
+    assert tiers == {"unset", "max"}
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 4,
+            "reasoning_effort": 20,
+        }
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    assert request_tier(ds.replay_request(entries[0])) == "20"
