@@ -41,6 +41,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# llm_bench's default counting tokenizer (without --tokenizer)
+DEFAULT_TOKENIZER = "NousResearch/Meta-Llama-3.1-8B-Instruct"
 
 
 def _flag(args: list, name: str):
@@ -86,22 +88,49 @@ def expected_overhang(step, window: int, mock_chat_head: int) -> int:
     return window - (mock_chat_head if step_path(step) == MODE_PATHS["--chat"] else 0)
 
 
-def applied_overhang(step) -> int:
-    """The overhang llm_bench will apply for a step, resolved by llm_bench itself (an explicit
-    --prefix-reuse-overhang, else the served model's config), in a subprocess so this process stays unpatched."""
-    explicit = _flag(step[4], "--prefix-reuse-overhang")
-    if explicit is not None:
-        return int(explicit)
+def applied_reuse(step) -> tuple:
+    """(overhang, restore boundary) llm_bench will apply for a step, resolved by llm_bench itself (the explicit
+    --prefix-reuse-overhang / --prefix-restore-boundary, else the served model's config), in a subprocess so this
+    process stays unpatched."""
+    overhang, boundary = _flag(step[4], "--prefix-reuse-overhang"), _flag(step[4], "--prefix-restore-boundary")
+    if overhang is not None and boundary is not None:
+        return int(overhang), int(boundary)
+    ns = (
+        f"argparse.Namespace(prefix_reuse_overhang=None, prefix_restore_boundary=None, "
+        f"served_model_config={_flag(step[4], '--served-model-config')!r}, tokenizer={_flag(step[4], '--tokenizer')!r})"
+    )
     code = (
         "import argparse, sys; sys.argv = ['x']; import load_test as lt; "
-        "print(lt.resolve_prefix_reuse_overhang(argparse.Namespace(prefix_reuse_overhang=None, "
-        f"served_model_config={_flag(step[4], '--served-model-config')!r}, tokenizer={_flag(step[4], '--tokenizer')!r})))"
+        f"ns = {ns}; print(lt.resolve_prefix_reuse_overhang(ns), lt.resolve_prefix_restore_boundary(ns))"
     )
     out = subprocess.run([sys.executable, "-c", code], cwd=HERE, capture_output=True, text=True)
     lines = out.stdout.strip().splitlines()
     if out.returncode or not lines:
-        raise RuntimeError(f"couldn't resolve step {step[0]}'s overhang: {out.stderr.strip()[-300:]}")
-    return int(lines[-1])
+        raise RuntimeError(f"couldn't resolve step {step[0]}'s reuse semantics: {out.stderr.strip()[-300:]}")
+    resolved_overhang, resolved_boundary = (int(x) for x in lines[-1].split())
+    return (
+        int(overhang) if overhang is not None else resolved_overhang,
+        int(boundary) if boundary is not None else resolved_boundary,
+    )
+
+
+def applied_overhang(step) -> int:
+    """The overhang llm_bench will apply for a step (see applied_reuse)."""
+    return applied_reuse(step)[0]
+
+
+def _token_exact(boundary) -> int:
+    """llm_bench's boundary 0 and the mock's 1 both mean token-exact reuse."""
+    return 0 if int(boundary) <= 1 else int(boundary)
+
+
+def boundary_message(step, applied: int, boundary: int) -> str:
+    return (
+        f"step {step[0]} lays prefixes out for restore boundary {applied}, but the mock restores in blocks of "
+        f"{boundary}: the verdict would score the mock's rounding, not the plan. Run the mock with --boundary "
+        f"{applied or 1} (or, only if the step's boundary is itself wrong, pass --prefix-restore-boundary {boundary} "
+        f"in the step); --allow-mismatch runs it anyway, labelled"
+    )
 
 
 def probe_mode(probe: dict):
@@ -235,18 +264,28 @@ def _locust(port: int, step, duration_cap, summary: str, log: str) -> int:
         return subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=HERE).returncode
 
 
-def summary_mismatch(summary: str, step, window: int, mock_chat_head: int, mock_tokenizer: str):
-    """The applied overhang (and, when the client counts with the mock's tokenizer, the measured chat head) from the
-    step's summary, against the mock; a message when they disagree, else None."""
+def summary_mismatch(summary: str, step, window: int, mock_chat_head: int, mock_tokenizer: str, boundary: int = 1):
+    """The applied overhang and restore boundary (and, when the client counts with the mock's tokenizer, the measured
+    chat head) from the step's summary, against the mock; a message when they disagree or can't be read (a summary
+    that can't vouch for its layout can't be scored), else None. A missing summary is left to the caller."""
+    if not os.path.exists(summary):
+        return None
     try:
         with open(summary, newline="") as f:
             row = list(csv.DictReader(f))[-1]
-    except (OSError, IndexError):
-        return None
+    except (OSError, IndexError, csv.Error) as e:
+        return (
+            f"step {step[0]}'s summary {summary} can't be read ({e!r}), so its layout can't be checked against the mock"
+        )
     expected = expected_overhang(step, window, mock_chat_head)
     applied = row.get("Reuse Overhang Tokens")
-    if applied not in (None, "") and int(float(applied)) != expected:
+    if applied in (None, ""):
+        return f"step {step[0]}'s summary has no Reuse Overhang Tokens, so its layout can't be checked against the mock"
+    if int(float(applied)) != expected:
         return mismatch_message(step, int(float(applied)), expected, window, mock_chat_head)
+    applied_boundary = row.get("Reuse Restore Boundary")
+    if applied_boundary not in (None, "") and _token_exact(float(applied_boundary)) != _token_exact(boundary):
+        return boundary_message(step, int(float(applied_boundary)), boundary)
     head = row.get("Chat Head Tokens")
     counting = _flag(step[4], "--tokenizer")
     if head not in (None, "") and counting == mock_tokenizer and int(float(head)) != mock_chat_head:
@@ -343,7 +382,7 @@ def main(argv=None) -> int:
         or record.get("served_model_config")
         or _flag(step[4], "--served-model-config")
         or _flag(step[4], "--tokenizer")
-        or "NousResearch/Meta-Llama-3.1-8B-Instruct"
+        or DEFAULT_TOKENIZER
     )
     unnamed = [s[0] for s in fills + [step] if step_path(s) is None]
     if unnamed:
@@ -357,9 +396,19 @@ def main(argv=None) -> int:
     # The layout and the mock must agree, or the verdict measures the mismatch instead of the plan
     mismatched = []
     for s in fills + [step]:
-        applied, expected = applied_overhang(s), expected_overhang(s, window, args.mock_chat_head)
+        (applied, applied_boundary), expected = applied_reuse(s), expected_overhang(s, window, args.mock_chat_head)
         if applied != expected:
             mismatched.append(mismatch_message(s, applied, expected, window, args.mock_chat_head))
+        if _token_exact(applied_boundary) != _token_exact(boundary):
+            mismatched.append(boundary_message(s, applied_boundary, boundary))
+    # The mock should count tokens as the client does, or the summary's token counts and the designed ones differ
+    counting = _flag(step[4], "--tokenizer") or DEFAULT_TOKENIZER
+    if counting != tokenizer:
+        print(
+            f"preflight: !!! the mock tokenizes with {tokenizer} but the steps count with {counting}: token and cached "
+            f"counts in the summary come from the mock's tokenizer (pass --tokenizer {tokenizer} in the steps, or "
+            f"--mock-tokenizer {counting})"
+        )
     if mismatched and not args.allow_mismatch:
         for m in mismatched:
             print(f"preflight: !!! refusing: {m}")
@@ -389,6 +438,9 @@ def main(argv=None) -> int:
                     print(f"preflight: the mock server exited (see {server_log})")
                     return 2
                 time.sleep(1)
+        else:
+            print(f"preflight: the mock server didn't start listening on port {port} in 120 s (see {server_log})")
+            return 2
         print(
             f"preflight: mock engine window {window}, boundary {boundary}, chat head {args.mock_chat_head}, "
             f"tokenizer {tokenizer}, port {port}"
@@ -432,7 +484,7 @@ def main(argv=None) -> int:
             return 1
         quick_look(summary, step)
         # Backstop: what the step's summary says it applied (the authority), against the mock
-        verdict = summary_mismatch(summary, step, window, args.mock_chat_head, tokenizer)
+        verdict = summary_mismatch(summary, step, window, args.mock_chat_head, tokenizer, boundary)
         if verdict and not mismatched:
             print(
                 f"preflight: !!! {'MISMATCH EXPERIMENT' if args.allow_mismatch else 'refusing the verdict'}: {verdict}"
@@ -449,7 +501,11 @@ def main(argv=None) -> int:
                 return rc or 1
             cmd = shlex.split(args.check) + [args.plan, summary, "--step", step[0]]
             print(f"preflight: check: {' '.join(cmd)}", flush=True)
-            rc = subprocess.run(cmd).returncode
+            locust_rc, rc = rc, subprocess.run(cmd).returncode
+            if locust_rc:
+                # a step that failed can leave a partial summary the check passes: the step's failure wins
+                print(f"preflight: !!! llm_bench exited {locust_rc}: that wins over the check's {rc}")
+                rc = locust_rc
         if mismatched:
             # Never a plan verdict: a driver reading only the exit code mustn't take an experiment for a pass
             print(f"preflight: !!! MISMATCH EXPERIMENT: verdict exit {rc} is not a plan result; exiting 3")

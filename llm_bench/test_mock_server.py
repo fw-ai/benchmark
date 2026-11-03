@@ -204,3 +204,50 @@ def test_preflight_sets_an_earlier_summary_aside(tmp_path) -> None:
     assert set_aside(str(summary)) == f"{summary}.prev2"  # never overwrites an earlier .prev
     assert (tmp_path / "ramp-3.summary.csv.prev").read_text() == "old\n"
     assert re.fullmatch(r"\d{8}T\d{6}Z-\d+", RUN_ID)
+
+
+def test_preflight_checks_the_restore_boundary_and_a_summary_that_cant_vouch(tmp_path, capsys) -> None:
+    """The restore boundary is compared like the overhang (a plan laid out for 2048-token blocks on a token-exact
+    mock scores the mock's rounding), and a summary that's unreadable or lacks its reuse columns can't be scored."""
+    import json
+
+    from preflight_run import applied_reuse, main, summary_mismatch
+
+    step = ("s", 1, None, None, ["--no-chat", "--prefix-reuse-overhang", "128", "--prefix-restore-boundary", "2048"])
+    assert applied_reuse(step) == (128, 2048)
+    summary = tmp_path / "s.csv"
+    summary.write_text("Reuse Overhang Tokens,Reuse Restore Boundary\n128,2048\n")
+    assert summary_mismatch(str(summary), step, 128, 0, "tok", boundary=2048) is None
+    assert "restore boundary 2048" in summary_mismatch(str(summary), step, 128, 0, "tok", boundary=1)
+    summary.write_text("Reuse Overhang Tokens,Reuse Restore Boundary\n128,0\n")  # 0 and the mock's 1: token-exact
+    assert summary_mismatch(str(summary), step, 128, 0, "tok", boundary=1) is None
+    summary.write_text("Num Requests\n10\n")
+    assert "no Reuse Overhang Tokens" in summary_mismatch(str(summary), step, 128, 0, "tok")
+    summary.write_text("")
+    assert "can't be read" in summary_mismatch(str(summary), step, 128, 0, "tok")
+    assert summary_mismatch(str(tmp_path / "missing.csv"), step, 128, 0, "tok") is None  # the caller reports that
+
+    mix = '{"seed":1,"classes":[{"name":"c","weight":1,"prompt_tokens":900,"cached_prompt_tokens":500}]}'
+    extra = f"--shape-mix '{mix}' --no-chat --prefix-reuse-overhang 128 --prefix-restore-boundary 2048"
+    plan = {
+        "record": {"target_qps": 1.0},
+        "traffic_generator_create_args": {
+            "ramp-1": [
+                "traffic-generator",
+                "create",
+                "--concurrency",
+                "2",
+                "--duration",
+                "10s",
+                "--qps",
+                "1.0",
+                "--extra-args",
+                extra,
+            ],
+        },
+    }
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan))
+    assert main([str(path), "--out", str(tmp_path / "out"), "--window", "128", "--boundary", "1"]) == 2
+    assert "restore boundary 2048" in capsys.readouterr().out
+    assert not (tmp_path / "out" / "mock.requests").exists()  # refused before any mock started
