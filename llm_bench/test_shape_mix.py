@@ -3813,3 +3813,42 @@ def test_chat_replay_rows_subtract_the_calibrated_head(tmp_path) -> None:
             client = len(chat_messages_token_ids(tokenizer, DEFAULT_TOKENIZER, [{"role": "user", "content": r.prompt}]))
             assert client + server_head == row["input_length"], (server_head, client, row["input_length"])
             assert r.prompt_tokens == row["input_length"]  # prompt= on the reuse line is the recorded length
+
+
+def test_a_first_row_reuses_its_lead_in_recorded_exactly_cached_long(tmp_path) -> None:
+    """D-197 (A): a session's first scored row whose lead-in is recorded exactly `cached` tokens long reuses that
+    lead-in, compared like for like with the overhang the server recomputes, instead of falling through to the class
+    pool (which reuses only what earlier rows sent of it: the D-196 chain). It lands within one overhang window."""
+    overhang = 128
+    rows = [
+        # a lead-in of exactly the first row's recorded cached length, shorter than the class's pool prefix (as
+        # production's shared_max pools are), so the old check fell through to the pool; then the first scored row
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "session_id": "a",
+            "input_length": 300,
+            "cached_length": 0,
+            "output_length": 1,
+            "lead_in": True,
+        },
+        {
+            "timestamp": 1000,
+            "class": "chat",
+            "session_id": "a",
+            "input_length": 600,
+            "cached_length": 300,
+            "output_length": 4,
+        },
+    ]
+    ds, entries, _ = _replay_dataset(
+        tmp_path, rows, tokenizer=WordTokenizer(), chat=False, reuse_overhang_tokens=overhang
+    )
+    lead, first = entries
+    lead_plan, first_plan = ds._replay[lead.index], ds._replay[first.index]
+    # the first row starts with its lead-in's text, segment for segment: not a pool cut
+    assert first_plan["segments"][: len(lead_plan["segments"])] == lead_plan["segments"]
+    assert first_plan["segments"][0][0] != "pool" or lead_plan["segments"][0][0] == "pool"
+    # within one overhang window of the recorded cached length (the engine recomputes that window)
+    assert first.cached_length - first_plan["reusable"] <= overhang + 1
+    assert ds.replay_request(first).prompt.startswith(ds.replay_request(lead).prompt)

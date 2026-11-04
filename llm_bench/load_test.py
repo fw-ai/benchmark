@@ -2217,8 +2217,17 @@ class ShapeMixDataset:
         pool_tokens = self.prefix_tokens[ci] if pool else 0
         recorded = entry.cached_length
         want = self._replay_want(entry)  # None: the class's cached share, or a session's whole source
-        # The restore margin is headroom, not a requirement: a source covering the aligned length itself will do
-        need = want - RESTORE_BOUNDARY_MARGIN_TOKENS if want and self.restore_boundary else want
+        # The restore margin and a positive reuse overhang are headroom, not requirements: an earlier prompt covering
+        # the recorded (aligned) length itself will do. Asking a session's prompts for cached + overhang made a lead-in
+        # recorded exactly cached tokens long never "cover", so the session's first row fell through to the pool and
+        # reused only what earlier rows had sent of it (D-196); reusing the lead-in whole is at most one window short,
+        # which is what the engine's own recompute costs
+        need = want
+        if need:
+            need -= max(0, self.reuse_overhang_tokens) + (
+                RESTORE_BOUNDARY_MARGIN_TOKENS if self.restore_boundary else 0
+            )
+            need = max(0, need)
         source = self._replay_source(need, prompts, previous, pool, pool_tokens)
         if want is None:
             want = sum(self._segment_tokens(seg) for seg in source)
