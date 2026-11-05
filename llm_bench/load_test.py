@@ -736,7 +736,7 @@ class DatasetHolder:
         elif options.dataset in ("limericks", "code"):
             if options.dataset == "limericks":
                 if options.prompt is None:
-                    prompt = "Translate the limericks above to Spanish."
+                    prompt = "Translate the limericks above to Spanish.\n\nSpanish translation:\n"
                 else:
                     prompt = options.prompt
                 dataset_file = "limericks.txt"
