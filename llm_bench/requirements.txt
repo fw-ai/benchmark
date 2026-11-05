@@ -9,3 +9,6 @@ python-dotenv
 tabulate
 tiktoken
 transformers
+# truststore 0.10.5 passes an argument to SSLSocket.do_handshake() that gevent's
+# monkey-patched SSLSocket rejects, breaking Hugging Face downloads under locust.
+truststore<0.10.5
