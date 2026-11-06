@@ -4306,3 +4306,55 @@ def test_replay_reuse_records_carry_the_schedule_row(tmp_path) -> None:
     m = re.search(_TASK15_REUSE_RE, line)
     assert m.group(6) == "900" and m.group(7) == "7"  # task 15's parser reads it
     assert re.search(_TASK15_REUSE_RE, line.replace(" row=7", "")).group(7) is None  # absent on draws
+
+
+def test_replay_reservation_sends_recorded_max_tokens_and_cancels_at_output(tmp_path) -> None:
+    """D-206: the replay-reservation variant sends each row's recorded max_tokens (the admitter's reservation)
+    instead of the forced exact output, with no min_tokens; the stream is cancelled at the recorded output length so
+    delivered output stays exact. A schedule without max_tokens sizes the reservation from the output length
+    (per-row headroom, or the class's max with --replay-reservation-max-over-class)."""
+    from load_test import OpenAIProvider, build_shape_mix_request
+
+    provider = OpenAIProvider(MODEL, _options(chat=False))
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 40,
+            "max_tokens": 512,
+        },
+        {"timestamp": 1000, "class": "chat", "input_length": 900, "cached_length": 300, "output_length": 7},
+        {"timestamp": 2000, "class": "agent", "input_length": 800, "cached_length": 100, "output_length": 30},
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False, replay_reservation=True)
+    first, second, third = (ds.replay_request(e) for e in entries)
+    # recorded max_tokens sent as is; output length reached by cancelling, not by forcing
+    d1, _ = build_shape_mix_request(provider, first, "reservation")
+    assert d1["max_tokens"] == 512 and "min_tokens" not in d1 and not d1["ignore_eos"]
+    assert first.cancel_at_tokens == 40
+    # no recorded max_tokens: output + headroom 8
+    assert second.reserved_max_tokens == 15 and second.cancel_at_tokens == 7
+    d2, _ = build_shape_mix_request(provider, second, "reservation")
+    assert d2["max_tokens"] == 15
+    # without the variant, the exact mode still forces the recorded output
+    exact, _ = build_shape_mix_request(provider, first, "exact")
+    assert exact["max_tokens"] == 40 and exact["min_tokens"] == 40 and exact["ignore_eos"]
+    # rows never carry a reservation when the variant is off
+    from load_test import load_replay_schedule
+
+    path = _write_schedule(tmp_path / "one.jsonl", rows[:1])
+    plain_entries = load_replay_schedule(path, ("chat",))
+    plain, _, _ = _replay_dataset(tmp_path, rows[:1], tokenizer=WordTokenizer(), chat=False)
+    r = plain.replay_request(plain_entries[0])
+    assert r.reserved_max_tokens is None and r.cancel_at_tokens is None
+    # max-over-class sizing: both chat rows reserve the class's max output (40) + headroom
+    over = _dataset(dict(MIX, classes=[dict(MIX["classes"][0], name="chat")]), tokenizer=WordTokenizer())
+    path = _write_schedule(tmp_path / "over.jsonl", rows[:2])
+    over_entries = load_replay_schedule(path, ("chat",))
+    over.prepare_replay(over_entries, message_overhead=None)
+    over.replay_reservation, over.reservation_max_over_class, over.reservation_headroom = True, True, 8
+    # row 0 has a recorded max_tokens: it wins over the class sizing; row 1 (none recorded) takes the class max
+    assert over.replay_request(over_entries[0]).reserved_max_tokens == 512
+    assert over.replay_request(over_entries[1]).reserved_max_tokens == 40

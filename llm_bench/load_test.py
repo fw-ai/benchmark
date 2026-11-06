@@ -1363,6 +1363,10 @@ class ShapeRequest:
     messages: Optional[list] = None
     # --replay-schedule rows: the recorded cached length, payload overrides, and whether it was cancelled
     reasoning_effort: Optional[str] = None  # --shape-mix: the class's tier; replay rows use overrides
+    # --replay-reservation: the max_tokens to send (the admitter's reservation) and the recorded output length to
+    # cancel the stream at; None on rows without the variant
+    reserved_max_tokens: Optional[int] = None
+    cancel_at_tokens: Optional[int] = None
     recorded_cached_tokens: Optional[int] = None
     overrides: Optional[dict] = None
     cancelled: bool = False
@@ -1519,6 +1523,9 @@ class ShapeMixDataset:
         context_tokens: Optional[int] = None,
         split_restore_classes: bool = True,
         server_chat_head: int = 0,
+        replay_reservation: bool = False,
+        reservation_headroom: int = 8,
+        reservation_max_over_class: bool = False,
     ):
         self.mix = mix
         self.server_chat_head = server_chat_head or 0
@@ -1632,6 +1639,11 @@ class ShapeMixDataset:
         self._tier_split = [self._class_tier_split(ci) for ci in range(len(self.classes))]
         self._tier_rng = random.Random(f"shape-mix:{self.request_seed}:tiers:{self._worker_index}")
         self._strata: dict = {}
+        # --replay-reservation: send each row's recorded max_tokens and cancel at its recorded output length
+        self.replay_reservation = replay_reservation
+        self.reservation_headroom = reservation_headroom
+        self.reservation_max_over_class = reservation_max_over_class
+        self._class_max_output: dict = {}
         self._filler_offsets = [array("I", bytes(4 * len(t))) for t in self._filler_tokens]
         self._filler_widths = [array("I", [_UNBUILT]) * len(t) for t in self._filler_tokens]
         if self.tail_variants:
@@ -2276,6 +2288,7 @@ class ShapeMixDataset:
         """
         overhead = message_overhead(1) if message_overhead else self._overhead
         self._replay_sizing_overhead = overhead if subtract_template else 0
+        self._class_max_outputs(entries)
         self._replay_template = overhead
         self._replay: dict[int, dict] = {}
         self._replay_windows: dict[tuple, tuple[int, int]] = {}
@@ -2748,7 +2761,33 @@ class ShapeMixDataset:
     def replay_request(self, entry: "ScheduleEntry") -> ShapeRequest:
         """The request for a --replay-schedule row (see prepare_replay), tagged with the row's position in the
         schedule file, so a checker can join each logged reuse record to its recorded row."""
-        return dataclasses.replace(self._replay_request(entry), schedule_row=entry.row)
+        request = dataclasses.replace(self._replay_request(entry), schedule_row=entry.row)
+        if self.replay_reservation:
+            return dataclasses.replace(request, **self._reservation_fields(entry))
+        return request
+
+    def _class_max_outputs(self, entries: tuple) -> None:
+        """Per class, the max recorded output length, for --replay-reservation-max-over-class sizing."""
+        for e in entries:
+            if not e.lead_in and e.output_length:
+                self._class_max_output[e.class_index] = max(
+                    self._class_max_output.get(e.class_index, 0), e.output_length
+                )
+
+    def _reservation_fields(self, entry: "ScheduleEntry") -> dict:
+        """--replay-reservation: the max_tokens to send (the recorded one, else sized from the output length) and
+        the recorded output length to cancel the stream at."""
+        recorded = entry.max_tokens
+        if recorded is None:
+            # the recorded reservation wins over any sizing
+            if self.reservation_max_over_class:
+                recorded = (
+                    self._class_max_output.get(entry.class_index)
+                    or (entry.output_length or 1) + self.reservation_headroom
+                )
+            else:
+                recorded = (entry.output_length or 1) + self.reservation_headroom
+        return {"reserved_max_tokens": max(1, recorded), "cancel_at_tokens": entry.output_length or 1}
 
     def _replay_request(self, entry: "ScheduleEntry") -> ShapeRequest:
         plan = getattr(self, "_replay", {}).get(entry.index)
@@ -2945,6 +2984,13 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
     if output_mode == "max":
         data.pop("min_tokens", None)
         data.pop("ignore_eos", None)
+    elif output_mode == "reservation":
+        # --replay-reservation: the row's recorded max_tokens is what the admitter reserved; the recorded output
+        # length is reached by cancelling the stream, so delivered lengths stay exact
+        data.pop("min_tokens", None)
+        data["ignore_eos"] = False
+        if request.reserved_max_tokens is not None:
+            data["max_tokens"] = request.reserved_max_tokens
     else:
         data["min_tokens"] = request.generated_tokens
         data["ignore_eos"] = True
@@ -3007,6 +3053,9 @@ class DatasetHolder:
                     server_chat_head=server_chat_head,
                     # Replay rows carry their own cached lengths: its class pools stay at the floor
                     split_restore_classes=not getattr(options, "replay_schedule", None),
+                    replay_reservation=getattr(options, "replay_reservation", False),
+                    reservation_headroom=getattr(options, "replay_reservation_headroom", 8),
+                    reservation_max_over_class=getattr(options, "replay_reservation_max_over_class", False),
                 )
                 ds = cls._shape_mix_instance
                 ds.served_model_config = resolve_served_model_config(options)
@@ -3718,6 +3767,9 @@ class ScheduleEntry:
     reasoning_effort: Optional[str] = None
     pod: Optional[str] = None  # the recorded pod (the row's "pod" field)
     lead_in: bool = False  # a warm-up row: sent unscored before time 0, only if nothing earlier covers it
+    # The recorded max_tokens (the reservation production's admitter charged), when the schedule carries it; else
+    # the recorded output length (a reservation-forcing variant sizes it from that, below)
+    max_tokens: Optional[int] = None
     recorded_offset: Optional[float] = None  # the recorded offset of a retimed row
     plain_offset: Optional[float] = None  # with a minimum parent gap: where plain retiming would have put the row
     defaulted: tuple = ()  # optional fields that were invalid and dropped (or output_length 0 sent as 1)
@@ -3734,7 +3786,7 @@ _REPLAY_ALIASES = {
 # Every field a schedule row may carry; others are reported (not silently dropped)
 _REPLAY_FIELDS = frozenset(
     {"timestamp", "time_s", "class", "session_id", "pod", "prefix_index", "cancelled", "lead_in"}
-    | {"temperature", "top_p", "reasoning_effort"}
+    | {"temperature", "top_p", "reasoning_effort", "max_tokens"}
     | {name for names in _REPLAY_ALIASES.values() for name in names}
 )
 
@@ -4081,6 +4133,7 @@ def load_replay_schedule(
                 "temperature": lenient("temperature", lambda: _replay_float(row, "temperature", where, 0.0, None)),
                 "top_p": lenient("top_p", lambda: _replay_float(row, "top_p", where, 0.0, 1.0)),
                 "reasoning_effort": lenient("reasoning_effort", lambda: _replay_effort(row, where)),
+                "max_tokens": lenient("max_tokens", lambda: _replay_int(row, ("max_tokens",), where, 1)),
                 "pod": None if pod is None else str(pod),
                 "lead_in": _replay_bool(row, "lead_in", where),
             }
@@ -4394,6 +4447,17 @@ class SentDesign:
             prefix + "designed_prompt_tokens_sent": prompt / n if n else "",
             prefix + "designed_cached_tokens_sent": cached / n_cached if n_cached else "",
         }
+
+
+class ReplayReservation:
+    """--replay-reservation: rows whose stream the client cancelled at the recorded output length (the engine
+    reserved more)."""
+
+    cancelled = 0
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.cancelled = 0
 
 
 class SendTimeline:
@@ -4983,6 +5047,13 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 def validate_shape_mix_options(options: argparse.Namespace) -> None:
     """Parse --shape-mix against the chat template overhead; raises ValueError naming any class too short."""
     resolve_shape_mix_corpus(getattr(options, "shape_mix_corpus", None))
+    if getattr(options, "replay_reservation", False):
+        if not getattr(options, "replay_schedule", None):
+            raise ValueError("--replay-reservation needs --replay-schedule")
+        # the replay form of the reservation output mode; the mode flag stays for sizing-free explicit use
+        if options.shape_mix_output_mode not in ("exact", "reservation"):
+            raise ValueError("--replay-reservation needs the reservation output mode (drop --shape-mix-output-mode)")
+        options.shape_mix_output_mode = "reservation"
     if getattr(options, "replay_schedule", None):
         # Replay rows carry their own recorded tier; per-prefix tier shares belong to drawn traffic only
         shared = [c.name for c in parse_shape_mix(options.shape_mix).classes if c.reasoning_effort_shares]
@@ -5280,7 +5351,7 @@ def _guard_stream(chunks, errors: list):
 class RequestOutcomes:
     """Client-side cancellations and failures by kind, overall and per --shape-mix class."""
 
-    KINDS = ("load_shed", "timeout", "http_299", "cancel_rate", "other_error")
+    KINDS = ("load_shed", "timeout", "http_299", "cancel_rate", "reservation_cancel", "other_error")
     counts: dict = {}
     by_class: dict = {}
 
@@ -5328,6 +5399,7 @@ def request_outcome_entries(stats, class_names: Optional[list[str]] = None) -> d
     (timeouts and 299s) of all requests sent."""
     sent, failed = request_counts(stats)
     entries = {f"requests_{kind}": RequestOutcomes.counts.get(kind, 0) for kind in RequestOutcomes.KINDS}
+    entries["replay_reservation_cancelled"] = ReplayReservation.cancelled
     entries["requests_sent"] = sent
     entries["requests_failed"] = failed
     entries["failed_fraction"] = failed / sent if sent else 0.0
@@ -6735,6 +6807,11 @@ class LLMUser(HttpUser):
             if shape_request is None:
                 shape_request = next(self.shape_mix_dataset)
             max_tokens = shape_request.generated_tokens
+            if (
+                self.environment.parsed_options.shape_mix_output_mode == "reservation"
+                and shape_request.reserved_max_tokens
+            ):
+                max_tokens = shape_request.reserved_max_tokens
             prompt_tokens = shape_request.prompt_tokens
             data, request_headers = build_shape_mix_request(
                 self.provider_formatter, shape_request, self.environment.parsed_options.shape_mix_output_mode
@@ -6889,6 +6966,7 @@ class LLMUser(HttpUser):
             # A transport error mid-stream (e.g. the read timeout) would otherwise escape the response
             # context manager and never be counted as a failed request
             stream_errors: list[Exception] = []
+            streamed_tokens = 0
             chunks = _guard_stream(chunks, stream_errors)
 
             for chunk in chunks:
@@ -6921,6 +6999,9 @@ class LLMUser(HttpUser):
                     # some providers (SGLang) send an empty chunk first skewing the TTFT;
                     # completion_tokens handles invisible-token deployments where combined_text
                     # stays empty but usage.completion_tokens is non-zero (e.g. Maverick-style)
+                    # Counted per chunk (num_tokens is only settled after the stream): a reservation row's
+                    # delivered output is the recorded length, so cancel as soon as it's reached
+                    streamed_tokens += 1 if (combined_text or out.text) else 0
                     if (combined_text or completion_tokens) and t_first_token is None:
                         t_first_token = now
                         # Randomly cancel after first token if cancel_rate is set
@@ -6929,6 +7010,28 @@ class LLMUser(HttpUser):
                             RequestOutcomes.record("cancel_rate", class_name)
                             response.success()
                             return
+                    # --replay-reservation: the engine reserved more than the row's output; cancel at the recorded
+                    # length so the delivered output is exact (the finish is a cancel, counted per class)
+                    if (
+                        self.environment.parsed_options.shape_mix_output_mode == "reservation"
+                        and shape_request is not None
+                        and shape_request.cancel_at_tokens is not None
+                        and streamed_tokens >= shape_request.cancel_at_tokens
+                    ):
+                        if streamed_tokens < max_tokens:
+                            # Marked failed (a cancelled finish), but the row's log line, reuse record and metrics
+                            # still land: the runner checks cancelled rows like any other
+                            ReplayReservation.cancelled += 1
+                            RequestOutcomes.record("reservation_cancel", class_name)
+                            response.failure(
+                                f"Cancelled at the recorded output length {shape_request.cancel_at_tokens} of a "
+                                f"{max_tokens}-token reservation (replay reservation variant)"
+                            )
+
+                        # The delivered output IS the recorded length (the client stops there); the server's
+                        # usage chunk never arrives on a cancelled stream, so count it here rather than from usage
+                        completion_tokens = shape_request.cancel_at_tokens
+                        break
 
                     # Track first visible (non-reasoning) token separately.
                     # has_reasoning_only is False for transition chunks (both reasoning + content),
@@ -7043,7 +7146,10 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                exact_length = shape_request is None or self.environment.parsed_options.shape_mix_output_mode == "exact"
+                exact_length = shape_request is None or self.environment.parsed_options.shape_mix_output_mode in (
+                    "exact",
+                    "reservation",  # the stream is cancelled at the recorded length; the engine may finish first
+                )
                 if num_tokens != max_tokens and exact_length:
                     logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
                 add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
@@ -7521,8 +7627,33 @@ def init_parser(parser):
         "e.g. to check that repeated filler text doesn't change speculative-decoding acceptance.",
     )
     parser.add_argument(
+        "--replay-reservation",
+        action="store_true",
+        default=False,
+        help="With --replay-schedule: send each row's recorded max_tokens (the reservation the admitter charges "
+        "the batch) instead of the forced exact output, and cancel the stream at the row's recorded output length, "
+        "so delivered output lengths stay exact while the engine reserves as in production. finish_reason becomes "
+        "cancel for rows the engine didn't finish first, and Request Cancelled At Output counts them. A schedule "
+        "without a recorded max_tokens sizes the reservation from the output length (the headroom default of 8, or "
+        "the max over the class's recorded lengths with --replay-reservation-max-over-class).",
+    )
+    parser.add_argument(
+        "--replay-reservation-headroom",
+        type=int,
+        default=8,
+        help="With --replay-reservation and a schedule without recorded max_tokens: the reservation is the row's "
+        "output length plus this many tokens.",
+    )
+    parser.add_argument(
+        "--replay-reservation-max-over-class",
+        action="store_true",
+        default=False,
+        help="With --replay-reservation and a schedule without recorded max_tokens: size the reservation as the "
+        "max output length over the class's rows (no extra headroom) instead of per-row headroom.",
+    )
+    parser.add_argument(
         "--shape-mix-output-mode",
-        choices=["exact", "max"],
+        choices=["exact", "max", "reservation"],
         default="exact",
         help="For --shape-mix: 'exact' (default) forces each class's generated_tokens (max_tokens = min_tokens, "
         "ignore_eos). 'max' only sets max_tokens = generated_tokens, with no min_tokens or ignore_eos, so the model "
