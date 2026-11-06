@@ -428,8 +428,7 @@ def _send_and_parse_measurement(
     st = server_processing if server_processing is not None else sum_stage_seconds(r.headers)
     if st is None:
         raise RuntimeError(
-            "Missing Fireworks timing headers (need dedicated deployment?). "
-            f"Got keys: {list(r.headers.keys())[:30]}"
+            "Missing Fireworks timing headers (need dedicated deployment?). " f"Got keys: {list(r.headers.keys())[:30]}"
         )
     return st, wall, fwp, fwc
 

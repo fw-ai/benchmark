@@ -109,8 +109,12 @@ def test_a_stall_moves_the_schedule_once_without_a_burst(monkeypatch) -> None:
     sent = []
     user = _stalled_user(pacer, sent)
 
+    claimed_start = pacer.start
     LLMUser._paced_request(user)  # 2.9 s late: the schedule moves ~2.9 s later and this send moves with it
     assert pacer.epoch == 1
+    # the planned time is the claimed one, not the shifted one: the stall stays visible in Intended Sends Per Minute
+    assert SendTimeline.planned[0] == pytest.approx(claimed_start + 0.1, abs=1e-6)
+    assert sent[0][0] - SendTimeline.planned[0] == pytest.approx(pacer.shifted_seconds, abs=1e-6)
     assert pacer.shifted_seconds == pytest.approx(2.9, abs=0.05)
     assert pacer.resync(0, 5.0) is False  # a second stale send from the same stall doesn't shift again
     assert len(sent) == 1 and abs(sent[0][0] - time.monotonic()) < 0.1
@@ -309,6 +313,18 @@ def test_client_cpu_summary_reports_mean_and_peak() -> None:
     assert entries["client_cpu_peak_5s_percent"] >= entries["client_cpu_percent"] - 1e-9
 
 
+def test_both_pacers_count_their_resyncs_in_epoch() -> None:
+    """The summary's Schedule Resyncs reads `epoch` from whichever pacer ran (replay's has no `shifts`)."""
+    from load_test import ReplayPacer, ScheduleEntry
+
+    fixed = FixedQPSPacer(10, "constant")
+    fixed.start = time.monotonic()
+    assert fixed.epoch == 0 and fixed.resync(0, 0.3) and fixed.epoch == 1
+    replay = ReplayPacer((ScheduleEntry(0.0, 0), ScheduleEntry(1.0, 0, index=1)))
+    replay.start = time.monotonic()
+    assert replay.epoch == 0 and replay.resync(0, 0.3) and replay.epoch == 1 and not hasattr(replay, "shifts")
+
+
 def test_parallel_summary_appends_with_changing_columns_lose_no_row(tmp_path) -> None:
     """Review of #143: parallel runs sharing one --summary-file (one of them widening the header) keep every row."""
     import csv
@@ -354,3 +370,61 @@ def test_the_late_send_warning_names_the_configured_threshold(monkeypatch, caplo
     with caplog.at_level("WARNING", logger="load_test"):
         LLMUser._paced_request(user)
     assert "past 2 s late" in caplog.text
+
+
+def test_sends_per_minute_counts_planned_sends_from_the_first_one() -> None:
+    from load_test import sends_per_minute
+
+    assert sends_per_minute([]) == ""
+    assert sends_per_minute([100.0]) == "1"
+    # minutes count from the first planned send; a minute with none reads 0; the last minute is partial
+    times = [100.0 + t for t in (0, 10, 59.9, 60.0, 61, 179.9, 180.0)]
+    assert sends_per_minute(times) == "3,2,1,1"
+    assert sends_per_minute([100.0, 400.0]) == "1,0,0,0,0,1"
+    assert sends_per_minute([5.0, 1.0, 62.0]) == "2,1"  # any order
+
+
+def test_every_request_failure_is_classified() -> None:
+    """A parse failure, an empty response or a stream error counts in the request outcomes (overall and per class),
+    not only in locust's failures: fail_request records then fails, in one call."""
+    from load_test import RequestOutcomes, fail_request
+
+    class Response:
+        def __init__(self):
+            self.failures = []
+
+        def failure(self, message):
+            self.failures.append(message)
+
+    RequestOutcomes.reset()
+    for _ in range(10):  # an unparseable body, an empty one
+        fail_request(Response(), ValueError("bad json"), class_name="chat", kind="other_error")
+    r = Response()
+    assert fail_request(r, lambda outcome: f"Error ({outcome})", status_code=503, class_name="chat") == "load_shed"
+    assert r.failures == ["Error (load_shed)"]
+    assert RequestOutcomes.counts == {"other_error": 10, "load_shed": 1}
+    assert RequestOutcomes.by_class["chat"] == {"other_error": 10, "load_shed": 1}
+    RequestOutcomes.reset()
+
+
+def test_startup_offset_counts_from_the_window_start_and_paced_runs() -> None:
+    """Under --replay-start-at the window is set up 0.1 s early, so its start is stamped at the real window start: a
+    punctual first row reads ~0, not ~0.1. Without an explicit start the stamp is now (plain --qps runs unchanged).
+    paced_run is the one condition for the send-timing summary fields."""
+    import argparse
+    import time as _time
+
+    from load_test import SendTimeline, paced_run
+
+    SendTimeline.reset()
+    start = _time.monotonic() + 0.1  # the window opens 0.1 s after it's set up
+    SendTimeline.spawned(at=start)
+    SendTimeline.record(start, start + 0.002)  # a punctual first row
+    assert abs(SendTimeline.first_send_offset - 0.002) < 1e-9
+    SendTimeline.reset()
+    before = _time.monotonic()
+    SendTimeline.spawned()
+    assert SendTimeline.spawned_monotonic >= before
+    SendTimeline.reset()
+    ns = lambda **kw: argparse.Namespace(**{"qps": None, "replay_schedule": None, **kw})
+    assert paced_run(ns(qps=2.0)) and paced_run(ns(replay_schedule="s.jsonl")) and not paced_run(ns())

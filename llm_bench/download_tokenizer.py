@@ -40,9 +40,7 @@ def download_tokenizer(model_id: str, output_dir: str, hf_token: str = None):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Download a HuggingFace tokenizer locally given a model's HF id."
-    )
+    parser = argparse.ArgumentParser(description="Download a HuggingFace tokenizer locally given a model's HF id.")
     parser.add_argument(
         "model_id",
         help="HuggingFace model id (e.g. Qwen/Qwen3-Reranker-8B)",

@@ -234,7 +234,9 @@ def test_record_systemone_server_timings(monkeypatch) -> None:
     import load_test
 
     recorded = []
-    monkeypatch.setattr(load_test, "add_custom_metric", lambda name, value, length_value=0: recorded.append((name, value)))
+    monkeypatch.setattr(
+        load_test, "add_custom_metric", lambda name, value, length_value=0: recorded.append((name, value))
+    )
     load_test.record_systemone_server_timings(
         {"fireworks-prefill-duration": "0.022", "fireworks-prefill-queue-duration": "bad", "fireworks-other": "1"}
     )
