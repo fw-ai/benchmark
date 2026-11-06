@@ -7034,6 +7034,14 @@ class LLMUser(HttpUser):
                             RequestOutcomes.record("cancel_rate", class_name)
                             response.success()
                             return
+                    # Track first visible (non-reasoning) token separately.
+                    # has_reasoning_only is False for transition chunks (both reasoning + content),
+                    # so t_first_visible_token fires correctly at the end of the thinking phase.
+                    if combined_text and not out.has_reasoning_only and t_first_visible_token is None:
+                        t_first_visible_token = now
+
+                    if out.logprob_tokens:
+                        total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
                     # --replay-reservation: the engine reserved more than the row's output; cancel at the recorded
                     # length so the delivered output is exact (the finish is a cancel, counted per class)
                     if (
@@ -7057,14 +7065,6 @@ class LLMUser(HttpUser):
                         completion_tokens = streamed_tokens
                         break
 
-                    # Track first visible (non-reasoning) token separately.
-                    # has_reasoning_only is False for transition chunks (both reasoning + content),
-                    # so t_first_visible_token fires correctly at the end of the thinking phase.
-                    if combined_text and not out.has_reasoning_only and t_first_visible_token is None:
-                        t_first_visible_token = now
-
-                    if out.logprob_tokens:
-                        total_logprob_tokens = (total_logprob_tokens or 0) + out.logprob_tokens
                 except Exception as e:
                     logger.error(f"Failed to parse response: {chunk} with error {repr(e)}")
                     fail_request(response, e, class_name=class_name, kind="other_error")
@@ -7170,15 +7170,22 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                expected = max_tokens
-                if (
-                    self.environment.parsed_options.shape_mix_output_mode == "reservation"
-                    and shape_request is not None
-                    and shape_request.cancel_at_tokens is not None
-                ):
-                    expected = shape_request.cancel_at_tokens  # the stream is cancelled at the recorded length
-                if num_tokens != expected:
-                    logger.warning(f"wrong number of tokens: {num_tokens}, expected {expected}")
+                exact_length = shape_request is None or self.environment.parsed_options.shape_mix_output_mode in (
+                    "exact",
+                    "reservation",  # the stream is cancelled at the recorded length; the engine may finish first
+                )
+                if exact_length:
+                    expected = (
+                        shape_request.cancel_at_tokens
+                        if (
+                            self.environment.parsed_options.shape_mix_output_mode == "reservation"
+                            and shape_request is not None
+                            and shape_request.cancel_at_tokens is not None
+                        )
+                        else max_tokens
+                    )
+                    if num_tokens != expected:  # a reservation row is cancelled at the recorded output length
+                        logger.warning(f"wrong number of tokens: {num_tokens}, expected {expected}")
                 add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
                 add_custom_metric("completion_tokens", num_tokens)
                 add_custom_metric("num_tokens", num_tokens)
