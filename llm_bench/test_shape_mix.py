@@ -4332,7 +4332,7 @@ def test_replay_reservation_sends_recorded_max_tokens_and_cancels_at_output(tmp_
     first, second, third = (ds.replay_request(e) for e in entries)
     # recorded max_tokens sent as is; output length reached by cancelling, not by forcing
     d1, _ = build_shape_mix_request(provider, first, "reservation")
-    assert d1["max_tokens"] == 512 and "min_tokens" not in d1 and not d1["ignore_eos"]
+    assert d1["max_tokens"] == 512 and "min_tokens" not in d1 and d1["ignore_eos"] is True  # R148-2: stays on
     assert first.cancel_at_tokens == 40
     # no recorded max_tokens: output + headroom 8
     assert second.reserved_max_tokens == 15 and second.cancel_at_tokens == 7

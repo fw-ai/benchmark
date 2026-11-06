@@ -2986,9 +2986,11 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
         data.pop("ignore_eos", None)
     elif output_mode == "reservation":
         # --replay-reservation: the row's recorded max_tokens is what the admitter reserved; the recorded output
-        # length is reached by cancelling the stream, so delivered lengths stay exact
+        # length is reached by cancelling the stream, so delivered lengths stay exact. min_tokens is dropped (the
+        # output isn't forced) but ignore_eos stays: the admitter's variable is the reservation, not EOS behaviour,
+        # and a model stopping early would deliver short
         data.pop("min_tokens", None)
-        data["ignore_eos"] = False
+        data["ignore_eos"] = True  # exact output: the admitter's variable is max_tokens, not EOS behaviour
         if request.reserved_max_tokens is not None:
             data["max_tokens"] = request.reserved_max_tokens
     else:
@@ -4449,6 +4451,21 @@ class SentDesign:
         }
 
 
+class StreamDeltaTokens:
+    """Tokens in a streamed text delta, cached by text: a reservation row cancels on a token count, and a
+    speculation chunk can carry several tokens. logprob_tokens is preferred when logprobs were requested."""
+
+    _cache: dict = {}
+
+    @classmethod
+    def count(cls, tokenizer, text: str) -> int:
+        if text not in cls._cache:
+            cls._cache[text] = len(tokenizer.encode(text, add_special_tokens=False)) if tokenizer else 0
+        if len(cls._cache) > 65536:
+            cls._cache.clear()
+        return cls._cache[text]
+
+
 class ReplayReservation:
     """--replay-reservation: rows whose stream the client cancelled at the recorded output length (the engine
     reserved more)."""
@@ -4458,6 +4475,7 @@ class ReplayReservation:
     @classmethod
     def reset(cls) -> None:
         cls.cancelled = 0
+        StreamDeltaTokens._cache.clear()
 
 
 class SendTimeline:
@@ -6113,6 +6131,8 @@ class LLMUser(HttpUser):
             self.prompt_tokenizer_tokens = None
         self.ramping_pacer = None  # Will be set if --ramping-time is used
         self.qps_pacer = None  # Will be set if --qps is used
+        # Tokenizes streamed deltas for the reservation cancel count (logprob_tokens is preferred when asked)
+        self.stream_tokenizer = InitTracker.load_tokenizer(self.environment.parsed_options.tokenizer)
         # The -pcml shared prefix this run's requests all start with (None until the dataset is built)
         self._designed_cached_tokens = None
         # The run's one calibrated chat head on -pcml rows (0 in completions or unmeasured): prompt= adds it back
@@ -6999,9 +7019,13 @@ class LLMUser(HttpUser):
                     # some providers (SGLang) send an empty chunk first skewing the TTFT;
                     # completion_tokens handles invisible-token deployments where combined_text
                     # stays empty but usage.completion_tokens is non-zero (e.g. Maverick-style)
-                    # Counted per chunk (num_tokens is only settled after the stream): a reservation row's
-                    # delivered output is the recorded length, so cancel as soon as it's reached
-                    streamed_tokens += 1 if (combined_text or out.text) else 0
+                    # Counted per chunk, in TOKENS (a speculation chunk can carry several): a reservation row's
+                    # delivered output is the recorded length, so cancel as soon as it's reached. logprob_tokens is
+                    # exact when logprobs were requested; the streamed text's token count is the fallback.
+                    if out.logprob_tokens:
+                        streamed_tokens += out.logprob_tokens  # exact when logprobs were requested
+                    elif out.text:
+                        streamed_tokens += StreamDeltaTokens.count(self.stream_tokenizer, out.text)
                     if (combined_text or completion_tokens) and t_first_token is None:
                         t_first_token = now
                         # Randomly cancel after first token if cancel_rate is set
@@ -7028,9 +7052,9 @@ class LLMUser(HttpUser):
                                 f"{max_tokens}-token reservation (replay reservation variant)"
                             )
 
-                        # The delivered output IS the recorded length (the client stops there); the server's
-                        # usage chunk never arrives on a cancelled stream, so count it here rather than from usage
-                        completion_tokens = shape_request.cancel_at_tokens
+                        # The server's usage chunk never arrives on a cancelled stream; the measured count so
+                        # far is the delivered output (it can overshoot the target by what the last chunk carried)
+                        completion_tokens = streamed_tokens
                         break
 
                     # Track first visible (non-reasoning) token separately.
@@ -7146,12 +7170,15 @@ class LLMUser(HttpUser):
                 add_custom_metric("time_to_first_token", dur_first_token * 1000)
             add_custom_metric("total_latency", dur_total * 1000)
             if num_tokens:
-                exact_length = shape_request is None or self.environment.parsed_options.shape_mix_output_mode in (
-                    "exact",
-                    "reservation",  # the stream is cancelled at the recorded length; the engine may finish first
-                )
-                if num_tokens != max_tokens and exact_length:
-                    logger.warning(f"wrong number of tokens: {num_tokens}, expected {max_tokens}")
+                expected = max_tokens
+                if (
+                    self.environment.parsed_options.shape_mix_output_mode == "reservation"
+                    and shape_request is not None
+                    and shape_request.cancel_at_tokens is not None
+                ):
+                    expected = shape_request.cancel_at_tokens  # the stream is cancelled at the recorded length
+                if num_tokens != expected:
+                    logger.warning(f"wrong number of tokens: {num_tokens}, expected {expected}")
                 add_custom_metric("generation_tokens", num_tokens)  # backward-compat alias; see logging_params
                 add_custom_metric("completion_tokens", num_tokens)
                 add_custom_metric("num_tokens", num_tokens)
@@ -7633,7 +7660,7 @@ def init_parser(parser):
         help="With --replay-schedule: send each row's recorded max_tokens (the reservation the admitter charges "
         "the batch) instead of the forced exact output, and cancel the stream at the row's recorded output length, "
         "so delivered output lengths stay exact while the engine reserves as in production. finish_reason becomes "
-        "cancel for rows the engine didn't finish first, and Request Cancelled At Output counts them. A schedule "
+        "cancel for rows the engine didn't finish first, counted in Requests Reservation Cancel. A schedule "
         "without a recorded max_tokens sizes the reservation from the output length (the headroom default of 8, or "
         "the max over the class's recorded lengths with --replay-reservation-max-over-class).",
     )
