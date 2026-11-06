@@ -398,6 +398,12 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--path", action="append", default=[], help="SRC=DST remap for paths in the extra args.")
     parser.add_argument(
+        "--replay-acceptance-per-row",
+        action="store_true",
+        default=False,
+        help="Forwarded to the steps: send each row's recorded acceptance (matched_per_pos/drafted_per_pos).",
+    )
+    parser.add_argument(
         "--check",
         nargs="?",
         const="python -m fireworks.perfagent.estimate.traffic_profile_logs preflight-check",
@@ -413,6 +419,10 @@ def main(argv=None) -> int:
     record = plan.get("record", {})
     paths = dict(p.split("=", 1) for p in args.path)
     steps = [(n, c, r, s, _remap(e, paths)) for n, c, r, s, e in plan_steps(plan)]
+    if args.replay_acceptance_per_row:
+        for st in steps:
+            if "--replay-schedule" in st[4] and "--replay-acceptance-per-row" not in st[4]:
+                st[4].append("--replay-acceptance-per-row")
     step = scored_step(plan, steps, args.step)
     fills = [s for s in steps if "--prefix-fill" in s[4]]
     probe = record.get("reuse_probe") or {}
@@ -449,13 +459,33 @@ def main(argv=None) -> int:
         if _token_exact(applied_boundary) != _token_exact(boundary):
             mismatched.append(boundary_message(s, applied_boundary, boundary))
     # The mock should count tokens as the client does, or the summary's token counts and the designed ones differ
-    # A schedule's acceptance lists must match the replica's draft count, or every row fails on the server
-    width = plan.get("speculative_draft_tokens") or plan.get("num_draft_tokens")
-    if width is not None:
-        print(
-            f"preflight: !!! the replica's num_draft_tokens is {width}: the schedule's acceptance lists must be "
-            f"{width} wide (the server refuses any other length). Start the mock with --num-draft-tokens {width}"
-        )
+    # A schedule's acceptance lists must match the replica's draft count, or every row fails on the server.
+    # The mock is started with the same count (below), and the schedule's list width is checked against it here
+    draft_width = (
+        plan.get("speculative_draft_tokens")
+        or plan.get("num_draft_tokens")
+        or record.get("speculative_draft_tokens")
+        or record.get("num_draft_tokens")
+    )
+    if draft_width is not None:
+        print(f"preflight: the replica's num_draft_tokens is {draft_width}; the mock enforces the override width")
+        schedule_path = _flag(step[4], "--replay-schedule")
+        if schedule_path and getattr(args, "replay_acceptance_per_row", False):
+            widths = set()
+            with open(schedule_path) as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    drafted = row.get("drafted_per_pos")
+                    if drafted is not None:
+                        widths.add(len(drafted))
+            if widths and widths != {draft_width}:
+                print(
+                    f"preflight: !!! refusing: the schedule's acceptance lists are {sorted(widths)} wide but the "
+                    f"replica's num_draft_tokens is {draft_width}: every row would fail on the server"
+                )
+                return 2
     warned = set()
     for s in fills + [step]:
         counting = _flag(s[4], "--tokenizer") or DEFAULT_TOKENIZER
@@ -475,13 +505,16 @@ def main(argv=None) -> int:
     server_log = os.path.join(args.out, "mock_server.log")
     request_log = os.path.join(args.out, "mock.requests")
     with open(server_log, "w") as f:
-        server = subprocess.Popen(
+        # The replica's draft count, when the plan records it: the mock refuses acceptance overrides of any
+        # other length, as the engine does, and the schedule's list width is checked against it below
+        cmd = (
             [sys.executable, os.path.join(HERE, "mock_server.py"), "--port", str(port), "--window", str(window)]
             + ["--boundary", str(boundary), "--tokenizer", tokenizer, "--log", request_log]
-            + ["--chat-head", str(args.mock_chat_head)],
-            stdout=f,
-            stderr=subprocess.STDOUT,
+            + ["--chat-head", str(args.mock_chat_head)]
         )
+        if draft_width is not None:
+            cmd += ["--num-draft-tokens", str(draft_width)]
+        server = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
     try:
         for _ in range(120):
             try:

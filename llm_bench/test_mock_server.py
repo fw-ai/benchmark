@@ -317,3 +317,61 @@ def test_mock_refuses_a_wrong_length_acceptance_override() -> None:
                 assert e.code == expect == 400 and b"must have 2 entries" in e.read()
         finally:
             server.shutdown()
+
+
+def test_preflight_passes_the_draft_width_and_refuses_a_mismatch(tmp_path, capsys) -> None:
+    """A-1b: the pre-flight starts ITS OWN mock with --num-draft-tokens <the plan's width>, and checks the
+    schedule's acceptance-list width against it before any step: a mis-width schedule fails at pre-flight, not as
+    every row failing on GPU."""
+    import json
+    import urllib.request
+
+    from preflight_run import main
+
+    mix = (
+        '{"seed":1,"classes":[{"name":"c","weight":1,"prompt_tokens":900,"cached_prompt_tokens":500,'
+        '"generated_tokens":4}]}'
+    )
+    rows = [
+        {
+            "time_s": 0,
+            "class": "c",
+            "input_length": 900,
+            "cached_length": 500,
+            "output_length": 4,
+            "matched_per_pos": [1, 1],
+            "drafted_per_pos": [2, 2],
+        }
+    ]
+    schedule = tmp_path / "s.jsonl"
+    schedule.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    plan = {
+        "record": {"target_qps": 1.0, "num_draft_tokens": 2},
+        "traffic_generator_create_args": {
+            "ramp-1": [
+                "traffic-generator",
+                "create",
+                "--concurrency",
+                "1",
+                "--duration",
+                "5s",
+                "--extra-args",
+                f"--shape-mix '{mix}' --no-chat --replay-schedule {schedule}",
+            ],
+        },
+    }
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan))
+    out = tmp_path / "out"
+    assert main([str(path), "--out", str(out), "--window", "0", "--replay-acceptance-per-row"]) == 0
+    text = capsys.readouterr().out
+    assert "num_draft_tokens is 2" in text and "the mock enforces the override width" in text
+    # the mock was started with the width: a wrong-width override would have failed every request
+    assert (out / "mock.requests").exists()
+    # a 3-wide schedule against a 2-wide replica: refused before any step
+    rows3 = [dict(rows[0], drafted_per_pos=[2, 2, 2], matched_per_pos=[1, 1, 1])]
+    schedule.write_text("\n".join(json.dumps(r) for r in rows3) + "\n")
+    out2 = tmp_path / "out2"
+    assert main([str(path), "--out", str(out2), "--window", "0", "--replay-acceptance-per-row"]) == 2
+    assert "refusing: the schedule's acceptance lists are [3] wide" in capsys.readouterr().out
+    assert not (out2 / "mock.requests").exists()
