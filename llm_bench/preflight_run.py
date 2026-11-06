@@ -468,9 +468,14 @@ def main(argv=None) -> int:
         or record.get("num_draft_tokens")
     )
     if draft_width is not None:
+        draft_width = int(draft_width)
+    if draft_width is not None:
         print(f"preflight: the replica's num_draft_tokens is {draft_width}; the mock enforces the override width")
         schedule_path = _flag(step[4], "--replay-schedule")
-        if schedule_path and getattr(args, "replay_acceptance_per_row", False):
+        # the step may carry the flag itself (07's runner injects it), not only the pre-flight's copy
+        if schedule_path and (
+            getattr(args, "replay_acceptance_per_row", False) or "--replay-acceptance-per-row" in step[4]
+        ):
             widths = set()
             with open(schedule_path) as f:
                 for line in f:
