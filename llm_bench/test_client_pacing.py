@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 import threading
 import time
@@ -428,3 +429,123 @@ def test_startup_offset_counts_from_the_window_start_and_paced_runs() -> None:
     SendTimeline.reset()
     ns = lambda **kw: argparse.Namespace(**{"qps": None, "replay_schedule": None, **kw})
     assert paced_run(ns(qps=2.0)) and paced_run(ns(replay_schedule="s.jsonl")) and not paced_run(ns())
+
+
+def test_in_flight_gauge_counts_sends_minus_responses_and_fits_a_slope() -> None:
+    """D-173: the client's in-flight paced requests, as sends on the wire minus responses; the slope per minute
+    with a 95% interval is what the capacity probe reads."""
+    from load_test import InFlightGauge, in_flight_slope
+
+    InFlightGauge.in_flight, InFlightGauge._counted = 0, set()
+    InFlightGauge.answered("never-sent")  # a greenlet that never reached the wire doesn't count down
+    assert InFlightGauge.in_flight == 0
+    InFlightGauge.sent("a")
+    InFlightGauge.sent("a")  # stamped once, however many times the wire hooks fire
+    InFlightGauge.sent("b")
+    assert InFlightGauge.in_flight == 2
+    InFlightGauge.answered("a")
+    InFlightGauge.answered("a")
+    assert InFlightGauge.in_flight == 1
+    InFlightGauge.answered("b")
+    assert InFlightGauge.in_flight == 0
+    # A steady count: zero slope inside its interval. A growing one: the rate, with an interval excluding zero
+    flat = in_flight_slope([(15.0 * i, 8 + (i % 3) - 1) for i in range(20)])
+    assert flat[1] <= 0.0 <= flat[2] and abs(flat[0]) < 1.0
+    rising = in_flight_slope([(15.0 * i, 4 * i + (i % 2)) for i in range(20)])
+    assert abs(rising[0] - 16.0) < 0.5 and rising[1] > 0
+    assert in_flight_slope([(0.0, 1), (15.0, 2)]) is None  # too few samples
+    InFlightGauge.reset()
+    InFlightGauge.samples = [(15.0, 3), (30.0, 5)]
+    entries = InFlightGauge.summary_entries()
+    assert entries["client_in_flight_samples"] == "15:3;30:5" and entries["client_in_flight_max"] == 5
+    assert entries["client_in_flight_slope_per_min"] == ""
+    InFlightGauge._window_start, InFlightGauge.samples = None, []
+
+
+def _simulated_in_flight(hold, rate=10.0, seconds=60.0, every=5.0):
+    """In-flight samples of a paced step: a send every 1/rate s, each completing after hold(i) seconds."""
+    sends = [(i / rate, hold(i)) for i in range(int(seconds * rate))]
+    return [
+        (t, sum(1 for s, h in sends if s <= t < s + h)) for t in [every * (k + 1) for k in range(int(seconds / every))]
+    ]
+
+
+def test_in_flight_slope_ignores_the_warm_up_ramp_of_long_requests() -> None:
+    """N10-147-1: a healthy server with long requests ramps in flight from 0 to rate x request time; fitted from the
+    window's start, that read as rising (+21/min, interval excluding 0, a false capacity break). The slope is fitted
+    over the second half, so the healthy step's interval includes 0 while a server that never answers still rises."""
+    import time as _time
+
+    from load_test import InFlightGauge, in_flight_slope
+
+    healthy = _simulated_in_flight(lambda i: 15.0 if i % 5 == 0 else 0.05)  # 20% held 15 s, the rest 50 ms
+    # the plain least-squares interval over the whole window: a false "rising" (the warm-up ramp)
+    n = len(healthy)
+    mt, mv = sum(t for t, _ in healthy) / n, sum(v for _, v in healthy) / n
+    sxx = sum((t - mt) ** 2 for t, _ in healthy)
+    b = sum((t - mt) * (v - mv) for t, v in healthy) / sxx
+    sse = sum((v - mv - b * (t - mt)) ** 2 for t, v in healthy)
+    assert b - 2.228 * (sse / (n - 2) / sxx) ** 0.5 > 0  # t(10)
+    stuck = _simulated_in_flight(lambda i: 1e9)
+    for samples, rising in ((healthy, False), (stuck, True)):
+        InFlightGauge._window_start, InFlightGauge.samples = _time.monotonic() - 60.0, samples
+        e = InFlightGauge.summary_entries()
+        low, high = e["client_in_flight_slope_ci95_low"], e["client_in_flight_slope_ci95_high"]
+        assert (low > 0) if rising else (low <= 0 <= high), (samples, low, high)
+    InFlightGauge._window_start, InFlightGauge.samples = None, []
+
+
+def test_in_flight_slope_t_beyond_30_degrees_of_freedom() -> None:
+    """N10-147-2: past the table, the t value comes from an expansion of the normal one (not 1.96 flat)."""
+    from load_test import in_flight_slope
+
+    # 40 degrees of freedom: t = 2.021 (an alternating series: no positive autocorrelation, so no inflation)
+    samples = [(float(i), float(i % 2)) for i in range(42)]
+    slope, low, high = in_flight_slope(samples)
+    n = len(samples)
+    mt, mv = sum(t for t, _ in samples) / n, sum(v for _, v in samples) / n
+    sxx = sum((t - mt) ** 2 for t, _ in samples)
+    sse = sum((v - mv - slope / 60 * (t - mt)) ** 2 for t, v in samples)
+    assert abs((high - low) / 2 / 60 / ((sse / (n - 2) / sxx) ** 0.5) - 2.021) < 0.002
+
+
+def _mginf_samples(seed, stuck=0.0, samples=40, every=15.0, rate=2.0, hold=30.0):
+    """In-flight counts of a healthy server (Poisson arrivals, exponential request times) sampled every `every` s:
+    strongly autocorrelated when requests last about that long. `stuck`: a share that never completes."""
+    rng = random.Random(seed)
+    t, requests, horizon = 0.0, [], samples * every + hold * 4
+    while t < horizon:
+        t += rng.expovariate(rate)
+        requests.append((t, math.inf if rng.random() < stuck else t + rng.expovariate(1 / hold)))
+    times = [hold * 4 + every * k for k in range(samples)]
+    return [(s, sum(1 for a, b in requests if a <= s < b)) for s in times]
+
+
+def test_in_flight_slope_interval_accounts_for_autocorrelation() -> None:
+    """#147 review: counts sampled every 15 s of requests lasting ~30 s are autocorrelated, and the plain interval
+    excluded zero on 37% of healthy streams (a false capacity break). With the lag-1 inflation it's near the nominal
+    5%, while a stream where 5% of requests never complete (~6/min accumulating) is still detected."""
+    from load_test import in_flight_slope
+
+    seeds = range(200)
+    false_alarms = sum(not (low <= 0 <= high) for _, low, high in (in_flight_slope(_mginf_samples(s)) for s in seeds))
+    detected = sum(low > 0 for _, low, _ in (in_flight_slope(_mginf_samples(s, stuck=0.05)) for s in seeds))
+    assert false_alarms / len(seeds) <= 0.10, false_alarms
+    assert detected / len(seeds) >= 0.95, detected
+
+
+def test_in_flight_gauge_starts_only_for_paced_runs() -> None:
+    """The sampler starts only where the summary reports it: paced_run() (--qps or --replay-schedule)."""
+    import argparse
+
+    from load_test import InFlightGauge
+
+    ns = lambda **kw: argparse.Namespace(
+        **{"qps": None, "replay_schedule": None, "client_in_flight_interval": 15.0, **kw}
+    )
+    InFlightGauge._started = False
+    assert InFlightGauge.start_for(ns()) is False and InFlightGauge._started is False  # closed loop: no sampler
+    assert InFlightGauge.start_for(ns(qps=2.0)) is True
+    InFlightGauge._started = False
+    assert InFlightGauge.start_for(ns(qps=2.0, client_in_flight_interval=0)) is False  # 0 turns it off
+    InFlightGauge._started = False
