@@ -34,6 +34,7 @@ import bisect
 import hashlib
 import io
 import itertools
+import numpy as np
 from PIL import Image
 import transformers
 import re
@@ -113,6 +114,26 @@ def _read_config_json(tokenizer_path: str) -> dict[str, Any]:
     config_path = _tokenizer_asset_path(tokenizer_path, "config.json")
     with open(config_path) as f:
         return json.load(f)
+
+
+def served_config_identity(served: Optional[str]) -> dict[str, str]:
+    """What a run applied from the served model's config, for comparing with a replica's launch config: the sha256 of
+    the config.json bytes read, and the fields that set reuse semantics (from text_config first). Blank when the
+    config can't be read."""
+    if not served:
+        return {"served_model_config_sha256": "", "served_model_config_fields": ""}
+    try:
+        with open(_tokenizer_asset_path(served, "config.json"), "rb") as f:
+            raw = f.read()
+        config = json.loads(raw)
+    except Exception as e:
+        logger.warning(f"llm_bench: couldn't read {served}'s config.json for its content hash ({e!r})")
+        return {"served_model_config_sha256": "", "served_model_config_fields": ""}
+    fields = {k: _config_field(config, k) for k in ("model_type", "sliding_window", "index_topk")}
+    return {
+        "served_model_config_sha256": hashlib.sha256(raw).hexdigest(),
+        "served_model_config_fields": ";".join(f"{k}={'' if v is None else v}" for k, v in fields.items()),
+    }
 
 
 @lru_cache(maxsize=None)
@@ -777,6 +798,8 @@ SHAPE_CLASS_FIELDS = {
     "generated_tokens_quantiles",
     "prefix_popularity",
     "reasoning_effort",
+    "reasoning_effort_shares",
+    "generated_tokens_by_tier",
 }
 _SHAPE_CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SHAPE_NAME_INVALID_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -813,6 +836,11 @@ class ShapeClass:
     # or its --prefix-pool-cache file. The server's KV cache does depend on it: the preamble sits ahead of the shared
     # prefix, so the server caches a prefix once per tier it's requested with
     reasoning_effort: Optional[str] = None
+    # Tier shares instead of one tier: ((tier, share), ...) sorted by tier. Each prefix gets its tiers from
+    # prefix_tier_split, so request-weighted shares match; None: one tier (reasoning_effort) for every request
+    reasoning_effort_shares: Optional[tuple] = None
+    # Output tokens per tier, ((tier, tokens), ...); a tier without one uses generated_tokens
+    generated_tokens_by_tier: Optional[tuple] = None
     # Largest prompt (tokens) the class's prompt_band allows, widened by bands merged into it; None: no ceiling
     prompt_tokens_max: Optional[int] = None
 
@@ -1216,6 +1244,8 @@ def _parse_shape_mix(text: str) -> ShapeMix:
                     raw, where, _shape_int(raw, "prefix_pool_size", where, 1, default=1)
                 ),
                 reasoning_effort=_replay_effort(raw, where),
+                reasoning_effort_shares=_parse_tier_shares(raw, where)[0],
+                generated_tokens_by_tier=_parse_tier_shares(raw, where)[1],
                 prompt_tokens_max=_prompt_tokens_max(raw, spec),
             )
         )
@@ -1289,6 +1319,36 @@ def resolve_qps_cv2(options: argparse.Namespace) -> float:
     return 1.0
 
 
+class StratifiedUniform:
+    """Quantiles in [0, 1) for one class's sampled lengths, stratified on two levels: every block of STRATA draws
+    takes each of STRATA equal-probability strata once, in a shuffled order, and each stratum's successive visits
+    take its SUBSTRATA sub-strata once each, also shuffled. So a class's realized mean tracks its design at any n,
+    heavy tail included (an i.i.d. draw of 187 from P9's partial_lt_2k ranges +-11%), while each request's length
+    is still a random draw with no order pattern between consecutive requests."""
+
+    STRATA = 64
+    SUBSTRATA = 16
+
+    def __init__(self, rng: random.Random) -> None:
+        self._rng = rng
+        self._block: list[int] = []
+        self._sub: dict[int, list[int]] = {}
+
+    def _shuffled(self, n: int) -> list[int]:
+        order = list(range(n))
+        self._rng.shuffle(order)
+        return order
+
+    def next(self) -> float:
+        if not self._block:
+            self._block = self._shuffled(self.STRATA)
+        stratum = self._block.pop()
+        sub = self._sub.get(stratum)
+        if not sub:
+            sub = self._sub[stratum] = self._shuffled(self.SUBSTRATA)
+        return (stratum + (sub.pop() + self._rng.random()) / self.SUBSTRATA) / self.STRATA
+
+
 @dataclass(frozen=True)
 class ShapeRequest:
     prompt: str
@@ -1311,6 +1371,8 @@ class ShapeRequest:
     # What the layout intends the server to reuse for this row, after every compensation (the runner's
     # in-run reuse check compares it with the server's cached count, D-123)
     designed_cached_tokens: Optional[int] = None
+    # --replay-schedule: the row's 0-based position in the schedule file (ScheduleEntry.row), logged as row=
+    schedule_row: Optional[int] = None
 
 
 class _CyclicText:
@@ -1565,6 +1627,11 @@ class ShapeMixDataset:
         self._prefix_cumulative = [
             self._popularity_cumulative(ci, default_popularity_zipf) for ci in range(len(self.classes))
         ]
+        # Tier shares (default off): each class's per-prefix tier split, and the request seed's own stream for a split
+        # prefix's draws, so the request stream is the same as without shares
+        self._tier_split = [self._class_tier_split(ci) for ci in range(len(self.classes))]
+        self._tier_rng = random.Random(f"shape-mix:{self.request_seed}:tiers:{self._worker_index}")
+        self._strata: dict = {}
         self._filler_offsets = [array("I", bytes(4 * len(t))) for t in self._filler_tokens]
         self._filler_widths = [array("I", [_UNBUILT]) * len(t) for t in self._filler_tokens]
         if self.tail_variants:
@@ -2086,28 +2153,51 @@ class ShapeMixDataset:
                 prefix_index = None
             elif prefix_index is None:
                 prefix_index = self._draw_prefix_index(ci)
+            tier = self._draw_tier(ci, prefix_index)
             nonce = self._rng.getrandbits(64)
-            variant = self._draw_variant(ci, self._rng)
+            # With sampled lengths (G8), each class's length quantiles come from its own stratified stream, so the
+            # realized class mean tracks the design at any n; without, the draws are as before
+            variant = self._draw_variant(ci, self._rng, self._stratum(ci, "uncached") if self.sample_lengths else None)
             cls = self.classes[ci]
             tail_tokens = None
             if generated is None:
-                generated = cls.generated_tokens
+                # A tier's generated_tokens_by_tier is its mean output: used as is, or with
+                # --shape-mix-sample-lengths the class's draw scaled to it (the class's spread at the tier's mean)
+                # (a class with one reasoning_effort and no shares has no drawn tier: its own tier keys the lookup)
+                tier_output = dict(cls.generated_tokens_by_tier or ()).get(
+                    tier if tier is not None else cls.reasoning_effort
+                )
+                generated = tier_output or cls.generated_tokens
                 if self.sample_lengths and cls.generated_tokens_quantiles:
-                    drawn = self._generated_dist[ci].value(self._rng.random())
+                    drawn = self._generated_dist[ci].value(self._stratum(ci, "generated").next())
+                    if tier_output:
+                        drawn *= tier_output / cls.generated_tokens
                     generated = max(1, round(drawn))
             if self.sample_lengths and cls.uncached_tokens_quantiles and variant is None:
-                drawn = self._uncached_dist[ci].value(self._rng.random())
+                drawn = self._uncached_dist[ci].value(self._stratum(ci, "uncached").next())
                 tail_tokens = self._tail_for_uncached(ci, drawn)
-        return self._render(ci, prefix_index, nonce, counter, variant, generated, tail_tokens)
+        request = self._render(ci, prefix_index, nonce, counter, variant, generated, tail_tokens)
+        # The output (and its context cap) is settled in _render; the tier only adds its field
+        return request if tier is None else dataclasses.replace(request, reasoning_effort=tier)
 
-    def _draw_variant(self, ci: int, rng: random.Random) -> Optional[int]:
+    def _draw_variant(self, ci: int, rng: random.Random, stratum=None) -> Optional[int]:
         count = len(self._filler_tokens[ci])
         if not count:
             return None
         cumulative = self._variant_cumulative[ci]
         if cumulative is None:
             return rng.randrange(count)
-        return min(bisect.bisect_right(cumulative, rng.random() * cumulative[-1]), count - 1)
+        u = stratum.next() if stratum is not None else rng.random()
+        return min(bisect.bisect_right(cumulative, u * cumulative[-1]), count - 1)
+
+    def _stratum(self, ci: int, kind: str) -> "StratifiedUniform":
+        """The class's stratified quantile stream for one length (uncached or generated), seeded by the request seed."""
+        key = (ci, kind)
+        stream = self._strata.get(key)
+        if stream is None:
+            seed = f"shape-mix:{self.request_seed}:strata:{kind}:{self._worker_index}:{ci}"
+            stream = self._strata[key] = StratifiedUniform(random.Random(seed))
+        return stream
 
     def _draw_prefix_index(self, ci: int) -> int:
         cumulative = self._prefix_cumulative[ci]
@@ -2127,6 +2217,35 @@ class ShapeMixDataset:
         kind, value = popularity
         weights = (1 / (j + 1) ** value for j in range(n)) if kind == "zipf" else value
         return array("d", itertools.accumulate(weights))
+
+    def _class_tier_split(self, ci: int) -> Optional[list]:
+        """prefix_tier_split over the class's actual popularity weights (uniform, Zipf or explicit), in prefix-index
+        order; a class without a pool is one prefix carrying the shares. None without reasoning_effort_shares."""
+        shares = self.classes[ci].reasoning_effort_shares
+        if not shares:
+            return None
+        n = max(1, self.pool_sizes[ci])
+        cumulative = self._prefix_cumulative[ci]
+        weights = [1.0] * n if cumulative is None else [b - a for a, b in zip([0.0, *cumulative[:-1]], cumulative)]
+        return prefix_tier_split(dict(shares), weights)
+
+    def prefix_tiers(self, ci: int, prefix_index: Optional[int]) -> list:
+        """The tiers a prefix carries (one per fill request): [None] without shares, else its split's tiers."""
+        split = self._tier_split[ci]
+        if split is None:
+            return [None]
+        return sorted(split[prefix_index or 0])
+
+    def _draw_tier(self, ci: int, prefix_index: Optional[int]) -> Optional[str]:
+        """A request's tier from its prefix's split: the one tier, or a draw from the tier stream when split."""
+        split = self._tier_split[ci]
+        if split is None:
+            return None
+        tiers = split[prefix_index or 0]
+        if len(tiers) == 1:
+            return next(iter(tiers))
+        names = sorted(tiers)
+        return self._tier_rng.choices(names, weights=[tiers[t] for t in names])[0]
 
     def prefix_popularity_share(self, ci: int, top: int) -> float:
         """Fraction of the class's requests expected on its `top` most popular prefixes."""
@@ -2627,7 +2746,11 @@ class ShapeMixDataset:
         return self._corpus.slice(seg[1], seg[2])
 
     def replay_request(self, entry: "ScheduleEntry") -> ShapeRequest:
-        """The request for a --replay-schedule row (see prepare_replay)."""
+        """The request for a --replay-schedule row (see prepare_replay), tagged with the row's position in the
+        schedule file, so a checker can join each logged reuse record to its recorded row."""
+        return dataclasses.replace(self._replay_request(entry), schedule_row=entry.row)
+
+    def _replay_request(self, entry: "ScheduleEntry") -> ShapeRequest:
         plan = getattr(self, "_replay", {}).get(entry.index)
         if plan is None:
             request = self.scheduled_request(entry.class_index, entry.prefix_index, entry.output_length)
@@ -2683,7 +2806,7 @@ class ShapeMixDataset:
         random.Random(f"shape-mix:{self.request_seed}:fill-order:{pass_index}").shuffle(plan)
         return plan
 
-    def fill_request(self, class_index: int, prefix_index: int) -> ShapeRequest:
+    def fill_request(self, class_index: int, prefix_index: int, tier: Optional[str] = None) -> ShapeRequest:
         """A request on one prefix shaped like live traffic (prefix + unique tail), generating one token.
 
         Live traffic diverges right after the prefix, so filling with the same shape leaves the cache as
@@ -2693,7 +2816,9 @@ class ShapeMixDataset:
             self._counter += 1
             nonce = self._fill_rng.getrandbits(64)
             variant = self._draw_variant(class_index, self._fill_rng)
-        return self._render(class_index, prefix_index, nonce, counter, variant, 1)
+        request = self._render(class_index, prefix_index, nonce, counter, variant, 1)
+        # With tier shares the server caches a prefix once per tier it carries (the preamble is ahead of it)
+        return request if tier is None else dataclasses.replace(request, reasoning_effort=tier)
 
     def _render(self, ci, prefix_index, nonce, counter, variant, generated_tokens, tail_tokens=None) -> ShapeRequest:
         cls = self.classes[ci]
@@ -2809,9 +2934,14 @@ def build_shape_mix_request(provider, request: ShapeRequest, output_mode: str = 
         data["messages"] = request.messages
     if request.reasoning_effort is not None:
         # a class's reasoning-effort tier (before overrides, so a replay row's own tier wins)
-        data["reasoning_effort"] = request.reasoning_effort
+        data["reasoning_effort"] = reasoning_effort_payload(request.reasoning_effort)
     if request.overrides:
         data.update(request.overrides)
+        if request.overrides.get("reasoning_effort") is not None:
+            data["reasoning_effort"] = reasoning_effort_payload(request.overrides["reasoning_effort"])
+    if data.get("reasoning_effort") == REASONING_EFFORT_UNSET:
+        # "unset": no field at all (not null, not "none"), whatever --reasoning-effort would have added
+        del data["reasoning_effort"]
     if output_mode == "max":
         data.pop("min_tokens", None)
         data.pop("ignore_eos", None)
@@ -3580,6 +3710,7 @@ class ScheduleEntry:
     input_length: Optional[int] = None  # prompt tokens as the server counts them (chat template included)
     session: Optional[str] = None
     index: int = 0  # position in the whole time-sorted schedule
+    row: int = 0  # 0-based position among the schedule file's rows, in file order (what a checker joins on)
     cached_length: Optional[int] = None  # recorded reusable (cached) prompt tokens, as the server counts them
     cancelled: bool = False
     temperature: Optional[float] = None
@@ -3641,11 +3772,139 @@ def _replay_bool(row: dict, key: str, where: str) -> bool:
     return value
 
 
+def _parse_tier_shares(raw: dict, where: str) -> tuple:
+    """reasoning_effort_shares ({tier: share}) and generated_tokens_by_tier ({tier: tokens}), validated."""
+    shares = raw.get("reasoning_effort_shares")
+    by_tier = raw.get("generated_tokens_by_tier")
+
+    def tiers_of(mapping, field):
+        if not isinstance(mapping, dict) or not mapping:
+            raise ValueError(f"--shape-mix {where}: {field} must map reasoning-effort tiers to numbers")
+        keyed = {reasoning_effort_tier(t, f"--shape-mix {where} {field}"): t for t in mapping}
+        if len(keyed) < len(mapping):
+            raise ValueError(f"--shape-mix {where}: {field} names a tier twice ({sorted(mapping)})")
+        return keyed  # tier -> the profile's key
+
+    if shares is not None:
+        if raw.get("reasoning_effort") is not None:
+            raise ValueError(f"--shape-mix {where}: give reasoning_effort or reasoning_effort_shares, not both")
+        keyed = tiers_of(shares, "reasoning_effort_shares")
+        values = {t: _shape_number(shares, k, f"{where} reasoning_effort_shares") for t, k in keyed.items()}
+        if any(v < 0 for v in values.values()) or sum(values.values()) <= 0:
+            raise ValueError(f"--shape-mix {where}: reasoning_effort_shares must be >= 0 with a positive sum")
+        shares = tuple(sorted((t, v) for t, v in values.items() if v > 0))
+    if by_tier is not None:
+        keyed = tiers_of(by_tier, "generated_tokens_by_tier")
+        by_tier = tuple(
+            sorted((t, _shape_int(by_tier, k, f"{where} generated_tokens_by_tier", 1)) for t, k in keyed.items())
+        )
+    return shares, by_tier
+
+
+def prefix_tier_split(shares, popularity):
+    """Each prefix's tier split, ``{tier: fraction of its requests}``, so request-weighted tier shares equal *shares*.
+
+    A pure function of the class's shares and its prefixes' popularity weights (in prefix-index order), shared with
+    llm_bench (task 03), which draws a split prefix's tier per request from its seed. Prefixes are walked from the most
+    popular (ties to the lower index) and laid along the cumulative request weight; the tiers, in name order, take
+    consecutive stretches of it as long as their shares. A prefix straddling a tier boundary is split at it, so at most
+    tiers - 1 prefixes per class carry more than one tier.
+    """
+    names = sorted(shares)
+    total = float(sum(shares.values()))
+    bounds = np.cumsum([shares[t] / total for t in names])
+    bounds[-1] = 1.0
+    weights = np.asarray(popularity, dtype=float)
+    weights = weights / weights.sum()
+    split: list[dict[str, float]] = [{} for _ in range(len(weights))]
+    start, tier = 0.0, 0
+    for j in sorted(range(len(weights)), key=lambda k: (-weights[k], k)):
+        end = min(start + float(weights[j]), 1.0)
+        at = start
+        while at < end - 1e-15:
+            upto = min(end, float(bounds[tier]))
+            if upto > at:
+                split[j][names[tier]] = split[j].get(names[tier], 0.0) + (upto - at) / weights[j]
+            at = upto
+            if at >= bounds[tier] - 1e-15 and tier < len(names) - 1:
+                tier += 1
+        start = end
+        # Float accumulation leaves a split a hair off 1 on long tails: normalise so each sums to 1 exactly.
+        mass = sum(split[j].values())
+        split[j] = {t: f / mass for t, f in split[j].items()}
+    return split
+
+
+# The reasoning-effort names the serving stack accepts (DeepSeek V4.1 maps medium to high and xhigh to max, minimal
+# to low), plus integer tiers 1-1023 as production logs them (1-100 is the budget; 101-1023 maps to low)
+REASONING_EFFORT_NAMES = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+# A tier meaning "send no reasoning_effort field" (profiles label untiered rows "unset"); "null" is accepted for it
+REASONING_EFFORT_UNSET = "unset"
+
+
+def reasoning_effort_tier(value, where: str) -> Optional[str]:
+    """A tier as llm_bench keeps it: a name, an integer tier as its decimal string ("20"), or "unset" (also "null"):
+    the request carries no reasoning_effort field at all. None (no tier given) stays None. Integers are sent as
+    integers (reasoning_effort_payload), never rounded to a named tier."""
+    if value is None:
+        return None
+    if value in (REASONING_EFFORT_UNSET, "null"):
+        return REASONING_EFFORT_UNSET
+    if isinstance(value, bool):
+        raise ValueError(f"{where}: 'reasoning_effort' must be a tier name or an integer, got {value!r}")
+    if isinstance(value, int) or (isinstance(value, str) and value.strip().isdigit()):
+        number = int(value)
+        if not 1 <= number <= 1023:
+            raise ValueError(f"{where}: an integer 'reasoning_effort' must be in 1-1023, got {value!r}")
+        return str(number)
+    if value in REASONING_EFFORT_NAMES:
+        return value
+    raise ValueError(
+        f"{where}: 'reasoning_effort' must be one of {', '.join(REASONING_EFFORT_NAMES)}, unset or an integer 1-1023, "
+        f"got {value!r}"
+    )
+
+
+def request_tier(request) -> Optional[str]:
+    """The tier a shape-mix or replay request sends: a replay row's own tier, else its class's; None untiered."""
+    overrides = getattr(request, "overrides", None) or {}
+    return overrides.get("reasoning_effort") or getattr(request, "reasoning_effort", None)
+
+
+def reuse_record(class_name: str, designed: int, delivered, tier: Optional[str] = None, prompt=None, row=None) -> str:
+    """The per-request reuse record the runner parses: designed vs delivered cached tokens, the designed prompt tokens
+    (so delivered vs designed uncached can be gated per request: the harness-delivery check), and the request's tier
+    (a name, an integer tier, or unset) when it has one. Untiered runs log no tier field, as before tiers.
+
+    designed and prompt are the design only: for shape-mix, replay and -pcml rows the client's count plus the run's one
+    constant calibrated head (the setup measurement or --chat-head-tokens, 0 in completions mode), which the layout
+    already folds into the class's lengths; never a per-request server figure. So comparing the server's prompt with
+    prompt is two-sided, and a head the calibration missed (or one that drifts) shows as a delivered-vs-designed gap,
+    as it should."""
+    record = (
+        f" | reuse class={class_name} designed={designed} delivered={'none' if delivered is None else int(delivered)}"
+    )
+    record += f" prompt={int(prompt)}" if prompt else ""
+    record += f" row={int(row)}" if row is not None else ""  # a replay row's position in the schedule file
+    return record + (f" tier={tier}" if tier is not None else "")
+
+
+def pcml_reuse_record(designed_cached: int, delivered, client_prompt, chat_head: int) -> str:
+    """A -pcml row's reuse record (class `default`). -pcml builds the client's count net of the calibrated chat head
+    (D-134), so prompt= adds that one constant head back: the designed SERVER length, as on shape-mix and replay rows
+    (D-183). *chat_head* is 0 in completions or when unmeasured."""
+    return reuse_record(
+        "default", designed_cached, delivered, prompt=client_prompt + chat_head if client_prompt else client_prompt
+    )
+
+
+def reasoning_effort_payload(tier: str):
+    """The payload value of a tier: an integer tier as the integer the log records, a name as is."""
+    return int(tier) if tier.isdigit() else tier
+
+
 def _replay_effort(row: dict, where: str) -> Optional[str]:
-    value = row.get("reasoning_effort")
-    if value is not None and value not in ("none", "low", "medium", "high"):
-        raise ValueError(f"{where}: 'reasoning_effort' must be none, low, medium or high, got {value!r}")
-    return value
+    return reasoning_effort_tier(row.get("reasoning_effort"), where)
 
 
 def _replay_pod(entry: ScheduleEntry, pods: int) -> int:
@@ -3767,11 +4026,13 @@ def load_replay_schedule(
     index = {name: i for i, name in enumerate(class_names)}
     raw = []
     unknown: dict[str, int] = {}
+    file_row = -1  # rows in file order, blank lines not counted
     with open(path, "r") as f:
         for n, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
+            file_row += 1
             where = f"--replay-schedule {path}:{n}"
             try:
                 row = json.loads(line)
@@ -3835,7 +4096,7 @@ def load_replay_schedule(
             if session is not None:
                 # Session keys are scoped to their recorded pod
                 session = f"{fields['pod']}/{session}" if fields["pod"] is not None else str(session)
-            raw.append((t, n, index[name], session, fields))
+            raw.append((t, n, index[name], session, dict(fields, row=file_row)))
     if not raw:
         raise ValueError(f"--replay-schedule {path}: no entries")
     _warn_unknown_replay_fields(path, unknown)
@@ -4104,6 +4365,37 @@ class ReplayPacer:
 _HEAD_OVERHEAD_LOGGED: set = set()
 
 
+class SentDesign:
+    """Per class, the design of every request SENT in the run window: the summary's per-class means count completed
+    responses only, so under a time-boxed step the last ~(rate x p99 latency) sends, still in flight at quit and
+    likelier long, are missing from them. These all-sent designed means sit beside them (delivered values exist
+    only for completed requests)."""
+
+    sent: dict = {}
+
+    @classmethod
+    def record(cls, class_name: str, prompt_tokens: int, designed_cached) -> None:
+        # rows without a designed cached value (e.g. a replay lead-in) count for the prompt mean, not the cached one
+        n, prompt, n_cached, cached = cls.sent.get(class_name, (0, 0, 0, 0))
+        if designed_cached is not None:
+            n_cached, cached = n_cached + 1, cached + designed_cached
+        cls.sent[class_name] = (n + 1, prompt + prompt_tokens, n_cached, cached)
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.sent = {}
+
+    @classmethod
+    def entries(cls, class_name: str) -> dict:
+        n, prompt, n_cached, cached = cls.sent.get(class_name, (0, 0, 0, 0))
+        prefix = f"class_{class_name}_"
+        return {
+            prefix + "sent_requests": n,
+            prefix + "designed_prompt_tokens_sent": prompt / n if n else "",
+            prefix + "designed_cached_tokens_sent": cached / n_cached if n_cached else "",
+        }
+
+
 class SendTimeline:
     """Intended and actual send times of paced requests, for delivered-arrival stats in the summary."""
 
@@ -4221,6 +4513,37 @@ def paced_run(options: argparse.Namespace) -> bool:
     return getattr(options, "qps", None) is not None or bool(getattr(options, "replay_schedule", None))
 
 
+# Serving's arrival-counter idle rule (D-99): a gap longer than IDLE_GAP_FACTOR times the running mean gap (an EWMA
+# with weight IDLE_GAP_EWMA_ALPHA), clamped to IDLE_GAP_BOUNDS_S, restarts the stream and stays out of the moments.
+# The same constants and rule as task 15's idle_rule_gap_cv2 (#68788), cross-checked on shared vectors in the tests.
+IDLE_GAP_FACTOR = 50.0
+IDLE_GAP_BOUNDS_S = (5.0, 600.0)
+IDLE_GAP_EWMA_ALPHA = 0.01
+
+
+def idle_rule_gap_cv2(times) -> Optional[float]:
+    """A stream's gap CV² under serving's idle-restart rule, never the raw CV² over idle gaps: the figure the
+    profile's arrivals carry. None with fewer than two counted gaps. *times* in seconds, any order."""
+    gaps = total = squared = 0.0
+    mean_gap = last = None
+    low, high = IDLE_GAP_BOUNDS_S
+    for t in sorted(times):
+        idle = high if mean_gap is None else min(max(IDLE_GAP_FACTOR * mean_gap, low), high)
+        if last is not None and t - last > idle:
+            last = None  # an idle stretch: the stream restarts, the gap isn't counted (the EWMA carries on)
+        if last is not None:
+            gap = t - last
+            gaps += 1
+            total += gap
+            squared += gap * gap
+            mean_gap = gap if mean_gap is None else mean_gap + IDLE_GAP_EWMA_ALPHA * (gap - mean_gap)
+        last = t
+    if gaps < 2 or total <= 0:
+        return None
+    mean = total / gaps
+    return max(0.0, squared / gaps - mean * mean) / (mean * mean)
+
+
 def startup_drain_entries(intended, actual) -> dict[str, Any]:
     """The start-up drain: a pacer that doesn't resync catches up after spawn through a run of late sends, not
     one. In schedule order, the drain is the contiguous run from the first send that is more than min(1 s,
@@ -4244,6 +4567,27 @@ def startup_drain_entries(intended, actual) -> dict[str, Any]:
         "startup_drain_complete": int(end < len(sends)),
         "send_lateness_max_after_drain_ms": max(lateness[end:]) * 1000 if end < len(sends) else peak_ms,
     }
+
+
+def _start_arrival_log(interval: float) -> None:
+    """Every *interval* seconds of a paced run, log the delivered gap CV² under the idle rule so far, so a runner can
+    check arrivals mid-run (the summary only lands at the end). Silent until the first sends."""
+    if not interval or interval <= 0:
+        return
+
+    def log_arrivals():
+        while True:
+            gevent.sleep(interval)
+            sent = len(SendTimeline.actual)
+            if sent < 3:
+                continue
+            value = idle_rule_gap_cv2(SendTimeline.actual)
+            logger.info(
+                f"Arrivals so far: {sent} sends, delivered gap CV2 (idle rule) "
+                f"{'none' if value is None else f'{value:.4f}'}"
+            )
+
+    gevent.spawn(log_arrivals)
 
 
 class RampingPacer:
@@ -4471,6 +4815,7 @@ class InitTracker:
         ClientCpu.reset()
         SendTimeline.reset()
         RequestOutcomes.reset()
+        SentDesign.reset()
         SendTimeline.spawned()
         InFlightGauge.reset()
         # Paced users start claiming send times only now, so the schedule doesn't begin with half the users
@@ -4488,6 +4833,7 @@ class InitTracker:
                 SendTimeline.spawned(at=window_start)
                 InFlightGauge.reset()
                 RequestOutcomes.reset()
+                SentDesign.reset()
                 ClientCpu.reset()
 
             # Just before the start: no scored row goes out earlier, and the first sends' stamps must survive it
@@ -4637,6 +4983,14 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 def validate_shape_mix_options(options: argparse.Namespace) -> None:
     """Parse --shape-mix against the chat template overhead; raises ValueError naming any class too short."""
     resolve_shape_mix_corpus(getattr(options, "shape_mix_corpus", None))
+    if getattr(options, "replay_schedule", None):
+        # Replay rows carry their own recorded tier; per-prefix tier shares belong to drawn traffic only
+        shared = [c.name for c in parse_shape_mix(options.shape_mix).classes if c.reasoning_effort_shares]
+        if shared:
+            raise ValueError(
+                f"--replay-schedule: class(es) {', '.join(shared)} set reasoning_effort_shares, which replay doesn't "
+                f"apply (each row sends its own recorded reasoning_effort); drop the shares for a replay"
+            )
     if (
         getattr(options, "prefix_reuse_overhang", None) is None
         and resolve_prefix_reuse_overhang(options) == 0
@@ -4725,6 +5079,7 @@ def _build_shape_mix_before_spawning(environment, **_kwargs):
             )
     ClientCpu.start()
     InFlightGauge.start_for(options)
+    _start_arrival_log(getattr(options, "arrival_log_interval", 60.0))
     if not getattr(options, "shape_mix", None):
         if not (options.systemone or options.embeddings or options.rerank):
             try:
@@ -5688,6 +6043,8 @@ class LLMUser(HttpUser):
         self.qps_pacer = None  # Will be set if --qps is used
         # The -pcml shared prefix this run's requests all start with (None until the dataset is built)
         self._designed_cached_tokens = None
+        # The run's one calibrated chat head on -pcml rows (0 in completions or unmeasured): prompt= adds it back
+        self._pcml_chat_head = 0
 
         image_resolutions = self.environment.parsed_options.prompt_images_with_resolutions
         self.prompt_images = None
@@ -5866,6 +6223,7 @@ class LLMUser(HttpUser):
         self._designed_cached_tokens = (
             dataset.designed_cached_tokens if getattr(dataset, "designed_cached_tokens", 0) else None
         )
+        self._pcml_chat_head = (getattr(dataset, "chat_head", None) or 0) if self.environment.parsed_options.chat else 0
         # Once per process, not per user: users start inside the run window, and tokenizing a long prompt for
         # each of them blocked the event loop there
         self.prompt_tokenizer_tokens = DatasetHolder.prompt_token_estimate(
@@ -6178,12 +6536,16 @@ class LLMUser(HttpUser):
         started = time.monotonic()
         for pass_index in range(first_pass, first_pass + passes):
             for ci, j in ds.fill_plan(pass_index):
-                request = ds.fill_request(ci, j)
-                data, headers = build_shape_mix_request(self.provider_formatter, request)
-                PrefixFill.prompt_tokens_sent += request.prompt_tokens
-                PrefixFill.prefix_tokens_sent += ds._head + ds.prefix_tokens[ci]
-                PrefixFill.requests += 1
-                pool.spawn(self._send_paced, (data, headers, 1, request.prompt_tokens, request, json.dumps(data)), None)
+                # One fill per tier the prefix carries ([None] without tier shares: one, as before)
+                for tier in ds.prefix_tiers(ci, j):
+                    request = ds.fill_request(ci, j, tier)
+                    data, headers = build_shape_mix_request(self.provider_formatter, request)
+                    PrefixFill.prompt_tokens_sent += request.prompt_tokens
+                    PrefixFill.prefix_tokens_sent += ds._head + ds.prefix_tokens[ci]
+                    PrefixFill.requests += 1
+                    pool.spawn(
+                        self._send_paced, (data, headers, 1, request.prompt_tokens, request, json.dumps(data)), None
+                    )
             pool.join()  # a pass completes before the next starts
         PrefixFill.seconds = time.monotonic() - started
         logger.info(
@@ -6401,6 +6763,12 @@ class LLMUser(HttpUser):
         if prepared is None:
             prepared = self._prepare_text_request()
         data, request_headers, max_tokens, prompt_tokens, shape_request, body = prepared
+        designed_prompt = prompt_tokens  # the client's own count, before the server's replaces it below
+        if shape_request is not None:
+            # counted when sent, whether or not its response completes in the window
+            SentDesign.record(
+                shape_request.class_name, shape_request.prompt_tokens, shape_request.designed_cached_tokens
+            )
         batch_size = getattr(self.environment.parsed_options, "embeddings_batch_size", 1) or 1
         if self.environment.parsed_options.show_request:
             print("--- Request payload ---")
@@ -6626,10 +6994,10 @@ class LLMUser(HttpUser):
             token_str = ", ".join(token_parts)
             # D-123: the in-run reuse check's per-request record, parsed by the runner from generator logs and
             # stdout (designed is what the layout intends the server to reuse for this row; delivered=none when
-            # the server reports no cached count). D-131: on chat runs the server renders the prompt with a
-            # longer head than the client counts (the measured +26 on DeepSeek V4.1); those tokens are reused
-            # ahead of the divergence, so they belong in designed, measured per request as the server's prompt
-            # count minus the client's
+            # the server reports no cached count). prompt= is the designed prompt: the client's count plus the run's
+            # one constant calibrated head (already in the class's prompt_tokens, D-134), never a per-request server
+            # figure, so the harness-delivery check is two-sided (D-183). head_overhead is only what the server
+            # rendered beyond the design (an uncalibrated or drifting head), logged once, and shows as that gap
             head_overhead = 0
             if (
                 designed_cached is not None
@@ -6640,15 +7008,18 @@ class LLMUser(HttpUser):
                 head_overhead = int(prompt_tokens) - shape_request.prompt_tokens
             reuse_str = ""
             if class_name is not None:
-                reuse_str = (
-                    f" | reuse class={class_name} designed={designed_cached + head_overhead}"
-                    f" delivered={'none' if cached_tokens is None else int(cached_tokens)}"
+                reuse_str = reuse_record(
+                    class_name,
+                    designed_cached,
+                    cached_tokens,
+                    request_tier(shape_request),
+                    prompt=shape_request.prompt_tokens,
+                    row=shape_request.schedule_row,
                 )
             elif self._designed_cached_tokens is not None:
                 # A -pcml run's shared prefix (compensations applied), class `default`
-                reuse_str = (
-                    f" | reuse class=default designed={self._designed_cached_tokens}"
-                    f" delivered={'none' if cached_tokens is None else int(cached_tokens)}"
+                reuse_str = pcml_reuse_record(
+                    self._designed_cached_tokens, cached_tokens, designed_prompt, self._pcml_chat_head
                 )
 
             logger.info(
@@ -6696,10 +7067,10 @@ class LLMUser(HttpUser):
 
             if shape_request is not None and head_overhead and not _HEAD_OVERHEAD_LOGGED:
                 _HEAD_OVERHEAD_LOGGED.add(head_overhead)
-                logger.info(
-                    f"--shape-mix: the server renders chat prompts {head_overhead} tokens longer than designed "
-                    f"(its chat head, once per value); those tokens are counted in the reuse record's designed "
-                    f"value (D-131)"
+                logger.warning(
+                    f"--shape-mix: the server renders prompts {head_overhead} tokens longer than designed (once per "
+                    f"value): a chat head the calibration missed, or one that drifted; the reuse record's prompt= is "
+                    f"the design, so this shows as a delivered-vs-designed gap. Pass --chat-head-tokens to calibrate"
                 )
             if shape_request is not None:
                 record_shape_class_metrics(
@@ -6712,11 +7083,7 @@ class LLMUser(HttpUser):
                     recorded_cached_tokens=shape_request.recorded_cached_tokens,
                     laid_out_cached_tokens=shape_request.reusable_tokens,
                     replay_role=shape_request.replay_role,
-                    designed_cached_tokens=(
-                        (shape_request.designed_cached_tokens + head_overhead)
-                        if shape_request.designed_cached_tokens is not None
-                        else None
-                    ),
+                    designed_cached_tokens=shape_request.designed_cached_tokens,
                 )
 
             # Allow provider to process response (e.g., for custom metrics)
@@ -7076,6 +7443,14 @@ def init_parser(parser):
         "the window's second half, with its 95%% interval (corrected for the samples' autocorrelation; it needs about "
         "20 samples in that half). A rising count the server doesn't see means requests stuck before the server. 0 "
         "turns it off.",
+    )
+    parser.add_argument(
+        "--arrival-log-interval",
+        type=float,
+        default=60.0,
+        help="With --qps or --replay-schedule: seconds between 'Arrivals so far' log lines carrying the delivered gap "
+        "CV2 under serving's idle rule (also in the summary as Delivered Gap Cv2 Idle Rule), for a mid-run check. "
+        "0 turns it off.",
     )
     parser.add_argument(
         "--qps-max-lateness",
@@ -7837,6 +8212,7 @@ def shape_mix_summary_entries(
         designed = stats.entries.get((prefix + "designed_cached_tokens", "METRIC"))
         if designed is not None:
             entries[prefix + "designed_cached_tokens"] = designed.avg_response_time
+        entries.update(SentDesign.entries(name))  # the all-sent designed means, beside the completed-only ones
         recorded = stats.entries.get((prefix + "recorded_cached_tokens", "METRIC"))
         if recorded is not None:
             laid_out = stats.entries.get((prefix + "laid_out_cached_tokens", "METRIC"))
@@ -8015,6 +8391,10 @@ def _(environment, **kw):
         entries["startup_offset_s"] = "" if SendTimeline.first_send_offset is None else SendTimeline.first_send_offset
         entries.update(startup_drain_entries(SendTimeline.intended, SendTimeline.actual))
         entries.update(InFlightGauge.summary_entries())
+        # The delivered gap CV² under serving's idle rule (what the profile's arrivals carry), and its intended twin
+        for name, times in (("delivered", SendTimeline.actual), ("intended", SendTimeline.intended)):
+            value = idle_rule_gap_cv2(times)
+            entries[f"{name}_gap_cv2_idle_rule"] = "" if value is None else value
         # Both pacers move the schedule once per resync and count it in `epoch`
         entries["schedule_resyncs"] = getattr(pacer, "epoch", 0) if pacer is not None else 0
     entries.update(ClientCpu.summary_entries())
@@ -8029,6 +8409,7 @@ def _(environment, **kw):
         entries["reuse_overhang_tokens"] = _APPLIED_REUSE.get("overhang", 0)
         entries["reuse_restore_boundary"] = _APPLIED_REUSE.get("boundary", 0)
         entries["served_model_config"] = _APPLIED_REUSE.get("served_model_config", "")
+        entries.update(served_config_identity(entries["served_model_config"]))
         entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
     ds = DatasetHolder._instance
     if getattr(environment.parsed_options, "chat", False) and not (
@@ -8063,6 +8444,7 @@ def _(environment, **kw):
             entries["reuse_overhang_tokens"] = dataset.reuse_overhang_tokens
             entries["reuse_restore_boundary"] = dataset.restore_boundary
             entries["served_model_config"] = getattr(dataset, "served_model_config", "")
+            entries.update(served_config_identity(entries["served_model_config"]))
             entries["reuse_table_misses"] = ",".join(sorted(_REUSE_TABLE_MISSES))
             dropped = getattr(dataset, "pool_dropped", [])
             entries["prefix_pool_dropped_classes"] = len(dropped)

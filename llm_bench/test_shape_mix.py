@@ -1344,7 +1344,9 @@ def test_sampled_lengths_keep_the_quantiles_and_the_class_mean(caplog) -> None:
     assert st.mean(out) == pytest.approx(420, rel=0.04)
     assert out[-1] > 2600  # draws go past the top quantile (the tail is extrapolated)
     unc = sorted(r.prompt_tokens - ds.reusable_tokens[0] for r in requests)
-    for level, value in ((0.5, 1400), (0.9, 4200), (0.99, 9000)):
+    # Probed just inside each stratum: a given quantile level is a boundary between uncached strata, where the
+    # empirical quantile takes either side (stratified draws take one side deterministically)
+    for level, value in ((0.499, 1400), (0.899, 4200), (0.989, 9000)):
         assert q(unc, level) == pytest.approx(value, rel=0.12), level  # strata are discrete
     assert st.mean(unc) == pytest.approx(2000, rel=0.02)
     assert unc[-1] > 9000
@@ -1448,7 +1450,9 @@ def test_sampled_prompts_stay_in_their_band_and_the_context(caplog) -> None:
         # the class mean still holds under the cap
         assert st.mean(prompts) == pytest.approx(spec["classes"][ci]["prompt_tokens"], rel=0.03)
     assert max(r.prompt_tokens + r.generated_tokens for r in requests) <= 32768
-    assert 0 < ds.context_cut_requests < len(requests) / 1000  # a long output drawn for a long prompt is cut
+    # a long output drawn for a long prompt is rare (expected well under one per 60k here, so not asserted present);
+    # the cut itself is exercised with a tight context in test_tier_output_keeps_the_sampled_spread_and_the_context_cap
+    assert ds.context_cut_requests < len(requests) / 1000
     # a cap never moves a given quantile below its value
     dist = LengthQuantiles(((0.5, 400.0), (0.99, 1600.0)), cap=1000)
     assert dist.high == 1600 and dist.value(0.999999) <= 1600
@@ -1896,7 +1900,7 @@ def test_replay_row_fields_validation_and_overrides(tmp_path) -> None:
                 "class": "chat",
                 "temperature": -1,
                 "top_p": 1.5,
-                "reasoning_effort": "max",
+                "reasoning_effort": "extreme",
                 "output_length": 0,
             },
             {"timestamp": 1, "class": "chat", "temperature": 0.7},
@@ -2851,7 +2855,9 @@ def test_sampled_lengths_keep_a_skewed_classs_mean_on_a_small_uncached_base() ->
     out = sorted(unc)
     # p10 is left out: the bottom stratum spans levels 0 to 6.25% and the next 6.25 to 12.5%, so the mixture's
     # 10th percentile is a whole stratum's average, well above the p10 point on a steep bottom
-    for level, value, tol in ((0.5, 230, 0.15), (0.9, 750, 0.25), (0.99, 2600, 0.25)):
+    # p99 is probed just inside its stratum (0.989): 0.99 sits exactly on the boundary between the 2470- and 3316-token
+    # strata, where the empirical quantile takes either side (stratified draws take the upper one deterministically)
+    for level, value, tol in ((0.5, 230, 0.15), (0.9, 750, 0.25), (0.989, 2600, 0.25)):
         # a stratum's draw is its average, above the point itself on a convex tail (strata are discrete)
         assert q(out, level) == pytest.approx(value, rel=tol), level
 
@@ -3852,3 +3858,451 @@ def test_a_first_row_reuses_its_lead_in_recorded_exactly_cached_long(tmp_path) -
     # within one overhang window of the recorded cached length (the engine recomputes that window)
     assert first.cached_length - first_plan["reusable"] <= overhang + 1
     assert ds.replay_request(first).prompt.startswith(ds.replay_request(lead).prompt)
+
+
+# sha256 of prefix_tier_split's source: the same function as task 15's eviction simulation (fw-ai/fireworks #68788
+# @ c612d16dd7b, serving/perfagent_mcp/scripts/pool_sizing_study.py), byte for byte, so the two agree
+_PREFIX_TIER_SPLIT_SHA = "67ce1c79d4634f02e03cdedb6642c10828136000a2eda90885f473fe2ee95fad"
+
+
+def _zipf(n, s):
+    return [1 / (j + 1) ** s for j in range(n)]
+
+
+def test_prefix_tier_split_is_the_shared_function_and_matches_its_cross_check_vector() -> None:
+    """The per-prefix tier rule shared with task 15: request-weighted shares are exact, at most tiers - 1 prefixes
+    carry more than one tier, and the cross-check vector both sides assert reproduces."""
+    import ast
+    import hashlib
+
+    from load_test import prefix_tier_split
+
+    source = open(load_test.__file__).read()
+    node = next(n for n in ast.parse(source).body if getattr(n, "name", None) == "prefix_tier_split")
+    text = "\n".join(source.split("\n")[node.lineno - 1 : node.end_lineno])
+    assert hashlib.sha256(text.encode()).hexdigest() == _PREFIX_TIER_SPLIT_SHA
+    shares = {"high": 0.2, "low": 0.3, "medium": 0.5}
+    split = prefix_tier_split(shares, _zipf(500, 3.0))
+    expected = {"high": 0.240411, "low": 0.360616, "medium": 0.398973}
+    assert set(split[0]) == set(expected) and all(abs(split[0][t] - v) < 1e-6 for t, v in expected.items())
+    assert split[1] == split[2] == split[3] == {"medium": 1.0}
+    for popularity in ([1.0] * 500, _zipf(500, 1.9), _zipf(500, 3.0)):
+        split = prefix_tier_split(shares, popularity)
+        total = sum(popularity)
+        for tier, share in shares.items():
+            delivered = sum(w * s.get(tier, 0.0) for w, s in zip(popularity, split)) / total
+            assert abs(delivered - share) < 1e-9
+        assert sum(len(s) > 1 for s in split) <= len(shares) - 1
+        assert all(abs(sum(s.values()) - 1.0) < 1e-12 for s in split)
+
+
+def test_tier_shares_hold_per_request_and_change_only_the_tier() -> None:
+    """D-174: with reasoning_effort_shares a class keeps one name and one text pool; each prefix carries its tiers
+    from prefix_tier_split, so delivered request-weighted shares match even under steep Zipf skew. The prompts
+    are the same request stream as without shares (a split prefix draws from its own tier stream), and a tier's
+    generated_tokens_by_tier sets its output."""
+    from collections import Counter
+
+    shares = {"high": 0.2, "low": 0.3, "medium": 0.5}
+    for zipf in (None, 1.9, 3.0):
+        mix = json.loads(json.dumps(MIX))
+        for c in mix["classes"]:
+            c.pop("reasoning_effort", None)
+        plain_mix = json.loads(json.dumps(mix))
+        chat = mix["classes"][0]
+        chat["reasoning_effort_shares"] = shares
+        chat["generated_tokens_by_tier"] = {"high": 77}
+        if zipf is not None:
+            chat["prefix_popularity"] = {"zipf": zipf}
+            plain_mix["classes"][0]["prefix_popularity"] = {"zipf": zipf}
+        ds, plain = _dataset(mix), _dataset(plain_mix)
+        drawn, base = _take(ds, 6000), _take(plain, 6000)
+        assert [r.prompt for r in drawn] == [r.prompt for r in base]  # only the tier (and its output) changes
+        on_chat = [r for r in drawn if r.class_name == "chat"]
+        counts = Counter(r.reasoning_effort for r in on_chat)
+        for tier, share in shares.items():
+            assert abs(counts[tier] / len(on_chat) - share) < 0.03, (zipf, counts)  # ~4 sigma at n ~ 2000
+        assert all(r.generated_tokens == 77 for r in on_chat if r.reasoning_effort == "high")
+        assert all(r.reasoning_effort is None for r in drawn if r.class_name != "chat")
+        # A split prefix is filled once per tier it carries; the others once
+        fills = [ds.prefix_tiers(0, j) for j in range(ds.pool_sizes[0])]
+        assert sum(len(t) for t in fills) <= ds.pool_sizes[0] + len(shares) - 1
+        assert {ds.fill_request(0, j, t).reasoning_effort for j, tiers in enumerate(fills) for t in tiers} == set(
+            shares
+        )
+    plain = _dataset(plain_mix)
+    assert plain.prefix_tiers(0, 0) == [None] and plain.fill_request(0, 0).reasoning_effort is None
+
+
+def test_tier_shares_validation() -> None:
+    mix = json.loads(json.dumps(MIX))
+    mix["classes"][0]["reasoning_effort"] = "high"
+    mix["classes"][0]["reasoning_effort_shares"] = {"high": 1}
+    with pytest.raises(ValueError, match="not both"):
+        parse_shape_mix(json.dumps(mix))
+    mix["classes"][0].pop("reasoning_effort")
+    mix["classes"][0]["reasoning_effort_shares"] = {"extreme": 1}
+    with pytest.raises(ValueError, match="reasoning_effort_shares"):
+        parse_shape_mix(json.dumps(mix))
+
+
+def test_tier_output_keeps_the_sampled_spread_and_the_context_cap() -> None:
+    """N10-148-1: a tier's generated_tokens_by_tier is its mean. With --shape-mix-sample-lengths the class's
+    per-request draw is scaled to it (not overwritten by the constant), and the context cap still applies."""
+    import statistics as _st
+
+    mix = json.loads(json.dumps(MIX))
+    chat = mix["classes"][0]
+    chat.pop("reasoning_effort", None)
+    chat["reasoning_effort_shares"] = {"high": 1.0}
+    chat["generated_tokens_by_tier"] = {"high": 2 * chat["generated_tokens"]}
+    chat["generated_tokens_quantiles"] = {
+        "0.1": 2,
+        "0.5": chat["generated_tokens"],
+        "0.9": 4 * chat["generated_tokens"],
+    }
+    plain = json.loads(json.dumps(mix))
+    plain["classes"][0].pop("generated_tokens_by_tier")
+    tiered = [r for r in _take(_dataset(mix, sample_lengths=True), 4000) if r.class_name == "chat"]
+    base = [r for r in _take(_dataset(plain, sample_lengths=True), 4000) if r.class_name == "chat"]
+    assert len({r.generated_tokens for r in tiered}) > 5  # still a spread, not the tier constant
+    ratio = _st.mean(r.generated_tokens for r in tiered) / _st.mean(r.generated_tokens for r in base)
+    assert 1.9 < ratio < 2.1
+    capped = _dataset(mix, sample_lengths=True, context_tokens=chat["prompt_tokens"] + 3)
+    assert all(r.generated_tokens <= 3 for r in _take(capped, 500) if r.class_name == "chat")
+
+
+def test_max_and_integer_tiers_are_sent_as_logged(tmp_path) -> None:
+    """V4.1 production logs a "max" tier and integer tiers (e.g. 20): "max" is sent as "max" and an integer tier as
+    that integer (never rounded to a named tier), counted as its own tier in the shares; 0 and 1024 are refused."""
+    from collections import Counter
+
+    from load_test import OpenAIProvider, build_shape_mix_request, reasoning_effort_tier
+
+    assert reasoning_effort_tier("max", "t") == "max" and reasoning_effort_tier(20, "t") == "20"
+    assert reasoning_effort_tier("20", "t") == "20" and reasoning_effort_tier(1023, "t") == "1023"
+    for bad in (0, 1024, "1024", "extreme", True):
+        with pytest.raises(ValueError):
+            reasoning_effort_tier(bad, "t")
+    provider = OpenAIProvider(MODEL, _options(chat=True))
+    mix = json.loads(json.dumps(MIX))
+    chat = mix["classes"][0]
+    chat.pop("reasoning_effort", None)
+    chat["reasoning_effort_shares"] = {"max": 0.5, "20": 0.5}
+    chat["generated_tokens_by_tier"] = {"20": 3}
+    on_chat = [r for r in _take(_dataset(mix), 3000) if r.class_name == "chat"]
+    counts = Counter(r.reasoning_effort for r in on_chat)
+    assert set(counts) == {"max", "20"} and abs(counts["20"] / len(on_chat) - 0.5) < 0.05
+    sent = {build_shape_mix_request(provider, r)[0]["reasoning_effort"] for r in on_chat}
+    assert sent == {"max", 20}  # the integer as an integer
+    assert all(r.generated_tokens == 3 for r in on_chat if r.reasoning_effort == "20")
+    mix["classes"][0]["reasoning_effort_shares"] = {"20": 0.5, "020": 0.5}
+    with pytest.raises(ValueError, match="twice"):
+        parse_shape_mix(json.dumps(mix))
+    # A replay row's integer tier is sent as the integer too
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 4,
+            "reasoning_effort": 20,
+        }
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    assert build_shape_mix_request(provider, ds.replay_request(entries[0]))[0]["reasoning_effort"] == 20
+
+
+def test_unset_tier_sends_no_reasoning_effort_field(tmp_path) -> None:
+    """A profile's untiered rows ("unset", also "null") are a tier of their own whose requests carry no
+    reasoning_effort key at all (not null, not "none"), even with --reasoning-effort set; it combines with other
+    tiers in the shares and is counted separately."""
+    from collections import Counter
+
+    from load_test import OpenAIProvider, build_shape_mix_request, reasoning_effort_tier
+
+    assert reasoning_effort_tier("unset", "t") == reasoning_effort_tier("null", "t") == "unset"
+    mix = json.loads(json.dumps(MIX))
+    chat = mix["classes"][0]
+    chat.pop("reasoning_effort", None)
+    chat["reasoning_effort_shares"] = {"unset": 0.3, "high": 0.7}
+    on_chat = [r for r in _take(_dataset(mix), 3000) if r.class_name == "chat"]
+    counts = Counter(r.reasoning_effort for r in on_chat)
+    assert set(counts) == {"unset", "high"} and abs(counts["unset"] / len(on_chat) - 0.3) < 0.04
+    for flag in (None, "low"):  # --reasoning-effort low would otherwise add the field
+        provider = OpenAIProvider(MODEL, _options(chat=True, reasoning_effort=flag))
+        for r in on_chat[:200]:
+            data = build_shape_mix_request(provider, r)[0]
+            if r.reasoning_effort == "unset":
+                assert "reasoning_effort" not in data
+            else:
+                assert data["reasoning_effort"] == "high"
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 4,
+            "reasoning_effort": "unset",
+        }
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    provider = OpenAIProvider(MODEL, _options(chat=False))
+    assert "reasoning_effort" not in build_shape_mix_request(provider, ds.replay_request(entries[0]))[0]
+
+
+def test_reuse_record_carries_the_tier_only_when_tiers_are_used(tmp_path) -> None:
+    """The per-request reuse record logs ` tier=<name|integer|unset>` (a replay row's own tier winning over its
+    class's), so a runner can attribute every delivered row to its tier; untiered requests log exactly as before."""
+    from load_test import request_tier, reuse_record
+
+    assert reuse_record("chat", 400, 390) == " | reuse class=chat designed=400 delivered=390"  # unchanged format
+    assert reuse_record("default", 539, None) == " | reuse class=default designed=539 delivered=none"
+    assert reuse_record("chat", 400, 390.0, "20") == " | reuse class=chat designed=400 delivered=390 tier=20"
+    # the designed prompt tokens, for the per-request harness-delivery check, ahead of the tier
+    assert (
+        reuse_record("chat", 400, 390, "high", prompt=773)
+        == " | reuse class=chat designed=400 delivered=390 prompt=773 tier=high"
+    )
+    assert (
+        reuse_record("default", 539, 536, prompt=1000)
+        == " | reuse class=default designed=539 delivered=536 prompt=1000"
+    )
+    mix = json.loads(json.dumps(MIX))
+    for c in mix["classes"]:
+        c.pop("reasoning_effort", None)
+    assert all(request_tier(r) is None for r in _take(_dataset(mix), 50))  # untiered: no tier field
+    mix["classes"][0]["reasoning_effort_shares"] = {"unset": 0.5, "max": 0.5}
+    tiers = {request_tier(r) for r in _take(_dataset(mix), 400) if r.class_name == "chat"}
+    assert tiers == {"unset", "max"}
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 4,
+            "reasoning_effort": 20,
+        }
+    ]
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    assert request_tier(ds.replay_request(entries[0])) == "20"
+
+
+def test_served_config_identity_hashes_the_config_it_read(tmp_path) -> None:
+    """The summary carries the sha256 of the served model's config.json bytes and its reuse fields (text_config
+    first), so a runner can match them against the replica's launch config."""
+    import hashlib
+
+    from load_test import served_config_identity
+
+    raw = json.dumps(
+        {"model_type": "deepseek_v41", "text_config": {"model_type": "deepseek_v41_text", "sliding_window": 128}}
+    )
+    (tmp_path / "config.json").write_text(raw)
+    entries = served_config_identity(str(tmp_path))
+    assert entries["served_model_config_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert entries["served_model_config_fields"] == "model_type=deepseek_v41_text;sliding_window=128;index_topk="
+    assert served_config_identity(None) == {"served_model_config_sha256": "", "served_model_config_fields": ""}
+    assert served_config_identity(str(tmp_path / "missing"))["served_model_config_sha256"] == ""
+
+
+def _p9_partial_lt_2k(request_seed=7):
+    """P9 15Z's partial_lt_2k (heavy-tailed: p99 1067 on a mean uncached of 218), alone."""
+    return {
+        "seed": 20261028,
+        "request_seed": request_seed,
+        "classes": [
+            {
+                "name": "partial_lt_2k",
+                "weight": 1,
+                "prompt_tokens": 773,
+                "cached_prompt_tokens": 555,
+                "generated_tokens": 167,
+                "prefix_pool_size": 8,
+                "uncached_tokens_quantiles": {"p10": 129.0, "p50": 130.0, "p90": 374.5, "p99": 1066.85},
+                "generated_tokens_quantiles": {"p10": 46.0, "p50": 54.0, "p90": 312.0, "p99": 1877.65},
+            }
+        ],
+    }
+
+
+def test_stratified_sampled_lengths_track_the_class_mean_at_small_n() -> None:
+    """D-183: with --shape-mix-sample-lengths a class's lengths come from a stratified quantile stream, so the
+    realized class mean tracks the design: an i.i.d. draw of 187 from this class ranges +-11% (P9's seed drew
+    -12.2%); stratified, about +-4.5%, and the spread is 2.5-3x smaller at every n, while the marginal quantiles and
+    the independence between consecutive requests are kept."""
+    import statistics as st
+
+    # The spread of the realized mean over seeds, against i.i.d. draws' (sd 0.132, 0.063, 0.039 at these n): a class
+    # whose top 0.3% carries much of its mean still varies at n < 1/0.003 (whether that stratum is drawn yet)
+    for n, bound in ((50, 0.10), (187, 0.035), (500, 0.018)):
+        devs = []
+        for seed in range(1, 41):
+            ds = _dataset(_p9_partial_lt_2k(seed), tokenizer=WordTokenizer(), sample_lengths=True)
+            ds.build_prefixes()
+            devs.append(st.mean(r.prompt_tokens - ds.reusable_tokens[0] for r in _take(ds, n)) / 218 - 1)
+        assert st.pstdev(devs) < bound and abs(st.mean(devs)) < bound / 2, (n, st.pstdev(devs), st.mean(devs))
+    ds = _dataset(_p9_partial_lt_2k(), tokenizer=WordTokenizer(), sample_lengths=True)
+    ds.build_prefixes()
+    rs = _take(ds, 20000)
+    unc = [r.prompt_tokens - ds.reusable_tokens[0] for r in rs]
+    out = [r.generated_tokens for r in rs]
+    assert st.mean(unc) == pytest.approx(218, rel=0.005) and st.mean(out) == pytest.approx(167, rel=0.02)
+    q = sorted(unc)
+    assert q[int(0.499 * len(q))] < 160 and q[int(0.899 * len(q))] < 400 < q[int(0.995 * len(q))]  # the shape is kept
+    for xs in (unc, out):  # no order pattern between consecutive requests
+        m, v = st.mean(xs), st.pvariance(xs)
+        lag1 = sum((a - m) * (b - m) for a, b in zip(xs, xs[1:])) / (len(xs) - 1) / v
+        assert abs(lag1) < 0.05, lag1
+    mu, mo = st.mean(unc), st.mean(out)  # Pearson by hand: statistics.correlation needs Python 3.10
+    cov = sum((a - mu) * (b - mo) for a, b in zip(unc, out)) / len(unc)
+    assert abs(cov / (st.pstdev(unc) * st.pstdev(out))) < 0.05  # uncached and output streams are independent
+
+
+def test_stratified_uniform_covers_every_stratum_per_block() -> None:
+    from load_test import StratifiedUniform
+
+    stream = StratifiedUniform(random.Random(3))
+    strata, sub = StratifiedUniform.STRATA, StratifiedUniform.SUBSTRATA
+    blocks = [[stream.next() for _ in range(strata)] for _ in range(sub)]
+    for block in blocks:
+        assert sorted(int(u * strata) for u in block) == list(range(strata))  # every stratum once per block
+        assert block != sorted(block)  # shuffled, not in quantile order
+    for s in range(strata):  # each stratum's visits over SUBSTRATA blocks take each of its sub-strata once
+        visits = sorted(int((u * strata - s) * sub) for block in blocks for u in block if int(u * strata) == s)
+        assert visits == list(range(sub))
+
+
+def _harness_delivery(rows, tolerance=0.03):
+    """D-183's harness-delivery check as a runner applies it, per class: the server's prompt counts against prompt=."""
+    import re
+
+    server = designed = 0
+    for line in rows:
+        m = re.search(r"(\d+) prompt, \d+ cached.*\| reuse class=\S+ designed=\d+ delivered=\S+ prompt=(\d+)", line)
+        server, designed = server + int(m.group(1)), designed + int(m.group(2))
+    return abs(server / designed - 1) <= tolerance
+
+
+def test_prompt_field_is_the_design_so_harness_delivery_is_two_sided() -> None:
+    """N10-148-3 (D-183): prompt= is the designed prompt (the client's count plus the run's one constant calibrated
+    head, folded into the class's lengths), never the server's per-request figure. So 30 chat rows over-delivering
+    by 40 tokens fail the check, a server-short run fails too, and an exact run passes. In completions the head is 0."""
+    from load_test import reuse_record
+
+    designed_prompt, cached = 900, 400
+
+    def line(server_prompt):
+        record = reuse_record("chat", cached, cached + 2, "high", prompt=designed_prompt)
+        return f"Response received: ..., {server_prompt} prompt, {cached + 2} cached, 4 completion{record}"
+
+    assert _harness_delivery([line(900) for _ in range(30)])  # exact
+    assert not _harness_delivery([line(940) for _ in range(30)])  # over-delivering by 40: fails (passed before)
+    assert not _harness_delivery([line(860) for _ in range(30)])  # server-short: fails
+    # the dataset's designed prompt already carries the calibrated head: content shrinks by it, prompt_tokens doesn't
+    mix = json.loads(json.dumps(MIX))
+    plain = _dataset(mix, tokenizer=WordTokenizer(), chat_overhead_tokens=4, chat_head_tokens=2)
+    calibrated = _dataset(mix, tokenizer=WordTokenizer(), chat_overhead_tokens=4 + 26, chat_head_tokens=2)
+    a, b = _take(plain, 20), _take(calibrated, 20)
+    assert [r.prompt_tokens for r in a] == [r.prompt_tokens for r in b]  # prompt= is the same design either way
+    completions = _dataset(mix, tokenizer=WordTokenizer())  # no head in completions: prompt= is the client's count
+    assert all(r.prompt_tokens == mix["classes"][r.class_index]["prompt_tokens"] for r in _take(completions, 20))
+
+
+def test_summary_reports_all_sent_designed_means_beside_completed_ones() -> None:
+    """The per-class means count completed responses only; a request still in flight at quit (likelier a long one)
+    is missing from them. Sent Requests and the all-sent designed prompt and cached means sit beside them."""
+    from load_test import SentDesign, shape_mix_summary_entries
+
+    SentDesign.reset()
+    for prompt in (600, 600, 2400):  # the long one is the last sent, still in flight at quit
+        SentDesign.record("chat", prompt, 400)
+    stats = RequestStats()
+    for value in (600, 600):  # only the two short ones completed
+        stats.log_request("METRIC", "class_chat_prompt_tokens", value, 0)
+        stats.log_request("METRIC", "class_chat_total_latency", 10, 0)
+    entries = shape_mix_summary_entries(stats, ["chat"], True)
+    assert entries["class_chat_requests"] == 2 and entries["class_chat_prompt_tokens"] == 600
+    assert entries["class_chat_sent_requests"] == 3
+    assert (
+        entries["class_chat_designed_prompt_tokens_sent"] == 1200
+        and entries["class_chat_designed_cached_tokens_sent"] == 400
+    )
+    SentDesign.record("chat", 600, None)  # a row with no designed cached value: in the prompt mean only
+    entries = shape_mix_summary_entries(stats, ["chat"], True)
+    assert entries["class_chat_sent_requests"] == 4 and entries["class_chat_designed_prompt_tokens_sent"] == 1050
+    assert entries["class_chat_designed_cached_tokens_sent"] == 400  # not pulled down to 300
+    SentDesign.record("cold", 300, None)
+    assert shape_mix_summary_entries(RequestStats(), ["cold"], True)["class_cold_designed_cached_tokens_sent"] == ""
+    empty = shape_mix_summary_entries(RequestStats(), ["agent"], True)
+    assert empty["class_agent_sent_requests"] == 0 and empty["class_agent_designed_prompt_tokens_sent"] == ""
+    SentDesign.reset()
+
+
+def test_replay_refuses_tier_shares_and_a_single_tier_gets_its_output() -> None:
+    """#148 review: replay rows carry their own recorded tier, so a class with reasoning_effort_shares under
+    --replay-schedule is refused instead of silently sending no tier; and a class with one reasoning_effort uses its
+    generated_tokens_by_tier entry (there's no drawn tier to key it)."""
+    from load_test import validate_shape_mix_options
+
+    mix = json.loads(json.dumps(MIX))
+    mix["classes"][0].pop("reasoning_effort", None)
+    mix["classes"][0]["reasoning_effort_shares"] = {"high": 0.5, "low": 0.5}
+    ns = argparse.Namespace(
+        shape_mix=json.dumps(mix),
+        shape_mix_corpus=None,
+        replay_schedule="rows.jsonl",
+        replay_pods=1,
+        replay_pod_index=0,
+        chat=False,
+        tokenizer=None,
+        prefix_reuse_overhang=0,
+    )
+    with pytest.raises(ValueError, match="reasoning_effort_shares"):
+        validate_shape_mix_options(ns)
+    single = json.loads(json.dumps(MIX))
+    single["classes"][0]["reasoning_effort"] = "high"
+    single["classes"][0]["generated_tokens_by_tier"] = {"high": 77}
+    drawn = [r for r in _take(_dataset(single), 200) if r.class_index == 0]
+    assert drawn and all(r.generated_tokens == 77 and r.reasoning_effort == "high" for r in drawn)
+
+
+# Task 15's reuse-record pattern (fw-ai/fireworks #68788 @ 2fefdcee3bd, traffic_profile_logs.py): row= is group 7
+_TASK15_REUSE_RE = (
+    r"(\d+) prompt, (?:(\d+) cached, )?.*\| reuse class=(\S+) designed=(\d+) delivered=(\d+|none)"
+    r"(?:.*? prompt=(\d+))?(?:.*? row=(\d+))?"
+)
+
+
+def test_replay_reuse_records_carry_the_schedule_row(tmp_path) -> None:
+    """A replay request's reuse record carries row=<its 0-based position in the schedule file>, so a checker can join
+    each completed record to its recorded row (and compare over the same row set). The position is in FILE order,
+    blank lines not counted, even when the file isn't time-sorted; shape-mix draws log no row."""
+    import re
+
+    from load_test import reuse_record
+
+    rows = [
+        {"timestamp": 3000, "class": "chat", "input_length": 900, "cached_length": 300, "output_length": 4},
+        {"timestamp": 1000, "class": "agent", "input_length": 800, "cached_length": 200, "output_length": 4},
+        {"timestamp": 2000, "class": "cold", "input_length": 700, "cached_length": 0, "output_length": 4},
+    ]
+    path = tmp_path / "s.jsonl"
+    path.write_text(json.dumps(rows[0]) + "\n\n" + json.dumps(rows[1]) + "\n" + json.dumps(rows[2]) + "\n")
+    from load_test import load_replay_schedule
+
+    entries = load_replay_schedule(str(path), ("chat", "agent", "cold"))
+    assert [e.row for e in entries] == [1, 2, 0]  # time order agent, cold, chat; rows are file positions
+    ds, entries, _ = _replay_dataset(tmp_path, rows, tokenizer=WordTokenizer(), chat=False)
+    assert sorted(ds.replay_request(e).schedule_row for e in entries) == [0, 1, 2]
+    assert all(r.schedule_row is None for r in _take(_dataset(tokenizer=WordTokenizer()), 20))
+    line = "Response received: ..., 900 prompt, 302 cached, 4 completion" + reuse_record(
+        "chat", 300, 302, "high", prompt=900, row=7
+    )
+    assert line.endswith(" designed=300 delivered=302 prompt=900 row=7 tier=high")
+    m = re.search(_TASK15_REUSE_RE, line)
+    assert m.group(6) == "900" and m.group(7) == "7"  # task 15's parser reads it
+    assert re.search(_TASK15_REUSE_RE, line.replace(" row=7", "")).group(7) is None  # absent on draws
