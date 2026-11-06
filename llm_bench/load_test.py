@@ -1526,6 +1526,7 @@ class ShapeMixDataset:
         replay_reservation: bool = False,
         reservation_headroom: int = 8,
         reservation_max_over_class: bool = False,
+        replay_acceptance_per_row: bool = False,
     ):
         self.mix = mix
         self.server_chat_head = server_chat_head or 0
@@ -1641,6 +1642,7 @@ class ShapeMixDataset:
         self._strata: dict = {}
         # --replay-reservation: send each row's recorded max_tokens and cancel at its recorded output length
         self.replay_reservation = replay_reservation
+        self.replay_acceptance_per_row = replay_acceptance_per_row
         self.reservation_headroom = reservation_headroom
         self.reservation_max_over_class = reservation_max_over_class
         self._class_max_output: dict = {}
@@ -2762,6 +2764,10 @@ class ShapeMixDataset:
         """The request for a --replay-schedule row (see prepare_replay), tagged with the row's position in the
         schedule file, so a checker can join each logged reuse record to its recorded row."""
         request = dataclasses.replace(self._replay_request(entry), schedule_row=entry.row)
+        if self.replay_acceptance_per_row and entry.matched_per_pos is not None:
+            return dataclasses.replace(
+                request, overrides={**(request.overrides or {}), **_row_acceptance_override(entry)}
+            )
         if self.replay_reservation:
             return dataclasses.replace(request, **self._reservation_fields(entry))
         return request
@@ -3058,6 +3064,7 @@ class DatasetHolder:
                     replay_reservation=getattr(options, "replay_reservation", False),
                     reservation_headroom=getattr(options, "replay_reservation_headroom", 8),
                     reservation_max_over_class=getattr(options, "replay_reservation_max_over_class", False),
+                    replay_acceptance_per_row=getattr(options, "replay_acceptance_per_row", False),
                 )
                 ds = cls._shape_mix_instance
                 ds.served_model_config = resolve_served_model_config(options)
@@ -3772,6 +3779,10 @@ class ScheduleEntry:
     # The recorded max_tokens (the reservation production's admitter charged), when the schedule carries it; else
     # the recorded output length (a reservation-forcing variant sizes it from that, below)
     max_tokens: Optional[int] = None
+    # Per-row speculative decoding: tokens matched / drafted per draft position (raw counts), when the schedule
+    # carries them; None on lead-ins and rows that drafted nothing
+    matched_per_pos: Optional[list] = None
+    drafted_per_pos: Optional[list] = None
     recorded_offset: Optional[float] = None  # the recorded offset of a retimed row
     plain_offset: Optional[float] = None  # with a minimum parent gap: where plain retiming would have put the row
     defaulted: tuple = ()  # optional fields that were invalid and dropped (or output_length 0 sent as 1)
@@ -3788,7 +3799,7 @@ _REPLAY_ALIASES = {
 # Every field a schedule row may carry; others are reported (not silently dropped)
 _REPLAY_FIELDS = frozenset(
     {"timestamp", "time_s", "class", "session_id", "pod", "prefix_index", "cancelled", "lead_in"}
-    | {"temperature", "top_p", "reasoning_effort", "max_tokens"}
+    | {"temperature", "top_p", "reasoning_effort", "max_tokens", "matched_per_pos", "drafted_per_pos"}
     | {name for names in _REPLAY_ALIASES.values() for name in names}
 )
 
@@ -3957,6 +3968,25 @@ def reasoning_effort_payload(tier: str):
     return int(tier) if tier.isdigit() else tier
 
 
+def _row_acceptance_override(entry: "ScheduleEntry") -> dict:
+    """The row's acceptance_probs_override from its raw per-position counts: matched/drafted where the position was
+    drafted, and 0.0 where it wasn't (padded lists), so the engine stops speculating exactly where the recording
+    did. Rows that drafted nothing carry no override (the engine drafts nothing to accept)."""
+    rates = [(m / d) if d else 0.0 for m, d in zip(entry.matched_per_pos or (), entry.drafted_per_pos or ())]
+    return {"acceptance_probs_override": rates}
+
+
+def _replay_acceptance(row: dict, key: str, where: str) -> Optional[list]:
+    """A per-row speculative-decoding count list (matched_per_pos / drafted_per_pos), or None when absent. Lists
+    are padded to the read's widest row: a drafted=0 position means "not drafted", not "never matched"."""
+    value = row.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(x, int) and x >= 0 for x in value):
+        raise ValueError(f"{where}: '{key}' must be a list of non-negative integers")
+    return value
+
+
 def _replay_effort(row: dict, where: str) -> Optional[str]:
     return reasoning_effort_tier(row.get("reasoning_effort"), where)
 
@@ -4071,6 +4101,7 @@ def load_replay_schedule(
     seed=None,
     pod_select: Optional[str] = None,
     retime_min_parent_gap: bool = False,
+    acceptance_per_row: bool = False,
 ) -> tuple:
     """--replay-schedule JSONL: one request per line, {"timestamp": <ms>, "class": "<name>"} (AIPerf's
     millisecond timestamps; "time_s" in seconds also works), optionally "prefix_index" (a prefix of the class
@@ -4136,6 +4167,12 @@ def load_replay_schedule(
                 "top_p": lenient("top_p", lambda: _replay_float(row, "top_p", where, 0.0, 1.0)),
                 "reasoning_effort": lenient("reasoning_effort", lambda: _replay_effort(row, where)),
                 "max_tokens": lenient("max_tokens", lambda: _replay_int(row, ("max_tokens",), where, 1)),
+                "matched_per_pos": lenient(
+                    "matched_per_pos", lambda: _replay_acceptance(row, "matched_per_pos", where)
+                ),
+                "drafted_per_pos": lenient(
+                    "drafted_per_pos", lambda: _replay_acceptance(row, "drafted_per_pos", where)
+                ),
                 "pod": None if pod is None else str(pod),
                 "lead_in": _replay_bool(row, "lead_in", where),
             }
@@ -4177,6 +4214,22 @@ def load_replay_schedule(
         ScheduleEntry(t - start, ci, session=session, index=i, **fields)
         for i, (t, _, ci, session, fields) in enumerate(raw)
     )
+    # The per-row acceptance flag and the columns must agree, both ways: a schedule whose acceptance columns
+    # would be silently ignored is forced acceptance (a repeat of the baseline), and a flag without columns is a
+    # mis-specified schedule
+    with_acceptance = sum(1 for e in entries if e.matched_per_pos is not None)
+    scored = sum(1 for e in entries if not e.lead_in)
+    if acceptance_per_row and with_acceptance == 0:
+        raise ValueError(
+            f"--replay-acceptance-per-row: no row of {path} carries matched_per_pos/drafted_per_pos "
+            f"(rebuild the schedule with them, or drop the flag)"
+        )
+    if not acceptance_per_row and with_acceptance:
+        raise ValueError(
+            f"--replay-schedule {path}: {with_acceptance} of {scored} scored rows carry "
+            f"matched_per_pos/drafted_per_pos, which this run would silently ignore (forced acceptance, a repeat "
+            f"of the baseline). Pass --replay-acceptance-per-row, or rebuild the schedule without the columns"
+        )
     retime_spec = parse_replay_retime(retime)
     recorded_pods = sorted({e.pod for e in entries if e.pod is not None}, key=_pod_sort_key)
     if recorded_pods:
@@ -4211,6 +4264,7 @@ def replay_entries(options: argparse.Namespace, class_names: tuple) -> tuple:
         resolve_request_seed(options),
         getattr(options, "replay_pod", None),
         getattr(options, "replay_retime_min_parent_gap", "off") == "recorded",
+        acceptance_per_row=getattr(options, "replay_acceptance_per_row", False),
     )
 
 
@@ -5065,9 +5119,14 @@ def _defer_run_time_to_after_spawn(environment, **_kwargs):
 def validate_shape_mix_options(options: argparse.Namespace) -> None:
     """Parse --shape-mix against the chat template overhead; raises ValueError naming any class too short."""
     resolve_shape_mix_corpus(getattr(options, "shape_mix_corpus", None))
-    if getattr(options, "replay_reservation", False):
+    if getattr(options, "replay_acceptance_per_row", False) or getattr(options, "replay_reservation", False):
         if not getattr(options, "replay_schedule", None):
-            raise ValueError("--replay-reservation needs --replay-schedule")
+            raise ValueError("--replay-acceptance-per-row and --replay-reservation need --replay-schedule")
+    if getattr(options, "replay_acceptance_per_row", False) and getattr(options, "acceptance_probs_override", None):
+        raise ValueError(
+            "--replay-acceptance-per-row replaces --acceptance-probs-override per row; drop the global override"
+        )
+    if getattr(options, "replay_reservation", False):
         # the replay form of the reservation output mode; the mode flag stays for sizing-free explicit use
         if options.shape_mix_output_mode not in ("exact", "reservation"):
             raise ValueError("--replay-reservation needs the reservation output mode (drop --shape-mix-output-mode)")
@@ -7659,6 +7718,16 @@ def init_parser(parser):
         help=f"For --shape-mix: precomputed fillers per class that follow each request's unique nonce (default "
         f"{SHAPE_MIX_TAIL_VARIANTS}). 0 fits a fresh filler for every request instead (tokenizer work per request), "
         "e.g. to check that repeated filler text doesn't change speculative-decoding acceptance.",
+    )
+    parser.add_argument(
+        "--replay-acceptance-per-row",
+        action="store_true",
+        default=False,
+        help="With --replay-schedule: send each row's recorded speculative-decoding acceptance, derived from its "
+        "matched_per_pos / drafted_per_pos columns, as that row's acceptance_probs_override (replacing the global "
+        "--acceptance-probs-override). Refuses a schedule whose scored rows lack the columns, and refuses the "
+        "columns without the flag (they would be silently ignored: forced acceptance, a repeat of the baseline). "
+        "Off by default.",
     )
     parser.add_argument(
         "--replay-reservation",

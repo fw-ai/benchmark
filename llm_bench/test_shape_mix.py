@@ -1720,7 +1720,9 @@ def _replay_dataset(tmp_path, rows, tokenizer=None, chat=True, **kwargs):
         **kwargs,
     )
     ds.build_prefixes()
-    entries = load_replay_schedule(path, ("chat", "agent", "cold"))
+    entries = load_replay_schedule(
+        path, ("chat", "agent", "cold"), acceptance_per_row=kwargs.pop("replay_acceptance_per_row", False)
+    )
     message_overhead = (lambda n: chat_messages_overhead(tokenizer, DEFAULT_TOKENIZER, n)) if chat else None
     ds.prepare_replay(entries, message_overhead=message_overhead)
     return ds, entries, tokenizer
@@ -4358,3 +4360,89 @@ def test_replay_reservation_sends_recorded_max_tokens_and_cancels_at_output(tmp_
     # row 0 has a recorded max_tokens: it wins over the class sizing; row 1 (none recorded) takes the class max
     assert over.replay_request(over_entries[0]).reserved_max_tokens == 512
     assert over.replay_request(over_entries[1]).reserved_max_tokens == 40
+
+
+def test_replay_acceptance_per_row_sends_recorded_rates(tmp_path) -> None:
+    """D-207(b): each row's acceptance_probs_override is derived from its raw matched/drafted counts —
+    matched/drafted where drafted, 0.0 where padded (not drafted) — and replaces the global override. Rows without
+    the columns (lead-ins, no-draft rows) send none. The flag and the columns must agree, both ways."""
+    import argparse
+
+    import pytest as _pytest
+
+    from load_test import (
+        FireworksProvider,
+        build_shape_mix_request,
+        load_replay_schedule,
+        replay_entries,
+        validate_shape_mix_options,
+    )
+
+    rows = [
+        {
+            "timestamp": 0,
+            "class": "chat",
+            "input_length": 900,
+            "cached_length": 300,
+            "output_length": 8,
+            "matched_per_pos": [21, 18, 0, 0, 0],
+            "drafted_per_pos": [23, 23, 0, 0, 0],
+        },
+        {"timestamp": 500, "class": "chat", "input_length": 900, "cached_length": 300, "output_length": 4},
+        {
+            "timestamp": 900,
+            "class": "agent",
+            "input_length": 800,
+            "cached_length": 100,
+            "output_length": 1,
+            "lead_in": True,
+        },
+    ]
+    path = _write_schedule(tmp_path / "acc.jsonl", rows)
+    entries = load_replay_schedule(path, ("chat", "agent"), acceptance_per_row=True)
+    assert [e.matched_per_pos for e in entries][0] == [21, 18, 0, 0, 0]  # padded zeros survive parsing
+    ds, _, _ = _replay_dataset(
+        tmp_path, rows[:1], tokenizer=WordTokenizer(), chat=False, replay_acceptance_per_row=True
+    )
+    request = ds.replay_request(entries[0])
+    assert request.overrides["acceptance_probs_override"] == [21 / 23, 18 / 23, 0.0, 0.0, 0.0]
+    provider = FireworksProvider(MODEL, _options(chat=False))
+    data, _ = build_shape_mix_request(provider, request)
+    assert data["acceptance_probs_override"] == [21 / 23, 18 / 23, 0.0, 0.0, 0.0]  # the row's, not a global
+    # rows without the columns send no override
+    ds_none, _, _ = _replay_dataset(tmp_path, rows[1:2], tokenizer=WordTokenizer(), chat=False)
+    entries_none = load_replay_schedule(_write_schedule(tmp_path / "n.jsonl", rows[1:2]), ("chat",))
+    assert "acceptance_probs_override" not in (ds_none.replay_request(entries_none[0]).overrides or {})
+
+    # both-ways disagreement: flag on, columns absent -> refuse
+    with _pytest.raises(ValueError, match="no row of .* carries matched_per_pos"):
+        load_replay_schedule(_write_schedule(tmp_path / "plain.jsonl", rows[1:2]), ("chat",), acceptance_per_row=True)
+    # columns present, flag off -> refuse (they would be silently ignored: forced acceptance)
+    with _pytest.raises(ValueError, match="would silently ignore"):
+        load_replay_schedule(path, ("chat", "agent"))
+    # the flag needs the schedule and excludes the global override
+    ns = lambda **kw: argparse.Namespace(
+        **{
+            "shape_mix": "{}",
+            "shape_mix_corpus": None,
+            "replay_schedule": None,
+            "replay_pods": 1,
+            "replay_pod_index": 0,
+            "chat": False,
+            "tokenizer": None,
+            "prefix_reuse_overhang": 0,
+            "replay_acceptance_per_row": False,
+            "replay_reservation": False,
+            "acceptance_probs_override": None,
+            "shape_mix_output_mode": "exact",
+            "force_min_tokens": False,
+            **kw,
+        }
+    )
+    with _pytest.raises(ValueError, match="need --replay-schedule"):
+        validate_shape_mix_options(ns(replay_acceptance_per_row=True))
+    with _pytest.raises(ValueError, match="drop the global override"):
+        validate_shape_mix_options(
+            ns(replay_schedule="s.jsonl", replay_acceptance_per_row=True, acceptance_probs_override="[0.9]")
+        )
+    del replay_entries
