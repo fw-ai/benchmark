@@ -4446,3 +4446,40 @@ def test_replay_acceptance_per_row_sends_recorded_rates(tmp_path) -> None:
             ns(replay_schedule="s.jsonl", replay_acceptance_per_row=True, acceptance_probs_override="[0.9]")
         )
     del replay_entries
+
+
+def test_acceptance_rows_compose_with_reservations_and_validate(tmp_path) -> None:
+    """A-2: a row can carry both its reservation and its recorded acceptance (the acceptance path used to drop the
+    reservation). A-3: matched/drafted lists must be the same length with matched <= drafted, or the schedule is
+    refused on load (the server rejects a rate above 1, and a mismatch truncated silently)."""
+    import pytest as _pytest
+
+    from load_test import load_replay_schedule
+
+    row = {
+        "timestamp": 0,
+        "class": "chat",
+        "input_length": 900,
+        "cached_length": 300,
+        "output_length": 8,
+        "max_tokens": 512,
+        "matched_per_pos": [21, 18],
+        "drafted_per_pos": [23, 23],
+    }
+    ds, entries, _ = _replay_dataset(
+        tmp_path,
+        [row],
+        tokenizer=WordTokenizer(),
+        chat=False,
+        replay_reservation=True,
+        replay_acceptance_per_row=True,
+    )
+    request = ds.replay_request(entries[0])
+    assert request.reserved_max_tokens == 512 and request.cancel_at_tokens == 8  # both applied
+    assert request.overrides["acceptance_probs_override"] == [21 / 23, 18 / 23]
+    bad_len = dict(row, drafted_per_pos=[23, 23, 23])
+    with _pytest.raises(ValueError, match="same length"):
+        load_replay_schedule(_write_schedule(tmp_path / "bl.jsonl", [bad_len]), ("chat",), acceptance_per_row=True)
+    bad_count = dict(row, matched_per_pos=[24, 18])
+    with _pytest.raises(ValueError, match="exceeds"):
+        load_replay_schedule(_write_schedule(tmp_path / "bc.jsonl", [bad_count]), ("chat",), acceptance_per_row=True)

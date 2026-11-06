@@ -449,6 +449,13 @@ def main(argv=None) -> int:
         if _token_exact(applied_boundary) != _token_exact(boundary):
             mismatched.append(boundary_message(s, applied_boundary, boundary))
     # The mock should count tokens as the client does, or the summary's token counts and the designed ones differ
+    # A schedule's acceptance lists must match the replica's draft count, or every row fails on the server
+    width = plan.get("speculative_draft_tokens") or plan.get("num_draft_tokens")
+    if width is not None:
+        print(
+            f"preflight: !!! the replica's num_draft_tokens is {width}: the schedule's acceptance lists must be "
+            f"{width} wide (the server refuses any other length). Start the mock with --num-draft-tokens {width}"
+        )
     warned = set()
     for s in fills + [step]:
         counting = _flag(s[4], "--tokenizer") or DEFAULT_TOKENIZER

@@ -2764,12 +2764,13 @@ class ShapeMixDataset:
         """The request for a --replay-schedule row (see prepare_replay), tagged with the row's position in the
         schedule file, so a checker can join each logged reuse record to its recorded row."""
         request = dataclasses.replace(self._replay_request(entry), schedule_row=entry.row)
+        # compose: a row can carry both a reservation and its recorded acceptance
+        if self.replay_reservation:
+            request = dataclasses.replace(request, **self._reservation_fields(entry))
         if self.replay_acceptance_per_row and entry.matched_per_pos is not None:
-            return dataclasses.replace(
+            request = dataclasses.replace(
                 request, overrides={**(request.overrides or {}), **_row_acceptance_override(entry)}
             )
-        if self.replay_reservation:
-            return dataclasses.replace(request, **self._reservation_fields(entry))
         return request
 
     def _class_max_outputs(self, entries: tuple) -> None:
@@ -4176,6 +4177,15 @@ def load_replay_schedule(
                 "pod": None if pod is None else str(pod),
                 "lead_in": _replay_bool(row, "lead_in", where),
             }
+            # The pair is validated together: a length mismatch or matched > drafted is a schedule error, not a
+            # per-row default (the server rejects a rate above 1, and a mismatch truncated silently)
+            if fields["matched_per_pos"] is not None or fields["drafted_per_pos"] is not None:
+                if (fields["matched_per_pos"] is None) != (fields["drafted_per_pos"] is None):
+                    raise ValueError(f"{where}: 'matched_per_pos' and 'drafted_per_pos' come together")
+                if len(fields["matched_per_pos"]) != len(fields["drafted_per_pos"]):
+                    raise ValueError(f"{where}: 'matched_per_pos' and 'drafted_per_pos' must be the same length")
+                if any(m > d for m, d in zip(fields["matched_per_pos"], fields["drafted_per_pos"])):
+                    raise ValueError(f"{where}: 'matched_per_pos' exceeds 'drafted_per_pos' at some position")
             fields["defaulted"] = tuple(defaulted)
             if (
                 fields["cached_length"] is not None

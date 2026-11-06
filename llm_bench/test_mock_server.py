@@ -276,3 +276,44 @@ def test_preflight_tokenizer_check_compares_content_and_blank_boundary_refused(t
     embeddings = ("e", 1, None, None, ["--embeddings"])
     summary.write_text("Num Requests\n10\n")
     assert summary_mismatch(str(summary), embeddings, 128, 0, "tok") is None
+
+
+def test_mock_refuses_a_wrong_length_acceptance_override() -> None:
+    """A-1: the engine refuses an acceptance override whose length differs from its num_draft_tokens (a UserError),
+    so the mock does too -- a schedule padded wider than the replica's draft count otherwise fails only on GPU."""
+    import json as _json
+    import threading
+    import urllib.request
+    from http.server import HTTPServer
+
+    from mock_server import make_handler
+
+    class Engine:
+        def token_ids(self, body):
+            return [1]
+
+        def serve(self, ids, affinity):
+            return 0
+
+    for override, expect in (([0.9, 0.7], 200), ([0.9, 0.7, 0.5], 400), (None, 200)):
+        handler = make_handler(Engine(), 0.0, 0.0, num_draft_tokens=2)
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            body = {"model": "m", "prompt": "x", "max_tokens": 2}
+            if override is not None:
+                body["acceptance_probs_override"] = override
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/completions",
+                data=_json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    assert expect == 200, (override, r.status)
+            except urllib.error.HTTPError as e:
+                assert e.code == expect == 400 and b"must have 2 entries" in e.read()
+        finally:
+            server.shutdown()
