@@ -121,7 +121,7 @@ def resolve_model_type(tokenizer_path: str) -> str:
         config = transformers.AutoConfig.from_pretrained(tokenizer_path, trust_remote_code=True)
         text_config = config.get_text_config()
         return getattr(text_config, "model_type", None) or getattr(config, "model_type", "")
-    except ValueError:
+    except (ValueError, OSError):
         config_json = _read_config_json(tokenizer_path)
         text_config = config_json.get("text_config") or {}
         return text_config.get("model_type") or config_json.get("model_type", "")
