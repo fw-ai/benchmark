@@ -1,0 +1,107 @@
+{
+  "K1_qkv": {
+    "n_iter": 20,
+    "kernels": {
+      "nvjet_sm100_tst_64x8_64x16_4x1_v_bz_TNT@stream7": {
+        "kernel": "nvjet_sm100_tst_64x8_64x16_4x1_v_bz_TNT",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 164319,
+        "avg_us": 8.21595
+      }
+    },
+    "total_us": 164.319,
+    "avg_us_per_iter": 8.21595
+  },
+  "K3_qnorm": {
+    "n_iter": 20,
+    "kernels": {
+      "_rms_norm@stream7": {
+        "kernel": "_rms_norm",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 47040,
+        "avg_us": 2.352
+      }
+    },
+    "total_us": 47.04,
+    "avg_us_per_iter": 2.352
+  },
+  "K4_knorm": {
+    "n_iter": 20,
+    "kernels": {
+      "_rms_norm@stream7": {
+        "kernel": "_rms_norm",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 30752,
+        "avg_us": 1.5375999999999999
+      }
+    },
+    "total_us": 30.752,
+    "avg_us_per_iter": 1.5375999999999999
+  },
+  "K5_rope": {
+    "n_iter": 2,
+    "kernels": {
+      "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)@stream7": {
+        "kernel": "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+        "stream": 7,
+        "n": 2,
+        "sum_ns": 3584,
+        "avg_us": 1.792
+      }
+    },
+    "total_us": 3.584,
+    "avg_us_per_iter": 1.792
+  },
+  "K6_paged_attn": {
+    "n_iter": 20,
+    "kernels": {
+      "mha_reshape_and_cache_kernel@stream7": {
+        "kernel": "mha_reshape_and_cache_kernel",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 23968,
+        "avg_us": 1.1984
+      },
+      "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP64MultiCtasKvCgaVarSeqQ8Kv128StaticSwapsAbForGen@stream7": {
+        "kernel": "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP64MultiCtasKvCgaVarSeqQ8Kv128StaticSwapsAbForGen",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 58784,
+        "avg_us": 2.9392
+      },
+      "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)@stream7": {
+        "kernel": "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel<(bool)0, (unsigned int)64, (unsigned int)8, (unsigned int)8, __nv_bfloat16, long>(T5 *, T5 *, T5 *, T5 *, float *, T6 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)",
+        "stream": 7,
+        "n": 12,
+        "sum_ns": 21216,
+        "avg_us": 1.0608
+      }
+    },
+    "total_us": 103.968,
+    "avg_us_per_iter": 5.1984
+  },
+  "K7_oproj": {
+    "n_iter": 20,
+    "kernels": {
+      "nvjet_sm100_tst_64x8_64x16_2x1_v_bz_splitK_TNT@stream7": {
+        "kernel": "nvjet_sm100_tst_64x8_64x16_2x1_v_bz_splitK_TNT",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 129568,
+        "avg_us": 6.478400000000001
+      },
+      "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, __nv_bfloat16, float, __nv_bfloat16, (bool)0, float, __nv_bfloat16, __nv_bfloat16, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)@stream7": {
+        "kernel": "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, __nv_bfloat16, float, __nv_bfloat16, (bool)0, float, __nv_bfloat16, __nv_bfloat16, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",
+        "stream": 7,
+        "n": 20,
+        "sum_ns": 50528,
+        "avg_us": 2.5263999999999998
+      }
+    },
+    "total_us": 180.096,
+    "avg_us_per_iter": 9.0048
+  }
+}

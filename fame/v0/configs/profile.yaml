@@ -1,0 +1,20 @@
+layer: 0
+ncu:
+  launch_count: 1
+  set: full
+nvtx_ranges:
+- K1_qkv
+- K3_qnorm
+- K4_knorm
+- K5_rope
+- K6_paged_attn
+- K7_oproj
+profile:
+  decode:
+    past_kv: 4096
+  measured: 20
+  paged_block_size: 64
+  prefill:
+    seq_len: 4096
+  warmup: 5
+weights_dir: /shared/data/minimax/m2p7/hf
